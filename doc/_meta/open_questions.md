@@ -81,3 +81,23 @@ The code was treated as the source of truth; each item says how the docs describ
 
 1. **A JSON array body is not rejected as `400 BAD_REQUEST`.** Only invalid JSON or a JSON scalar gives 400; an empty body
    is treated as `{}`, and an array passes parsing and fails later with `422 VALIDATION_ERROR`. The docs describe it as is.
+
+## SuiteCRM plugin packages (2026-10-15)
+
+The plugin moved from `.tehnical/suiteCRM7/plugin` to two standalone packages next to the repository (`../suiteCRM7`,
+`../SuiteCRM8`, version 1.1.0). Found and fixed in the packaging while verifying the installation (plugin behaviour is unchanged):
+
+1. **Module Loader failed on a re-install** with `Duplicate column name 'wps_processed_c'` when the field had been kept by
+   an uninstall: ModuleInstaller runs `ALTER TABLE … ADD` for manifest `custom_fields` unconditionally. The package was left
+   half-installed (files in place, no `upgrade_history` record). The field is now created by `scripts/wps_post_execute.php`
+   only if it does not exist.
+2. **"Remove tables" / `--remove-fields` did not drop the field**: `DynamicField::deleteField()` gets the name without the
+   `_c` suffix from the manifest. `scripts/wps_pre_uninstall.php` passes the real name.
+3. **Uninstall left `custom/include/WPS` behind after a CLI re-install** (the old setup re-installed on every container
+   start): without `$_REQUEST['install_file']` ModuleInstaller wrote its "restore point" to `-restore/` in the CRM root and
+   restored the old files on uninstall. A re-install now removes the installed version first, like a Module Loader upgrade.
+4. Open: the packages live outside the repository and `.tehnical/` is in `.gitignore` (see F7 #2) — decide where the
+   packages are versioned (own repositories?) before publishing.
+5. Open: the nginx snippet (`config/nginx-wps.conf`) is not tested; the stands use Apache.
+6. Note for test tooling: legacy REST v4_1 `get_entry_list` with an SQL `query` and `get_entry` answer "Access Denied"
+   in SuiteCRM 7.14 / 8.10 even for admin; the verification used the CRM database directly. Irrelevant for WPS.

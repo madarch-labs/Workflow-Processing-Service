@@ -104,8 +104,9 @@ front/
 
 ## .tehnical/
 
-`suiteCRM7/` и `suiteCRM8/` — Docker-стенды SuiteCRM с плагином интеграции (`suiteCRM7/plugin`, общий для обеих версий):
-logic hook `after_save` публикует события в `crm_events`, точка входа `wpsApi` отдаёт WPS API `/api/v9/...`.
+`suiteCRM7/` и `suiteCRM8/` — Docker-стенды чистой SuiteCRM. Плагин интеграции (logic hook `after_save` публикует события
+в `crm_events`, точка входа `wpsApi` отдаёт WPS API `/api/v9/...`) в репозиторий не входит: он ставится из отдельных пакетов
+`../suiteCRM7` и `../SuiteCRM8` (`bin/install.sh`).
 `scripts/wps_processes.php` импортирует и экспортирует наборы процессов (`processes/*.processes.json`). Подробнее —
 в разделе [Интеграция с CRM](../04-operations/crm-integration.md).
 

@@ -52,7 +52,7 @@ So "a new CRM adapter" means one of two things:
 | Way | What you write | WPS code changes | Use it when |
 |---|---|---|---|
 | **A. Bridge (recommended)** | A small HTTP service that serves the WPS contract and calls your CRM | none, only `.env` | The CRM has any REST API you can call |
-| **B. Plugin inside the CRM** | Endpoints in the CRM itself, like `.tehnical/suiteCRM7/plugin` (`WpsApi`, rewrite `/api/v9/…`) | none | You can install code in the CRM |
+| **B. Plugin inside the CRM** | Endpoints in the CRM itself, like the SuiteCRM packages `../suiteCRM7`, `../SuiteCRM8` (`WpsApi`, rewrite `/api/v9/…`) | none | You can install code in the CRM |
 | C. Change the adapter | Edit `ExternalApiAdapterService` (and the type hints that use it) | yes, core class | The contract itself must change for all CRMs |
 
 This page shows way A with a complete, verified example. Way B is the SuiteCRM plugin: read

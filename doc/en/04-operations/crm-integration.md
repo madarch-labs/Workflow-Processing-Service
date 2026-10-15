@@ -138,8 +138,11 @@ These are the defaults of `docker-compose.yml`, used when `./.env` does not set 
 
 ## Option 2: SuiteCRM 7 or SuiteCRM 8
 
-The built-in SuiteCRM API V8 uses OAuth2 and another format, so WPS integrates through a **plugin installed in the CRM**
-(`.tehnical/suiteCRM7/plugin/wps_integration`, the same package for both versions):
+The built-in SuiteCRM API V8 uses OAuth2 and another format, so WPS integrates through a **plugin installed in the CRM**.
+It is shipped as two separate packages next to the repository, one per CRM version: `../suiteCRM7` (SuiteCRM 7.14) and
+`../SuiteCRM8` (SuiteCRM 8.10, installed into the legacy layer `public/legacy`). Each package contains the Module Loader
+package, `bin/install.sh` / `bin/uninstall.sh` (a CRM on the host or in a Docker container), `bin/build.sh` (zip for
+Admin → Module Loader) and web-server snippets; its `README.md` describes the installation step by step.
 
 | Part | Implementation |
 |---|---|
@@ -148,13 +151,15 @@ The built-in SuiteCRM API V8 uses OAuth2 and another format, so WPS integrates t
 | Event content | `id`, `module`, `object_type` and all stored fields of the record (re-read from the DB), plus `wps_event`, `wps_is_update`, `wps_user_id`, `wps_published_at` |
 | Failure mode | If Redis is down, the CRM save still succeeds; the event is lost and logged as `[WPS] publish failed` |
 
-Ready-to-run Docker setups are in `.tehnical/suiteCRM7` (SuiteCRM 7.14.9, port 8701) and `.tehnical/suiteCRM8`
-(SuiteCRM 8.10.2, port 8801). They join the WPS network `WPS_NETWORK` (`swoole_worckflow_default`), so start WPS first:
+Ready-to-run Docker setups of a clean CRM are in `.tehnical/suiteCRM7` (SuiteCRM 7.14.9, port 8701) and
+`.tehnical/suiteCRM8` (SuiteCRM 8.10.2, port 8801); the plugin is not in their images and is installed with the package.
+They join the WPS network `WPS_NETWORK` (`swoole_worckflow_default`), so start WPS first:
 
 ```bash
 cd .tehnical/suiteCRM8          # or suiteCRM7
 cp .env.example .env            # set passwords and WPS_API_STATIC_KEY
 docker compose up -d --build
+../../../SuiteCRM8/bin/install.sh --docker wps-suitecrm8-web-1 --env-file .env   # or ../../../suiteCRM7/... wps-suitecrm7-web-1
 ```
 
 Switch WPS to the CRM in the root `./.env`:
@@ -166,7 +171,7 @@ MOCK_SERVICE_URL=                            # empty: modules come from the CRM
 ```
 
 Then `docker compose up -d --build backend` and `POST /api/dictionaries/modules/refresh`. To return to the mock, remove the
-three lines. Plugin installation into an existing CRM, the full API contract and example processes
+three lines. Plugin installation into any other CRM is described in the `README.md` of the package; the full API contract and example processes
 (`processes/*.processes.json`, imported with `scripts/wps_processes.php`) are described in `.tehnical/suiteCRM7/README.md`
 and `.tehnical/suiteCRM8/README.md`.
 

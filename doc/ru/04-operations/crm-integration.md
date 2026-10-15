@@ -139,7 +139,10 @@ MOCK_SERVICE_URL=http://mock:9502
 ## Вариант 2: SuiteCRM 7 или SuiteCRM 8
 
 Встроенное API V8 SuiteCRM работает по OAuth2 и в другом формате, поэтому WPS интегрируется через **плагин, установленный в
-CRM** (`.tehnical/suiteCRM7/plugin/wps_integration`, один пакет для обеих версий):
+CRM**. Он поставляется двумя отдельными пакетами рядом с репозиторием, по одному на версию CRM: `../suiteCRM7` (SuiteCRM 7.14)
+и `../SuiteCRM8` (SuiteCRM 8.10, ставится в legacy-слой `public/legacy`). В каждом пакете есть пакет Module Loader,
+`bin/install.sh` / `bin/uninstall.sh` (CRM на хосте или в Docker-контейнере), `bin/build.sh` (zip для Admin → Module Loader)
+и фрагменты конфигурации веб-сервера; установка пошагово описана в его `README.md`.
 
 | Часть | Реализация |
 |---|---|
@@ -148,13 +151,15 @@ CRM** (`.tehnical/suiteCRM7/plugin/wps_integration`, один пакет для 
 | Содержимое события | `id`, `module`, `object_type` и все хранимые поля записи (перечитываются из БД), плюс `wps_event`, `wps_is_update`, `wps_user_id`, `wps_published_at` |
 | Если Redis недоступен | Сохранение в CRM проходит; событие теряется и пишется в лог как `[WPS] publish failed` |
 
-Готовые docker-стенды лежат в `.tehnical/suiteCRM7` (SuiteCRM 7.14.9, порт 8701) и `.tehnical/suiteCRM8` (SuiteCRM 8.10.2,
-порт 8801). Они подключаются к сети WPS `WPS_NETWORK` (`swoole_worckflow_default`), поэтому сначала запустите WPS:
+Готовые docker-стенды чистой CRM лежат в `.tehnical/suiteCRM7` (SuiteCRM 7.14.9, порт 8701) и `.tehnical/suiteCRM8`
+(SuiteCRM 8.10.2, порт 8801); плагина в их образах нет, он ставится пакетом. Стенды подключаются к сети WPS `WPS_NETWORK`
+(`swoole_worckflow_default`), поэтому сначала запустите WPS:
 
 ```bash
 cd .tehnical/suiteCRM8          # или suiteCRM7
 cp .env.example .env            # задать пароли и WPS_API_STATIC_KEY
 docker compose up -d --build
+../../../SuiteCRM8/bin/install.sh --docker wps-suitecrm8-web-1 --env-file .env   # или ../../../suiteCRM7/... wps-suitecrm7-web-1
 ```
 
 Переключите WPS на CRM в корневом `./.env`:
@@ -166,7 +171,7 @@ MOCK_SERVICE_URL=                            # пусто: модули беру
 ```
 
 Затем выполните `docker compose up -d --build backend` и `POST /api/dictionaries/modules/refresh`. Чтобы вернуться к моку,
-удалите эти три строки. Установка плагина в существующую CRM, полный контракт API и примеры процессов
+удалите эти три строки. Установка плагина в любую другую CRM описана в `README.md` пакета; полный контракт API и примеры процессов
 (`processes/*.processes.json`, импорт через `scripts/wps_processes.php`) описаны в `.tehnical/suiteCRM7/README.md` и
 `.tehnical/suiteCRM8/README.md`.
 

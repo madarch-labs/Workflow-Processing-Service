@@ -104,8 +104,9 @@ front/
 
 ## .tehnical/
 
-`suiteCRM7/` and `suiteCRM8/`: Docker stacks of SuiteCRM with the integration plugin (`suiteCRM7/plugin`, shared by both):
-an `after_save` logic hook publishes events into `crm_events`, the `wpsApi` entry point serves `/api/v9/...` for WPS.
+`suiteCRM7/` and `suiteCRM8/`: Docker stacks of a clean SuiteCRM. The integration plugin (an `after_save` logic hook
+publishes events into `crm_events`, the `wpsApi` entry point serves `/api/v9/...` for WPS) is not part of this repository:
+it is installed from the separate packages `../suiteCRM7` and `../SuiteCRM8` (`bin/install.sh`).
 `scripts/wps_processes.php` imports/exports process sets (`processes/*.processes.json`). See
 [CRM integration](../04-operations/crm-integration.md).
 
