@@ -1,4 +1,4 @@
--- "Run once per record" (doc/idempotentie_plan.md): process flag + marks "process P was started for CRM record X".
+-- "Run once per record" (md/idempotentie_plan.md): process flag + marks "process P was started for CRM record X".
 
 ALTER TABLE processes ADD COLUMN IF NOT EXISTS run_once BOOLEAN NOT NULL DEFAULT FALSE;
 

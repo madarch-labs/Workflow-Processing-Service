@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * WPS API integration tests (doc/concept_apitest_back.md): plain PHP, HTTP requests to a running server.
+ * WPS API integration tests (md/doc/concept_apitest_back.md): plain PHP, HTTP requests to a running server.
  *
  *   docker compose up -d --build
  *   docker compose exec backend php tests/IntegrationTest.php
@@ -509,7 +509,7 @@ final class IntegrationTest
     }
 
     /**
-     * run_once — one start of a process per CRM record (doc/idempotentie_plan.md, section 9).
+     * run_once — one start of a process per CRM record (md/idempotentie_plan.md, section 9).
      */
     private function testRunOnce(): void
     {

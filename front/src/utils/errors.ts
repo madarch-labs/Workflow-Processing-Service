@@ -1,18 +1,10 @@
 import type { ApiErrorDetail } from '@/types'
+import { t, te } from '@/i18n'
 
 interface ErrorLike {
   message?: string
   code?: string
   details?: unknown
-}
-
-const CODE_MESSAGES: Record<string, string> = {
-  INVALID_CREDENTIALS: 'Неверный email или пароль',
-  FORBIDDEN: 'Недостаточно прав для выполнения операции',
-  PROCESS_IN_USE: 'Процесс используется другими процессами (start_process) и не может быть удалён',
-  CANNOT_DELETE_SELF: 'Нельзя удалить самого себя',
-  LAST_ADMIN: 'Нельзя удалить или понизить последнего администратора',
-  EMAIL_EXISTS: 'Пользователь с таким email уже существует',
 }
 
 /** Детали ошибки валидации в виде массива строк */
@@ -33,21 +25,26 @@ export function errorDetailLines(details: unknown): string[] {
       const chain = (obj.path as Array<{ id?: number; name?: string }>)
         .map((p) => (p.name ? `«${p.name}» (#${p.id})` : `#${p.id}`))
         .join(' → ')
-      return [`Цепочка: ${chain}`]
+      return [t('errors.chain', { chain })]
     }
     return Object.entries(obj).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
   }
   return [String(details)]
 }
 
+/** Текст ошибки по коду: перевод errors.<CODE>, иначе сообщение сервера */
+export function apiErrorTitle(e: ErrorLike & { status?: number }): string {
+  const code = e.code ?? ''
+  if (code === 'VALIDATION_ERROR' && e.message && e.message !== 'Validation failed') return e.message
+  if (code && te(`errors.${code}`)) return t(`errors.${code}`)
+  if (code.startsWith('HTTP_')) return t('errors.HTTP', { status: code.slice(5) })
+  return e.message || t('errors.unknown')
+}
+
 /** Человекочитаемый текст ошибки API */
 export function formatApiError(err: unknown): string {
   const e = (err ?? {}) as ErrorLike
-  let head = (e.code && CODE_MESSAGES[e.code]) || e.message || 'Неизвестная ошибка'
-  if (e.code === 'CYCLE_DETECTED') head = 'Обнаружен цикл запуска процессов'
-  if (e.code === 'VALIDATION_ERROR' && (!e.message || e.message === 'Validation failed')) {
-    head = 'Ошибка валидации'
-  }
+  const head = apiErrorTitle(e)
   const lines = errorDetailLines(e.details)
   return lines.length ? `${head}:\n${lines.map((l) => '• ' + l).join('\n')}` : head
 }

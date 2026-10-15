@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "969188f6018d593415023bc5733e6798",
+    "content-hash": "020b1f6e1c6a5adbf60503dda2e563b1",
     "packages": [
         {
             "name": "guzzlehttp/guzzle",
@@ -864,11 +864,17 @@
         },
         {
             "name": "sidalex/swoole-app",
-            "version": "dev-main",
+            "version": "0.3.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/SwooleApp/SwooleApp.git",
+                "reference": "378f0a4280bdb48a08d78aa69b0e979a9c0d5599"
+            },
             "dist": {
-                "type": "path",
-                "url": "../doc/SwooleApp",
-                "reference": "ca88f83da260a45e226fe69dc4ca776591faf20d"
+                "type": "zip",
+                "url": "https://api.github.com/repos/SwooleApp/SwooleApp/zipball/378f0a4280bdb48a08d78aa69b0e979a9c0d5599",
+                "reference": "378f0a4280bdb48a08d78aa69b0e979a9c0d5599",
+                "shasum": ""
             },
             "require": {
                 "haydenpierce/class-finder": "^0.5.3",
@@ -886,6 +892,7 @@
                     "Sidalex\\SwooleApp\\": "src/"
                 }
             },
+            "notification-url": "https://packagist.org/downloads/",
             "license": [
                 "MIT"
             ],
@@ -896,10 +903,11 @@
                 }
             ],
             "description": "a package for organizing http services on a swoole server",
-            "transport-options": {
-                "symlink": true,
-                "relative": true
-            }
+            "support": {
+                "issues": "https://github.com/SwooleApp/SwooleApp/issues",
+                "source": "https://github.com/SwooleApp/SwooleApp/tree/0.3.0"
+            },
+            "time": "2026-04-24T12:20:59+00:00"
         },
         {
             "name": "symfony/deprecation-contracts",
@@ -1200,10 +1208,8 @@
     ],
     "packages-dev": [],
     "aliases": [],
-    "minimum-stability": "dev",
-    "stability-flags": {
-        "sidalex/swoole-app": 20
-    },
+    "minimum-stability": "stable",
+    "stability-flags": {},
     "prefer-stable": true,
     "prefer-lowest": false,
     "platform": {

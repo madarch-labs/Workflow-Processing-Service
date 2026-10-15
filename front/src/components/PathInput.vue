@@ -1,5 +1,8 @@
 <script setup lang="ts">
 /** Поле ввода пути (object.field / v1.field) с подсказками */
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+
 const props = withDefaults(
   defineProps<{
     modelValue: string
@@ -7,10 +10,14 @@ const props = withDefaults(
     placeholder?: string
     invalid?: boolean
   }>(),
-  { suggestions: () => [], placeholder: 'object.поле', invalid: false },
+  { suggestions: () => [], placeholder: undefined, invalid: false },
 )
 
 const emit = defineEmits<{ (e: 'update:modelValue', value: string): void }>()
+
+const { t } = useI18n()
+// Плейсхолдер по умолчанию переводится реактивно
+const placeholderText = computed(() => props.placeholder ?? t('pathInput.placeholder'))
 
 function fetch(query: string, cb: (items: { value: string }[]) => void): void {
   const q = (query ?? '').toLowerCase()
@@ -27,7 +34,7 @@ function fetch(query: string, cb: (items: { value: string }[]) => void): void {
   <el-autocomplete
     :model-value="modelValue"
     :fetch-suggestions="fetch"
-    :placeholder="placeholder"
+    :placeholder="placeholderText"
     :trigger-on-focus="true"
     clearable
     class="path-input"

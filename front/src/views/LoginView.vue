@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import type { FormInstance, FormRules } from 'element-plus'
 import { Lock, Message } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import { formatApiError } from '@/utils/errors'
+import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 
+const { t } = useI18n()
 const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
@@ -15,13 +18,14 @@ const form = reactive({ email: '', password: '' })
 const loading = ref(false)
 const errorText = ref('')
 
-const rules: FormRules = {
+// computed — чтобы тексты валидации обновлялись при смене языка
+const rules = computed<FormRules>(() => ({
   email: [
-    { required: true, message: 'Введите email', trigger: 'blur' },
-    { type: 'email', message: 'Некорректный email', trigger: 'blur' },
+    { required: true, message: t('auth.emailRequired'), trigger: 'blur' },
+    { type: 'email', message: t('auth.emailInvalid'), trigger: 'blur' },
   ],
-  password: [{ required: true, message: 'Введите пароль', trigger: 'blur' }],
-}
+  password: [{ required: true, message: t('auth.passwordRequired'), trigger: 'blur' }],
+}))
 
 async function submit(): Promise<void> {
   errorText.value = ''
@@ -46,26 +50,27 @@ async function submit(): Promise<void> {
 
 <template>
   <div class="login-page">
+    <LanguageSwitcher dark class="login-lang" />
     <el-card class="login-card" shadow="always">
       <div class="logo">
         <el-icon :size="36" color="var(--el-color-primary)"><Share /></el-icon>
         <div>
-          <div class="title">Workflow Processing Service</div>
-          <div class="subtitle">Настройка и аудит бизнес-процессов CRM</div>
+          <div class="title">{{ t('app.name') }}</div>
+          <div class="subtitle">{{ t('auth.subtitle') }}</div>
         </div>
       </div>
       <el-alert v-if="errorText" type="error" :title="errorText" show-icon :closable="false" class="login-error" />
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent="submit">
-        <el-form-item label="Email" prop="email">
+        <el-form-item :label="t('auth.email')" prop="email">
           <el-input
             v-model="form.email"
             :prefix-icon="Message"
-            placeholder="user@company.ru"
+            :placeholder="t('auth.emailPlaceholder')"
             autocomplete="username"
             size="large"
           />
         </el-form-item>
-        <el-form-item label="Пароль" prop="password">
+        <el-form-item :label="t('auth.password')" prop="password">
           <el-input
             v-model="form.password"
             :prefix-icon="Lock"
@@ -76,7 +81,7 @@ async function submit(): Promise<void> {
           />
         </el-form-item>
         <el-button type="primary" size="large" :loading="loading" class="submit" native-type="submit">
-          Войти
+          {{ t('auth.submit') }}
         </el-button>
       </el-form>
     </el-card>
@@ -90,6 +95,12 @@ async function submit(): Promise<void> {
   align-items: center;
   justify-content: center;
   background: linear-gradient(135deg, #1f2d3d 0%, #34495e 100%);
+  position: relative;
+}
+.login-lang {
+  position: absolute;
+  top: 16px;
+  right: 20px;
 }
 .login-card {
   width: 420px;

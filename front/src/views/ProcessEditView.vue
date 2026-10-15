@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Close, Select } from '@element-plus/icons-vue'
@@ -8,7 +9,8 @@ import { emptyForm, formFromProcess, payloadFromForm, useProcessesStore } from '
 import { dictionariesApi, FALLBACK } from '@/api/dictionaries'
 import { ApiRequestError, showApiError } from '@/api/client'
 import type { Condition, DictionaryItem, ModifyRow, PreloadAction, ProcessFormData, StartProcessRow } from '@/types'
-import { errorDetailLines } from '@/utils/errors'
+import { apiErrorTitle, errorDetailLines } from '@/utils/errors'
+import { localizeDict } from '@/utils/format'
 import { collectVariables, pathSuggestions, pathVar, VAR_NAME_RE } from '@/utils/variables'
 import ProcessHeader from '@/components/ProcessHeader.vue'
 import ConditionsPanel from '@/components/ConditionsPanel.vue'
@@ -22,6 +24,7 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const store = useProcessesStore()
+const { t } = useI18n()
 
 const processId = computed(() => (route.params.id ? Number(route.params.id) : null))
 const isEdit = computed(() => processId.value !== null)
@@ -38,6 +41,9 @@ const modulesLoading = ref(false)
 const operators = ref<DictionaryItem[]>(FALLBACK.operators)
 const changeTypes = ref<DictionaryItem[]>(FALLBACK.changeTypes)
 const preloadSources = ref<DictionaryItem[]>(FALLBACK.preloadSources)
+const operatorsView = computed(() => localizeDict('operator', operators.value))
+const changeTypesView = computed(() => localizeDict('changeType', changeTypes.value))
+const preloadSourcesView = computed(() => localizeDict('preloadSource', preloadSources.value))
 
 const headerRef = ref<InstanceType<typeof ProcessHeader>>()
 const openBlocks = ref(['preload', 'modify', 'start'])
@@ -91,7 +97,7 @@ async function loadModules(refresh = false): Promise<void> {
   modulesLoading.value = true
   try {
     modules.value = refresh ? await dictionariesApi.refreshModules() : await dictionariesApi.modules()
-    if (refresh) ElMessage.success('Список модулей обновлён')
+    if (refresh) ElMessage.success(t('processEdit.modulesRefreshed'))
   } catch {
     /* сообщение уже показано */
   } finally {
@@ -118,7 +124,7 @@ async function load(): Promise<void> {
     }
     snapshot.value = serialize()
   } catch (e) {
-    loadError.value = e instanceof ApiRequestError ? e.message : 'Не удалось загрузить процесс'
+    loadError.value = e instanceof ApiRequestError ? apiErrorTitle(e) : t('processEdit.loadFailed')
   } finally {
     loading.value = false
   }
@@ -135,39 +141,46 @@ function validateRows(): string[] {
   const errors: string[] = []
   const f = form.value
   f.conditions.forEach((c, i) => {
-    const n = `Условие ${i + 1}`
-    if (!c.field.trim() || !c.field.includes('.') || c.field.trim().endsWith('.')) errors.push(`${n}: укажите поле (object.поле)`)
+    const err = (key: string): string => t('processEdit.validation.condition', { n: i + 1, error: t(`processEdit.validation.${key}`) })
+    if (!c.field.trim() || !c.field.includes('.') || c.field.trim().endsWith('.')) errors.push(err('conditionField'))
     if (c.value_type === 'from_object_field' && (!c.value.trim() || !c.value.includes('.')))
-      errors.push(`${n}: укажите путь поля для сравнения`)
+      errors.push(err('conditionCompareField'))
   })
   const names: string[] = []
   f.preload.forEach((p, i) => {
-    const n = `Предзагрузка ${i + 1} (${p.var || '?'})`
+    const err = (key: string, params: Record<string, string> = {}): string =>
+      t('processEdit.validation.preload', {
+        n: i + 1,
+        name: p.var || '?',
+        error: t(`processEdit.validation.${key}`, params),
+      })
     const name = p.var.trim()
-    if (!name || !VAR_NAME_RE.test(name)) errors.push(`${n}: некорректное имя переменной`)
-    else if (name === 'object') errors.push(`${n}: имя «object» зарезервировано`)
-    else if (names.includes(name)) errors.push(`${n}: имя переменной уже используется`)
+    if (!name || !VAR_NAME_RE.test(name)) errors.push(err('invalidVarName'))
+    else if (name === 'object') errors.push(err('reservedObject'))
+    else if (names.includes(name)) errors.push(err('duplicateVarName'))
     names.push(name)
-    if (!p.module.trim()) errors.push(`${n}: укажите модуль`)
-    if (!p.value.trim() || (p.source !== 'manual' && p.value.trim().endsWith('.'))) errors.push(`${n}: укажите значение`)
+    if (!p.module.trim()) errors.push(err('moduleRequired'))
+    if (!p.value.trim() || (p.source !== 'manual' && p.value.trim().endsWith('.'))) errors.push(err('valueRequired'))
     if (p.source === 'object_field' && !p.value.trim().startsWith('object.'))
-      errors.push(`${n}: путь должен начинаться с object.`)
+      errors.push(err('mustStartWithObject'))
     if (p.source === 'variable_field' && !names.slice(0, -1).includes(pathVar(p.value)))
-      errors.push(`${n}: переменная «${pathVar(p.value)}» должна быть объявлена выше`)
+      errors.push(err('varMustBeDeclaredAbove', { name: pathVar(p.value) }))
   })
   f.modifyActions.forEach((r, i) => {
-    const n = `Действие ${i + 1}`
+    const err = (key: string): string => t('processEdit.validation.action', { n: i + 1, error: t(`processEdit.validation.${key}`) })
     if (r.type === 'modify') {
-      const t = r.target.trim()
-      if (!t || !t.includes('.') || t.endsWith('.')) errors.push(`${n}: укажите поле назначения (object.поле или v1.поле)`)
-      if (r.change_type !== 'set_value' && !r.value.trim()) errors.push(`${n}: укажите значение`)
+      const target = r.target.trim()
+      if (!target || !target.includes('.') || target.endsWith('.')) errors.push(err('targetField'))
+      if (r.change_type !== 'set_value' && !r.value.trim()) errors.push(err('valueRequired'))
     } else if (r.type === 'save_object') {
-      if (!r.target.trim()) errors.push(`${n}: укажите сохраняемую переменную`)
+      if (!r.target.trim()) errors.push(err('saveTargetRequired'))
     }
   })
   f.startActions.forEach((s, i) => {
-    if (s.process_id === null) errors.push(`Запуск процесса ${i + 1}: выберите процесс`)
-    if (s.process_id !== null && s.process_id === f.id) errors.push(`Запуск процесса ${i + 1}: процесс не может запускать сам себя`)
+    const err = (key: string): string =>
+      t('processEdit.validation.startProcess', { n: i + 1, error: t(`processEdit.validation.${key}`) })
+    if (s.process_id === null) errors.push(err('selectProcess'))
+    if (s.process_id !== null && s.process_id === f.id) errors.push(err('selfStart'))
   })
   return errors
 }
@@ -189,27 +202,27 @@ async function save(activate: boolean): Promise<void> {
   const headerOk = (await headerRef.value?.validate()) ?? true
   const rowErrors = validateRows()
   if (!headerOk || rowErrors.length) {
-    const lines = [...(!headerOk ? ['Заполните обязательные поля шапки процесса'] : []), ...rowErrors]
-    showErrors('Исправьте ошибки перед сохранением', lines)
-    ElMessage.error('Форма содержит ошибки')
+    const lines = [...(!headerOk ? [t('processEdit.headerRequired')] : []), ...rowErrors]
+    showErrors(t('processEdit.fixErrors'), lines)
+    ElMessage.error(t('processEdit.formHasErrors'))
     return
   }
   saving.value = true
   try {
     const saved = await store.saveProcess(form.value, activate)
     snapshot.value = serialize()
-    ElMessage.success(isEdit.value ? `Процесс сохранён (версия ${saved.version})` : 'Процесс создан')
+    ElMessage.success(isEdit.value ? t('processEdit.savedVersion', { version: saved.version }) : t('processEdit.created'))
     router.push(`/processes/${saved.id}`)
   } catch (e) {
     if (e instanceof ApiRequestError && (e.status === 422 || e.code === 'CYCLE_DETECTED')) {
       const title =
         e.code === 'CYCLE_DETECTED'
-          ? 'Обнаружен цикл запуска процессов — процесс не может (косвенно) запускать сам себя'
+          ? t('processEdit.cycleDetected')
           : e.message && e.message !== 'Validation failed'
             ? e.message
-            : 'Ошибка валидации на сервере'
+            : t('processEdit.serverValidationError')
       showErrors(title, errorDetailLines(e.details))
-      ElMessage.error('Сервер отклонил сохранение')
+      ElMessage.error(t('processEdit.serverRejected'))
     } else {
       showApiError(e)
     }
@@ -226,9 +239,9 @@ function cancel(): void {
 onBeforeRouteLeave(async () => {
   if (!dirty.value || saving.value) return true
   try {
-    await ElMessageBox.confirm('Есть несохранённые изменения. Покинуть страницу?', 'Несохранённые изменения', {
-      confirmButtonText: 'Покинуть',
-      cancelButtonText: 'Остаться',
+    await ElMessageBox.confirm(t('processEdit.leave.message'), t('processEdit.leave.title'), {
+      confirmButtonText: t('processEdit.leave.confirm'),
+      cancelButtonText: t('processEdit.leave.cancel'),
       type: 'warning',
     })
     return true
@@ -244,24 +257,24 @@ onMounted(load)
   <div v-loading="loading" class="process-edit">
     <div class="page-header">
       <h1>
-        {{ isEdit ? 'Редактирование процесса' : 'Новый процесс' }}
-        <span v-if="isEdit" class="muted id-label">#{{ processId }} · версия {{ version }}</span>
-        <el-tag v-if="dirty" type="warning" size="small" class="dirty-tag">не сохранено</el-tag>
+        {{ isEdit ? t('route.processEdit') : t('route.processCreate') }}
+        <span v-if="isEdit" class="muted id-label">{{ t('processEdit.idVersion', { id: processId, version }) }}</span>
+        <el-tag v-if="dirty" type="warning" size="small" class="dirty-tag">{{ t('processEdit.unsaved') }}</el-tag>
       </h1>
       <div class="actions">
-        <el-button :icon="Close" @click="cancel">Отмена</el-button>
+        <el-button :icon="Close" @click="cancel">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" plain :icon="Check" :loading="saving" :disabled="!!loadError" @click="save(false)">
-          Сохранить
+          {{ t('common.save') }}
         </el-button>
         <el-button type="success" :icon="Select" :loading="saving" :disabled="!!loadError" @click="save(true)">
-          Сохранить и активировать
+          {{ t('processEdit.saveAndActivate') }}
         </el-button>
       </div>
     </div>
 
-    <el-result v-if="loadError" icon="error" title="Не удалось загрузить процесс" :sub-title="loadError">
+    <el-result v-if="loadError" icon="error" :title="t('processEdit.loadFailed')" :sub-title="loadError">
       <template #extra>
-        <el-button @click="router.push('/processes')">К списку процессов</el-button>
+        <el-button @click="router.push('/processes')">{{ t('common.backToProcesses') }}</el-button>
       </template>
     </el-result>
 
@@ -284,7 +297,7 @@ onMounted(load)
         <el-col :span="18">
           <el-card shadow="never" class="panel-card">
             <template #header>
-              <div class="panel-title"><span>Конфигурация процесса</span></div>
+              <div class="panel-title"><span>{{ t('processEdit.configTitle') }}</span></div>
             </template>
             <ProcessHeader
               ref="headerRef"
@@ -299,26 +312,25 @@ onMounted(load)
           <el-card shadow="never" class="panel-card">
             <template #header>
               <div class="panel-title">
-                <span>Блок 1. Условия запуска <small>все строки объединяются по «И»</small></span>
-                <el-tag size="small" round>{{ form.conditionsRaw ? 'расширенные' : form.conditions.length }}</el-tag>
+                <span>{{ t('processEdit.conditionsBlock') }} <small>{{ t('processEdit.conditionsBlockHint') }}</small></span>
+                <el-tag size="small" round>{{ form.conditionsRaw ? t('processEdit.conditionsAdvanced') : form.conditions.length }}</el-tag>
               </div>
             </template>
             <template v-if="form.conditionsRaw">
               <el-alert type="warning" :closable="false" show-icon class="raw-alert">
                 <template #title>
-                  Условия заданы в расширенной форме (группы / OR). Табличный редактор их не поддерживает — они будут
-                  сохранены без изменений.
+                  {{ t('processEdit.rawConditionsWarning') }}
                 </template>
               </el-alert>
               <JsonView :value="form.conditionsRaw" />
               <el-button size="small" class="convert-btn" @click="convertRawConditions">
-                Заменить на табличные условия (И)
+                {{ t('processEdit.convertRaw') }}
               </el-button>
             </template>
             <ConditionsPanel
               v-else
               :conditions="form.conditions"
-              :operators="operators"
+              :operators="operatorsView"
               :suggestions="suggestions"
               @update:conditions="setConditions"
             />
@@ -326,17 +338,17 @@ onMounted(load)
 
           <el-card shadow="never" class="panel-card">
             <template #header>
-              <div class="panel-title"><span>Блок 2. Действия <small>выполняются последовательно</small></span></div>
+              <div class="panel-title"><span>{{ t('processEdit.actionsBlock') }} <small>{{ t('processEdit.actionsBlockHint') }}</small></span></div>
             </template>
             <el-collapse v-model="openBlocks">
               <el-collapse-item name="preload">
                 <template #title>
-                  <span class="block-title">Предзагрузка</span>
+                  <span class="block-title">{{ t('processEdit.preloadTitle') }}</span>
                   <el-tag size="small" round class="count">{{ form.preload.length }}</el-tag>
                 </template>
                 <PreloadPanel
                   :preload="form.preload"
-                  :sources="preloadSources"
+                  :sources="preloadSourcesView"
                   :modules="modules"
                   :reserved-names="createdNames"
                   :suggestions="suggestions"
@@ -345,12 +357,12 @@ onMounted(load)
               </el-collapse-item>
               <el-collapse-item name="modify">
                 <template #title>
-                  <span class="block-title">Изменить объект / переменную</span>
+                  <span class="block-title">{{ t('processEdit.modifyTitle') }}</span>
                   <el-tag size="small" round class="count">{{ modifyCount }}</el-tag>
                 </template>
                 <ModifyPanel
                   :modify-actions="form.modifyActions"
-                  :change-types="changeTypes"
+                  :change-types="changeTypesView"
                   :modules="modules"
                   :variable-names="variableNames"
                   :suggestions="suggestions"
@@ -359,7 +371,7 @@ onMounted(load)
               </el-collapse-item>
               <el-collapse-item name="start">
                 <template #title>
-                  <span class="block-title">Запустить следующий процесс</span>
+                  <span class="block-title">{{ t('processEdit.startTitle') }}</span>
                   <el-tag size="small" round class="count">{{ form.startActions.length }}</el-tag>
                 </template>
                 <StartProcessPanel
@@ -375,7 +387,7 @@ onMounted(load)
 
         <el-col :span="6">
           <div class="sidebar-sticky">
-            <VariableSidebar :variables="variables" :sources="preloadSources" />
+            <VariableSidebar :variables="variables" :sources="preloadSourcesView" />
           </div>
         </el-col>
       </el-row>

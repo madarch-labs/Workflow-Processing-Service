@@ -119,7 +119,7 @@ CRM (`object_type` + `id` объекта события) не больше од�
 - ведомый процесс берёт запись из события родителя.
 
 Заблокированный запуск не создаёт выполнения. Он увеличивает `blocked_count` отметки и метрику
-`wps_run_once_skipped_total`. Подробно — `doc/idempotentie_plan.md`.
+`wps_run_once_skipped_total`. Подробно — `md/idempotentie_plan.md`.
 
 ### Структура `definition`
 

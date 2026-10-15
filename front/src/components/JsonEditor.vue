@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 const props = withDefaults(
   defineProps<{
@@ -15,8 +16,10 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
 }>()
 
+const { t } = useI18n()
+
 const parseError = computed<string | null>(() => {
-  if (!props.modelValue.trim()) return 'Пустое значение'
+  if (!props.modelValue.trim()) return t('json.empty')
   try {
     JSON.parse(props.modelValue)
     return null
@@ -55,11 +58,11 @@ defineExpose({ parseError })
     />
     <div class="json-footer">
       <span v-if="parseError" class="json-error">
-        <el-icon><WarningFilled /></el-icon> Некорректный JSON: {{ parseError }}
+        <el-icon><WarningFilled /></el-icon> {{ t('json.invalid', { error: parseError }) }}
       </span>
-      <span v-else class="json-ok"><el-icon><CircleCheckFilled /></el-icon> JSON корректен</span>
+      <span v-else class="json-ok"><el-icon><CircleCheckFilled /></el-icon> {{ t('json.valid') }}</span>
       <el-button v-if="!readonly" link type="primary" size="small" :disabled="!!parseError" @click="formatJson">
-        Форматировать
+        {{ t('json.format') }}
       </el-button>
     </div>
   </div>

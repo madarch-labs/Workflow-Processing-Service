@@ -5,11 +5,11 @@ WPS подбирает для события активные процессы �
 Затем выполняет цепочку действий: предзагрузку объектов из CRM, изменение полей, сохранение в CRM
 и асинхронный запуск ведомых процессов. Каждый запуск и каждый шаг пишутся в аудит.
 
-Требования: `doc/doc/*` (ТЗ — `technical_specification.md`, ответы заказчика — `maiInfo.md`),
-`doc/back_stap_1.md`, `doc/back_stap_2.md`, `doc/front_stap_1.md`, `doc/moc_eventService.md`.
+Требования: `md/doc/*` (ТЗ — `technical_specification.md`, ответы заказчика — `maiInfo.md`),
+`md/back_stap_1.md`, `md/back_stap_2.md`, `md/front_stap_1.md`, `md/moc_eventService.md`.
 
 ```
-back/    PHP 8.3 + Swoole 6 + SwooleApp (doc/SwooleApp, подключён как composer path-репозиторий, не изменялся)
+back/    PHP 8.3 + Swoole 6 + SwooleApp (пакет sidalex/swoole-app из Packagist, версия зафиксирована в composer.lock)
 front/   Vue 3 + TypeScript + Vite 5 + Element Plus + Pinia + Vue Router + Axios
 mock/    Mock Event Service: генератор событий в стрим + эмуляция CRM API v8
 docker-compose.yml   postgres, redis-stream (шина), redis-data (кэш/состояния), backend, mock, frontend
@@ -33,7 +33,7 @@ CRM для backend задаётся в `./.env`: `CRM_API_BASE_URL`, `CRM_API_ST
 По умолчанию используется мок. Настоящие SuiteCRM 7 и 8 с плагином интеграции разворачиваются из
 `.tehnical/suiteCRM7` и `.tehnical/suiteCRM8`, порядок описан в их README.
 
-Тесты API: 67 проверок, чистый PHP по `doc/doc/concept_apitest_back.md`. Код вшит в образ,
+Тесты API: 67 проверок, чистый PHP по `md/doc/concept_apitest_back.md`. Код вшит в образ,
 поэтому после правок пересоберите backend:
 
 ```bash
@@ -44,6 +44,30 @@ docker compose exec backend php tests/IntegrationTest.php
 Фронтенд без Docker: `cd front && npm install && npm run dev`. Нужен Node ≥ 18. Dev-сервер
 работает на порту 3000 и проксирует `/api` на `localhost:9501`.
 
+## Сборка бэкенда
+
+Фреймворк [SwooleApp](https://github.com/SwooleApp/SwooleApp) подключается как обычная composer-зависимость
+`sidalex/swoole-app` из Packagist (`back/composer.json`: `^0.3.0`, точная версия и коммит зафиксированы в
+`back/composer.lock`). Образ `back/Dockerfile` (`phpswoole/swoole:6.0-php8.3`) выполняет `composer install`
+по lock-файлу. Локальная копия фреймворка для сборки не нужна.
+
+Все пакеты ставятся из архивов (`config.preferred-install: dist` в `back/composer.json`, `--prefer-dist` в
+Dockerfile). Git-репозитории не клонируются. Архивы Composer скачивает по ссылкам, которые даёт Packagist;
+для SwooleApp это zip релиза на GitHub.
+
+Обновить фреймворк — обновить только его запись в lock-файле, в том же образе, что и сборка:
+
+```bash
+cd back
+docker run --rm -u "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer -v "$PWD":/app -w /app \
+  phpswoole/swoole:6.0-php8.3 composer update sidalex/swoole-app
+rm -rf vendor                          # vendor живёт только в образе
+cd .. && docker compose up -d --build backend
+docker compose exec backend php tests/IntegrationTest.php
+```
+
+Новую мажорную или минорную версию (0.4, 1.x) задайте в `back/composer.json` и сверьте её changelog с обходными
+решениями из раздела «Решения по противоречиям», пункт 2.
 ## Бэкенд — устройство
 
 - **StreamConsumerJob** (CyclicJob, каждые 0.5 с, в каждом воркере). Читает стрим через
@@ -64,7 +88,7 @@ docker compose exec backend php tests/IntegrationTest.php
   - Отметка ставится атомарно (`INSERT … ON CONFLICT`) при старте и только если условия выполнены.
   - Повторные события записи процесс не запускают. Снять отметку можно в UI (вкладка «Однократные запуски»)
     или через `DELETE /api/processes/{id}/runs/{type}/{object_id}`.
-  - Ограничение: работает по `id` записи из события. Без `id` флаг не применяется (`doc/idempotentie_plan.md`).
+  - Ограничение: работает по `id` записи из события. Без `id` флаг не применяется (`md/idempotentie_plan.md`).
     На практике событие без `id` уходит в DLQ, а ручной запуск без `object.id` отклоняется.
 - **Точки расширения** (добавляются с рестартом сервиса). Реестры собраны в `src/Kernel/Container.php`:
   - `ComparatorInterface` — операторы условий;
@@ -87,7 +111,8 @@ docker compose exec backend php tests/IntegrationTest.php
 ## Решения по противоречиям (согласованы)
 
 1. Вызовы CRM и PostgreSQL идут через **корутины** (Coroutine HTTP client, PDO pgsql с runtime hooks), а не через Task workers из ТЗ.
-2. **SwooleApp не изменялся.** Две проблемы фреймворка обойдены расширением в `back/src`:
+2. **SwooleApp не изменялся** (используется опубликованный пакет `sidalex/swoole-app` 0.3.0). Две проблемы
+   фреймворка обойдены расширением в `back/src`:
    - сопоставление маршрутов по префиксу исправлено в `WpsRoutesCollectionBuilder`;
    - неприменявшиеся `globalMiddlewares` подключаются в `BaseController`. Для этого в `config.json` их нужно указывать строками.
 3. **Удалять процессы может только admin.** Editor может создавать, редактировать, клонировать и запускать.

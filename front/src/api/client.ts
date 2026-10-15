@@ -8,6 +8,7 @@ import { ElMessage } from 'element-plus'
 import type { ApiEnvelope, ApiError, Paginated, PaginationMeta } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import { formatApiError } from '@/utils/errors'
+import { currentLocale } from '@/i18n'
 
 declare module 'axios' {
   interface AxiosRequestConfig {
@@ -53,6 +54,7 @@ http.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   if (auth.accessToken && !isAuthEndpoint(config.url)) {
     config.headers.set('Authorization', `Bearer ${auth.accessToken}`)
   }
+  config.headers.set('Accept-Language', currentLocale())
   return config
 })
 
@@ -86,12 +88,12 @@ function toApiError(error: AxiosError): ApiRequestError {
   if (!error.response) {
     return new ApiRequestError(0, {
       code: 'NETWORK_ERROR',
-      message: 'Сервер недоступен. Проверьте подключение.',
+      message: 'Server is unavailable',
     })
   }
   return new ApiRequestError(status, {
     code: 'HTTP_' + status,
-    message: `Ошибка запроса (HTTP ${status})`,
+    message: `HTTP ${status}`,
   })
 }
 
@@ -113,7 +115,7 @@ http.interceptors.response.use(
           auth.logout()
           onSessionExpired()
           return Promise.reject(
-            new ApiRequestError(401, { code: 'UNAUTHORIZED', message: 'Сессия истекла, войдите снова' }),
+            new ApiRequestError(401, { code: 'SESSION_EXPIRED', message: 'Session expired' }),
           )
         }
       }

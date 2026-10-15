@@ -1,0 +1,497 @@
+{
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "view": "View",
+    "clone": "Clone",
+    "refresh": "Refresh",
+    "reset": "Reset",
+    "add": "Add",
+    "close": "Close",
+    "yes": "Yes",
+    "no": "No",
+    "active": "Active",
+    "inactive": "Inactive",
+    "actions": "Actions",
+    "name": "Name",
+    "id": "ID",
+    "hide": "Hide",
+    "backToProcesses": "Back to processes"
+  },
+  "app": {
+    "name": "Workflow Processing Service",
+    "short": "WPS",
+    "logout": "Log out",
+    "logoutConfirm": {
+      "title": "Log out",
+      "message": "Log out of the system?"
+    }
+  },
+  "language": {
+    "label": "Language"
+  },
+  "route": {
+    "login": "Sign in",
+    "processes": "Processes",
+    "processCreate": "New process",
+    "processDetail": "Process",
+    "processEdit": "Edit process",
+    "executionDetail": "Execution",
+    "users": "Users"
+  },
+  "execution": {
+    "status": {
+      "running": "Running",
+      "retrying": "Retrying",
+      "completed": "Completed",
+      "failed": "Failed"
+    }
+  },
+  "step": {
+    "status": {
+      "success": "Success",
+      "failed": "Failed",
+      "skipped": "Skipped"
+    }
+  },
+  "trigger": {
+    "stream": "CRM event",
+    "manual": "Manual run",
+    "child": "Child"
+  },
+  "role": {
+    "admin": "Administrator",
+    "editor": "Editor",
+    "viewer": "Viewer"
+  },
+  "dict": {
+    "operator": {
+      "equals": "Equals",
+      "not_equals": "Not equals",
+      "contains": "Contains",
+      "not_contains": "Does not contain"
+    },
+    "changeType": {
+      "set_value": "Set to value",
+      "set_from_variable": "Set from variable",
+      "calculate": "Calculate"
+    },
+    "preloadSource": {
+      "object_field": "From object field",
+      "variable_field": "From variable field",
+      "manual": "Manual input"
+    }
+  },
+  "units": {
+    "ms": "{n} ms",
+    "s": "{n} s",
+    "minSec": "{m} min {s} s"
+  },
+  "errors": {
+    "INVALID_CREDENTIALS": "Invalid email or password",
+    "FORBIDDEN": "You do not have permission to perform this operation",
+    "PROCESS_IN_USE": "The process is used by other processes (start_process) and cannot be deleted",
+    "CANNOT_DELETE_SELF": "You cannot delete yourself",
+    "LAST_ADMIN": "You cannot delete or demote the last administrator",
+    "EMAIL_EXISTS": "A user with this email already exists",
+    "CYCLE_DETECTED": "A process launch cycle was detected",
+    "VALIDATION_ERROR": "Validation error",
+    "NETWORK_ERROR": "The server is unavailable. Check your connection.",
+    "SESSION_EXPIRED": "Session expired, please sign in again",
+    "HTTP": "Request failed (HTTP {status})",
+    "unknown": "Unknown error",
+    "chain": "Chain: {chain}"
+  },
+  "nav": {
+    "processes": "Processes",
+    "processCreate": "Create process",
+    "users": "Users"
+  },
+  "auth": {
+    "subtitle": "CRM business process configuration and audit",
+    "email": "Email",
+    "emailPlaceholder": "user{'@'}company.com",
+    "password": "Password",
+    "submit": "Sign in",
+    "emailRequired": "Enter email",
+    "emailInvalid": "Invalid email",
+    "passwordRequired": "Enter password"
+  },
+  "processEdit": {
+    "idVersion": "#{id} · version {version}",
+    "unsaved": "unsaved",
+    "saveAndActivate": "Save and activate",
+    "loadFailed": "Failed to load the process",
+    "modulesRefreshed": "Module list refreshed",
+    "configTitle": "Process configuration",
+    "conditionsBlock": "Block 1. Trigger conditions",
+    "conditionsBlockHint": "all rows are combined with AND",
+    "conditionsAdvanced": "advanced",
+    "rawConditionsWarning": "Conditions are defined in advanced form (groups / OR). The table editor does not support them — they will be saved unchanged.",
+    "convertRaw": "Replace with table conditions (AND)",
+    "actionsBlock": "Block 2. Actions",
+    "actionsBlockHint": "run sequentially",
+    "preloadTitle": "Preload",
+    "modifyTitle": "Modify object / variable",
+    "startTitle": "Start next process",
+    "headerRequired": "Fill in the required process header fields",
+    "fixErrors": "Fix the errors before saving",
+    "formHasErrors": "The form contains errors",
+    "savedVersion": "Process saved (version {version})",
+    "created": "Process created",
+    "cycleDetected": "Process start cycle detected — a process cannot (indirectly) start itself",
+    "serverValidationError": "Server validation error",
+    "serverRejected": "The server rejected the save",
+    "leave": {
+      "title": "Unsaved changes",
+      "message": "You have unsaved changes. Leave the page?",
+      "confirm": "Leave",
+      "cancel": "Stay"
+    },
+    "validation": {
+      "condition": "Condition {n}: {error}",
+      "preload": "Preload {n} ({name}): {error}",
+      "action": "Action {n}: {error}",
+      "startProcess": "Start process {n}: {error}",
+      "conditionField": "specify a field (object.field)",
+      "conditionCompareField": "specify the field path to compare with",
+      "invalidVarName": "invalid variable name",
+      "reservedObject": "the name “object” is reserved",
+      "duplicateVarName": "variable name is already in use",
+      "moduleRequired": "specify a module",
+      "valueRequired": "specify a value",
+      "mustStartWithObject": "path must start with object.",
+      "varMustBeDeclaredAbove": "variable “{name}” must be declared above",
+      "targetField": "specify a target field (object.field or v1.field)",
+      "saveTargetRequired": "specify the variable to save",
+      "selectProcess": "select a process",
+      "selfStart": "a process cannot start itself"
+    }
+  },
+  "processHeader": {
+    "name": "Process name",
+    "namePlaceholder": "e.g. VIP accounts",
+    "nameRequired": "Enter the process name",
+    "nameMax": "No more than {max} characters",
+    "type": "Process type",
+    "topLevel": "Top-level process",
+    "child": "Child process",
+    "status": "Status",
+    "objectType": "Object type (object.type)",
+    "objectTypePlaceholder": "CRM module, e.g. Accounts",
+    "objectTypeRequired": "Select an object type",
+    "refreshModules": "Refresh module list from CRM",
+    "priority": "Priority",
+    "priorityRequired": "Enter a priority",
+    "priorityHint": "Lower runs earlier",
+    "repeatRuns": "Repeat runs",
+    "runOnce": "Run once per record",
+    "runOnceHint": "The process runs at most once for each CRM record. Subsequent saves of the record are ignored. You can lift the restriction for a record on the “Run-once marks” tab. Works only for events that carry a record id."
+  },
+  "conditions": {
+    "empty": "No conditions — the process runs for any event of its object type.",
+    "colField": "Field (object.field / v1.field)",
+    "colOperator": "Comparison",
+    "colValueType": "Compare with",
+    "colValue": "Value to compare",
+    "and": "AND",
+    "valueTypeStatic": "Value",
+    "valueTypeField": "Object/variable field",
+    "fieldPlaceholder": "object.field",
+    "valuePlaceholder": "Value",
+    "removeRow": "Delete row",
+    "addRow": "Add row",
+    "andHint": "All rows are combined with AND"
+  },
+  "preload": {
+    "empty": "Preload is not configured. Add a row to load a related CRM object into a variable.",
+    "colVar": "Variable",
+    "colSource": "Source",
+    "colValue": "Object field / variable field / value",
+    "colModule": "Module (object type)",
+    "colByField": "Lookup field",
+    "modulePlaceholder": "Module",
+    "manualPlaceholder": "Value, e.g. 123",
+    "addRow": "Add row",
+    "byFieldHint": "Lookup field “id” loads by identifier; any other field searches by that field (the first record is used).",
+    "errors": {
+      "varRequired": "Enter a variable name",
+      "varFormat": "Latin letters, digits and “_” only, must not start with a digit",
+      "varReserved": "The name “object” is reserved",
+      "varUnique": "Variable name must be unique",
+      "valueRequired": "Enter a value",
+      "pathFormat": "Enter a path like variable.field",
+      "objectPath": "For “{source}” the path must start with object.",
+      "varDeclaredAbove": "Variable “{name}” must be declared above"
+    }
+  },
+  "modify": {
+    "empty": "No actions. Add a change to an object/variable field or save a variable to CRM.",
+    "columns": {
+      "target": "Object / variable (target)",
+      "changeType": "Change type",
+      "value": "New value"
+    },
+    "saveToCrm": "Save to CRM",
+    "valuePlaceholder": "New value",
+    "variablePlaceholder": "Variable",
+    "modulePlaceholder": "Module (for new variables, optional)",
+    "passthroughHint": "This action can't be edited in the table editor and will be saved unchanged",
+    "preloadSummary": "{var} ← {module} by «{field}» = {value} ({source})",
+    "addModify": "Change",
+    "helpToggle": "“Calculate” expression help",
+    "help": {
+      "title": "Expressions for the “Calculate” type (calculate)",
+      "literals": "Numbers: {num1}, {num2}; quoted strings: {str1}, {str2}",
+      "paths": "Paths: {path1}, {path2} (a missing field yields an empty string)",
+      "operators": "Operators: {ops} and parentheses. {plus} adds numbers and concatenates strings if at least one operand is not a number",
+      "functions": "Functions: {list}",
+      "examples": "Examples: {list}"
+    }
+  },
+  "startProcess": {
+    "empty": "No child processes are started. Child processes start asynchronously after all changes and receive the event and all variables.",
+    "currentProcess": "Current process",
+    "selectPlaceholder": "Select a child process",
+    "notFound": "#{id} (not found among child processes)",
+    "inactive": "inactive",
+    "open": "open",
+    "addProcess": "Add process",
+    "refreshHint": "Refresh the list of child processes",
+    "noneAvailable": "No child processes available (type “Child process”)."
+  },
+  "variables": {
+    "title": "Variables",
+    "kind": {
+      "object": "source object",
+      "preload": "loaded from CRM",
+      "actions_preload": "loaded in actions",
+      "created": "created in process"
+    },
+    "type": "Type:",
+    "typeNotSet": "not set",
+    "hint": "Use dot notation for fields: {example1}, {example2}."
+  },
+  "json": {
+    "label": "JSON",
+    "empty": "Empty value",
+    "invalid": "Invalid JSON: {error}",
+    "valid": "JSON is valid",
+    "format": "Format"
+  },
+  "pathInput": {
+    "placeholder": "object.field"
+  },
+  "processDetail": {
+    "loadFailed": "Failed to load process",
+    "cloned": "Copy «{name}» created",
+    "deleted": "Process deleted",
+    "deleteConfirm": {
+      "title": "Delete process",
+      "message": "Delete process «{name}»? This cannot be undone."
+    },
+    "runOnceTooltip": "Run once: no more than once per CRM record",
+    "runButton": "Run",
+    "actionType": {
+      "modify": "Modify",
+      "saveObject": "Save to CRM",
+      "startProcess": "Start process",
+      "preload": "Preload"
+    },
+    "info": {
+      "objectType": "Object type",
+      "processType": "Process type",
+      "child": "Child process",
+      "topLevel": "Top-level process",
+      "priority": "Priority",
+      "runOnce": "Run once",
+      "runOnceYes": "Yes — at most one run per record",
+      "version": "Version",
+      "createdAt": "Created",
+      "updatedAt": "Updated",
+      "startedFrom": "Started from"
+    },
+    "conditions": {
+      "title": "Block 1. Start conditions",
+      "hint": "all rows combined with AND",
+      "advanced": "Conditions in advanced form (groups / OR)",
+      "empty": "No conditions — runs for any event",
+      "field": "Field",
+      "operator": "Comparison",
+      "valueType": "Compare with",
+      "fromField": "Object/variable field",
+      "staticValue": "Value",
+      "value": "Value"
+    },
+    "preload": {
+      "title": "Block 2. Preload",
+      "empty": "No preload configured",
+      "variable": "Variable",
+      "source": "Source",
+      "fieldOrValue": "Field / value",
+      "module": "Module",
+      "byField": "Lookup field"
+    },
+    "actions": {
+      "title": "Block 3. Actions",
+      "hint": "in execution order",
+      "empty": "No actions",
+      "type": "Type",
+      "description": "Description",
+      "plusSaveToCrm": "+ save to CRM",
+      "saveObject": "Save variable {target} to CRM",
+      "moduleSuffix": "(module {module})",
+      "processFallback": "Process #{id}",
+      "preloadBy": "{module} by «{field}» =",
+      "children": "Child processes:",
+      "childInactive": "inactive"
+    },
+    "executions": {
+      "tab": "Execution log",
+      "status": "Status",
+      "periodStart": "Start date",
+      "periodEnd": "End date",
+      "empty": "No runs",
+      "eventId": "Event ID",
+      "object": "Object",
+      "trigger": "Trigger",
+      "startedAt": "Started",
+      "finishedAt": "Finished",
+      "duration": "Duration"
+    },
+    "runs": {
+      "tab": "Run-once records",
+      "disabledAlert": "Run once is disabled — marks are kept but not checked",
+      "hint": "CRM records for which the process has already run. Repeated events for these records don't start the process. «Reset» removes the mark: the next save of the record will start the process again.",
+      "objectId": "Record ID",
+      "search": "Search",
+      "empty": "No marks",
+      "execution": "Execution",
+      "firstRun": "First run",
+      "blockedCount": "Blocked",
+      "lastBlocked": "Last blocked",
+      "resetConfirm": {
+        "title": "Reset run once",
+        "message": "Remove the mark for record {type} «{id}»? The next save of this record will start the process again."
+      },
+      "resetDone": "Mark removed"
+    },
+    "run": {
+      "title": "Run process manually",
+      "hint": "Enter the source object JSON (as it would come from CRM). The process will run with this object; progress is shown on the execution page.",
+      "force": "Skip condition check (force)",
+      "runOnceNote": "Run once is enabled for this process: «force» does not bypass it. To run again for the same record, remove its mark on the «Run-once records» tab.",
+      "blocked": "The process has already run for this record — no new run was created",
+      "executionLabel": "Execution:",
+      "conditionsNotMet": "Start conditions not met — process was not started",
+      "traceDescription": "Below is the result of checking each condition. Fix the object or enable «Skip condition check».",
+      "jsonObjectExpected": "Expected a JSON object {'{'} … {'}'}",
+      "fixJson": "Fix the object JSON: {error}",
+      "runOnceNotApplied": "Run once not applied: the object has no id",
+      "started": "Process started",
+      "submit": "Run"
+    },
+    "trace": {
+      "field": "Field",
+      "operator": "Operator",
+      "expected": "Expected",
+      "actual": "Actual",
+      "result": "Result",
+      "notChecked": "not checked"
+    }
+  },
+  "processes": {
+    "title": "Processes",
+    "create": "Create process",
+    "searchPlaceholder": "Search by name",
+    "objectType": "Object type",
+    "processType": "Process type",
+    "topLevel": "Top-level",
+    "child": "Child",
+    "activity": "Status",
+    "activeFilter": "Active",
+    "inactiveFilter": "Inactive",
+    "empty": "No processes found",
+    "runOnceHint": "Run once: at most once per CRM record",
+    "priority": "Priority",
+    "updatedAt": "Updated",
+    "cloned": "Copy «{name}» created",
+    "deleteConfirm": "Delete process «{name}»? This cannot be undone.",
+    "deleteTitle": "Delete process",
+    "deleted": "Process deleted"
+  },
+  "executionDetail": {
+    "title": "Execution",
+    "live": "live · updated {time}",
+    "backToProcess": "To process",
+    "loadFailed": "Failed to load execution",
+    "errorTitle": "Execution error",
+    "executionId": "Execution ID",
+    "process": "Process",
+    "version": "(version {version})",
+    "status": "Status",
+    "trigger": "Trigger",
+    "parentExecution": "Parent execution",
+    "retryCount": "Retry count",
+    "eventId": "Event ID",
+    "object": "Object",
+    "duration": "Duration",
+    "startedAt": "Started",
+    "finishedAt": "Finished",
+    "started": "Started",
+    "error": "Error",
+    "children": "Child executions",
+    "steps": {
+      "title": "Execution steps",
+      "subtitle": "audit of every action",
+      "pending": "No steps executed yet…",
+      "empty": "No steps",
+      "requestData": "Request (request_data)",
+      "resultData": "Result (result_data)",
+      "actionType": "Action type",
+      "attempts": "Attempts",
+      "request": "Request",
+      "result": "Result"
+    },
+    "context": {
+      "title": "Execution context",
+      "live": "live context from Redis",
+      "event": "Event (event)",
+      "variables": "Variables (variables)",
+      "conditions": "Conditions (conditions)"
+    }
+  },
+  "users": {
+    "title": "Users",
+    "add": "Add user",
+    "empty": "No users",
+    "email": "Email",
+    "you": "you",
+    "role": "Role",
+    "createdAt": "Created",
+    "updatedAt": "Updated",
+    "cannotDeleteSelf": "You cannot delete yourself",
+    "editTitle": "Edit user",
+    "createTitle": "New user",
+    "password": "Password",
+    "passwordKeep": "Leave empty to keep unchanged",
+    "passwordMin": "At least 6 characters",
+    "passwordRequired": "Enter a password",
+    "emailRequired": "Enter an email",
+    "emailInvalid": "Invalid email",
+    "roleRequired": "Select a role",
+    "create": "Create",
+    "updated": "User updated",
+    "created": "User created",
+    "deleted": "User deleted",
+    "deleteConfirm": "Delete user {email}?",
+    "deleteTitle": "Delete user",
+    "roleHint": {
+      "admin": "full access, user management",
+      "editor": "create and edit processes, manual runs",
+      "viewer": "view processes and audit only"
+    }
+  }
+}

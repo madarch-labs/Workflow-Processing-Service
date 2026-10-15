@@ -17,23 +17,23 @@ function cached(url: string): Promise<DictionaryItem[]> {
   return p
 }
 
-/** Значения по умолчанию, если справочник недоступен */
+/** Значения по умолчанию, если справочник недоступен (подписи переводятся через dict.* в localizeDict) */
 export const FALLBACK = {
   operators: [
-    { value: 'equals', label: 'Равен' },
-    { value: 'not_equals', label: 'Не равен' },
-    { value: 'contains', label: 'Включает' },
-    { value: 'not_contains', label: 'Не включает' },
+    { value: 'equals', label: 'equals' },
+    { value: 'not_equals', label: 'not_equals' },
+    { value: 'contains', label: 'contains' },
+    { value: 'not_contains', label: 'not_contains' },
   ],
   changeTypes: [
-    { value: 'set_value', label: 'Равен значению' },
-    { value: 'set_from_variable', label: 'Равен переменной' },
-    { value: 'calculate', label: 'Расчёт' },
+    { value: 'set_value', label: 'set_value' },
+    { value: 'set_from_variable', label: 'set_from_variable' },
+    { value: 'calculate', label: 'calculate' },
   ],
   preloadSources: [
-    { value: 'object_field', label: 'Из поля объекта' },
-    { value: 'variable_field', label: 'Из поля переменной' },
-    { value: 'manual', label: 'Ручной ввод' },
+    { value: 'object_field', label: 'object_field' },
+    { value: 'variable_field', label: 'variable_field' },
+    { value: 'manual', label: 'manual' },
   ],
 } satisfies Record<string, DictionaryItem[]>
 

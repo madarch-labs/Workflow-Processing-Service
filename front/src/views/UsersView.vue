@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Delete, Edit, Plus } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import { usersApi } from '@/api/users'
 import type { PaginationMeta, Role, User, UserPayload } from '@/types'
-import { formatDate, ROLE_LABELS, ROLE_TAG } from '@/utils/format'
+import { formatDate, ROLE_TAG, roleLabel } from '@/utils/format'
 
+const { t } = useI18n()
 const auth = useAuthStore()
 
 const users = ref<User[]>([])
@@ -16,11 +18,6 @@ const page = ref(1)
 const perPage = ref(20)
 
 const ROLES: Role[] = ['admin', 'editor', 'viewer']
-const ROLE_HINTS: Record<Role, string> = {
-  admin: 'полный доступ, управление пользователями',
-  editor: 'создание и редактирование процессов, ручной запуск',
-  viewer: 'только просмотр процессов и аудита',
-}
 
 async function load(): Promise<void> {
   loading.value = true
@@ -45,16 +42,16 @@ const isEdit = computed(() => editing.value !== null)
 
 const rules = computed<FormRules>(() => ({
   email: [
-    { required: true, message: 'Введите email', trigger: 'blur' },
-    { type: 'email', message: 'Некорректный email', trigger: 'blur' },
+    { required: true, message: t('users.emailRequired'), trigger: 'blur' },
+    { type: 'email', message: t('users.emailInvalid'), trigger: 'blur' },
   ],
   password: isEdit.value
-    ? [{ min: 6, message: 'Не менее 6 символов', trigger: 'blur' }]
+    ? [{ min: 6, message: t('users.passwordMin'), trigger: 'blur' }]
     : [
-        { required: true, message: 'Введите пароль', trigger: 'blur' },
-        { min: 6, message: 'Не менее 6 символов', trigger: 'blur' },
+        { required: true, message: t('users.passwordRequired'), trigger: 'blur' },
+        { min: 6, message: t('users.passwordMin'), trigger: 'blur' },
       ],
-  role: [{ required: true, message: 'Выберите роль', trigger: 'change' }],
+  role: [{ required: true, message: t('users.roleRequired'), trigger: 'change' }],
 }))
 
 function openCreate(): void {
@@ -89,10 +86,10 @@ async function submit(): Promise<void> {
     if (editing.value) {
       const updated = await usersApi.update(editing.value.id, payload)
       if (updated?.id === auth.user?.id) await auth.fetchMe()
-      ElMessage.success('Пользователь обновлён')
+      ElMessage.success(t('users.updated'))
     } else {
       await usersApi.create(payload)
-      ElMessage.success('Пользователь создан')
+      ElMessage.success(t('users.created'))
     }
     dialogVisible.value = false
     load()
@@ -105,9 +102,9 @@ async function submit(): Promise<void> {
 
 async function remove(user: User): Promise<void> {
   try {
-    await ElMessageBox.confirm(`Удалить пользователя ${user.email}?`, 'Удаление пользователя', {
-      confirmButtonText: 'Удалить',
-      cancelButtonText: 'Отмена',
+    await ElMessageBox.confirm(t('users.deleteConfirm', { email: user.email }), t('users.deleteTitle'), {
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
       type: 'warning',
       confirmButtonClass: 'el-button--danger',
     })
@@ -116,7 +113,7 @@ async function remove(user: User): Promise<void> {
   }
   try {
     await usersApi.remove(user.id)
-    ElMessage.success('Пользователь удалён')
+    ElMessage.success(t('users.deleted'))
     if (users.value.length === 1 && page.value > 1) page.value -= 1
     load()
   } catch {
@@ -140,38 +137,38 @@ onMounted(load)
 <template>
   <div>
     <div class="page-header">
-      <h1>Пользователи</h1>
+      <h1>{{ t('users.title') }}</h1>
       <div class="actions">
-        <el-button type="primary" :icon="Plus" @click="openCreate">Добавить пользователя</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">{{ t('users.add') }}</el-button>
       </div>
     </div>
 
     <el-card shadow="never">
-      <el-table v-loading="loading" :data="users" stripe empty-text="Пользователей нет">
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column label="Email" min-width="240">
+      <el-table v-loading="loading" :data="users" stripe :empty-text="t('users.empty')">
+        <el-table-column prop="id" :label="t('common.id')" width="70" />
+        <el-table-column :label="t('users.email')" min-width="240">
           <template #default="{ row }">
             {{ row.email }}
-            <el-tag v-if="row.id === auth.user?.id" size="small" type="info" class="me-tag">это вы</el-tag>
+            <el-tag v-if="row.id === auth.user?.id" size="small" type="info" class="me-tag">{{ t('users.you') }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="Роль" width="170">
+        <el-table-column :label="t('users.role')" width="170">
           <template #default="{ row }">
-            <el-tag :type="ROLE_TAG[row.role]">{{ ROLE_LABELS[row.role] ?? row.role }}</el-tag>
+            <el-tag :type="ROLE_TAG[row.role]">{{ roleLabel(row.role) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="Создан" width="170">
+        <el-table-column :label="t('users.createdAt')" width="170">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="Изменён" width="170">
+        <el-table-column :label="t('users.updatedAt')" width="170">
           <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
         </el-table-column>
-        <el-table-column label="Действия" width="120" fixed="right">
+        <el-table-column :label="t('common.actions')" width="120" fixed="right">
           <template #default="{ row }">
-            <el-tooltip content="Редактировать">
+            <el-tooltip :content="t('common.edit')">
               <el-button :icon="Edit" circle size="small" @click="openEdit(row as User)" />
             </el-tooltip>
-            <el-tooltip :content="row.id === auth.user?.id ? 'Нельзя удалить самого себя' : 'Удалить'">
+            <el-tooltip :content="row.id === auth.user?.id ? t('users.cannotDeleteSelf') : t('common.delete')">
               <el-button
                 :icon="Delete"
                 circle
@@ -201,34 +198,34 @@ onMounted(load)
 
     <el-dialog
       v-model="dialogVisible"
-      :title="isEdit ? 'Редактирование пользователя' : 'Новый пользователь'"
+      :title="isEdit ? t('users.editTitle') : t('users.createTitle')"
       width="480px"
       :close-on-click-modal="false"
     >
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent="submit">
-        <el-form-item label="Email" prop="email">
+        <el-form-item :label="t('users.email')" prop="email">
           <el-input v-model="form.email" autocomplete="off" />
         </el-form-item>
-        <el-form-item label="Пароль" prop="password">
+        <el-form-item :label="t('users.password')" prop="password">
           <el-input
             v-model="form.password"
             type="password"
             show-password
             autocomplete="new-password"
-            :placeholder="isEdit ? 'Оставьте пустым, чтобы не менять' : 'Не менее 6 символов'"
+            :placeholder="isEdit ? t('users.passwordKeep') : t('users.passwordMin')"
           />
         </el-form-item>
-        <el-form-item label="Роль" prop="role">
+        <el-form-item :label="t('users.role')" prop="role">
           <el-radio-group v-model="form.role" class="roles">
             <el-radio v-for="r in ROLES" :key="r" :value="r">
-              <b>{{ ROLE_LABELS[r] }}</b> <span class="muted">— {{ ROLE_HINTS[r] }}</span>
+              <b>{{ roleLabel(r) }}</b> <span class="muted">— {{ t(`users.roleHint.${r}`) }}</span>
             </el-radio>
           </el-radio-group>
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">Отмена</el-button>
-        <el-button type="primary" :loading="saving" @click="submit">{{ isEdit ? 'Сохранить' : 'Создать' }}</el-button>
+        <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="saving" @click="submit">{{ isEdit ? t('common.save') : t('users.create') }}</el-button>
       </template>
     </el-dialog>
   </div>

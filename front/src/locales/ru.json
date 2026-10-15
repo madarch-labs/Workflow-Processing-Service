@@ -1,0 +1,497 @@
+{
+  "common": {
+    "save": "Сохранить",
+    "cancel": "Отмена",
+    "delete": "Удалить",
+    "edit": "Редактировать",
+    "view": "Просмотр",
+    "clone": "Клонировать",
+    "refresh": "Обновить",
+    "reset": "Сбросить",
+    "add": "Добавить",
+    "close": "Закрыть",
+    "yes": "Да",
+    "no": "Нет",
+    "active": "Активен",
+    "inactive": "Неактивен",
+    "actions": "Действия",
+    "name": "Название",
+    "id": "ID",
+    "hide": "Скрыть",
+    "backToProcesses": "К списку процессов"
+  },
+  "app": {
+    "name": "Workflow Processing Service",
+    "short": "WPS",
+    "logout": "Выйти",
+    "logoutConfirm": {
+      "title": "Выход",
+      "message": "Выйти из системы?"
+    }
+  },
+  "language": {
+    "label": "Язык"
+  },
+  "route": {
+    "login": "Вход",
+    "processes": "Процессы",
+    "processCreate": "Новый процесс",
+    "processDetail": "Процесс",
+    "processEdit": "Редактирование процесса",
+    "executionDetail": "Выполнение",
+    "users": "Пользователи"
+  },
+  "execution": {
+    "status": {
+      "running": "Выполняется",
+      "retrying": "Повтор",
+      "completed": "Завершено",
+      "failed": "Ошибка"
+    }
+  },
+  "step": {
+    "status": {
+      "success": "Успех",
+      "failed": "Ошибка",
+      "skipped": "Пропущен"
+    }
+  },
+  "trigger": {
+    "stream": "Событие CRM",
+    "manual": "Ручной запуск",
+    "child": "Дочерний"
+  },
+  "role": {
+    "admin": "Администратор",
+    "editor": "Редактор",
+    "viewer": "Наблюдатель"
+  },
+  "dict": {
+    "operator": {
+      "equals": "Равен",
+      "not_equals": "Не равен",
+      "contains": "Включает",
+      "not_contains": "Не включает"
+    },
+    "changeType": {
+      "set_value": "Равен значению",
+      "set_from_variable": "Равен переменной",
+      "calculate": "Расчёт"
+    },
+    "preloadSource": {
+      "object_field": "Из поля объекта",
+      "variable_field": "Из поля переменной",
+      "manual": "Ручной ввод"
+    }
+  },
+  "units": {
+    "ms": "{n} мс",
+    "s": "{n} с",
+    "minSec": "{m} мин {s} с"
+  },
+  "errors": {
+    "INVALID_CREDENTIALS": "Неверный email или пароль",
+    "FORBIDDEN": "Недостаточно прав для выполнения операции",
+    "PROCESS_IN_USE": "Процесс используется другими процессами (start_process) и не может быть удалён",
+    "CANNOT_DELETE_SELF": "Нельзя удалить самого себя",
+    "LAST_ADMIN": "Нельзя удалить или понизить последнего администратора",
+    "EMAIL_EXISTS": "Пользователь с таким email уже существует",
+    "CYCLE_DETECTED": "Обнаружен цикл запуска процессов",
+    "VALIDATION_ERROR": "Ошибка валидации",
+    "NETWORK_ERROR": "Сервер недоступен. Проверьте подключение.",
+    "SESSION_EXPIRED": "Сессия истекла, войдите снова",
+    "HTTP": "Ошибка запроса (HTTP {status})",
+    "unknown": "Неизвестная ошибка",
+    "chain": "Цепочка: {chain}"
+  },
+  "nav": {
+    "processes": "Процессы",
+    "processCreate": "Создать процесс",
+    "users": "Пользователи"
+  },
+  "auth": {
+    "subtitle": "Настройка и аудит бизнес-процессов CRM",
+    "email": "Email",
+    "emailPlaceholder": "user{'@'}company.ru",
+    "password": "Пароль",
+    "submit": "Войти",
+    "emailRequired": "Введите email",
+    "emailInvalid": "Некорректный email",
+    "passwordRequired": "Введите пароль"
+  },
+  "processEdit": {
+    "idVersion": "#{id} · версия {version}",
+    "unsaved": "не сохранено",
+    "saveAndActivate": "Сохранить и активировать",
+    "loadFailed": "Не удалось загрузить процесс",
+    "modulesRefreshed": "Список модулей обновлён",
+    "configTitle": "Конфигурация процесса",
+    "conditionsBlock": "Блок 1. Условия запуска",
+    "conditionsBlockHint": "все строки объединяются по «И»",
+    "conditionsAdvanced": "расширенные",
+    "rawConditionsWarning": "Условия заданы в расширенной форме (группы / OR). Табличный редактор их не поддерживает — они будут сохранены без изменений.",
+    "convertRaw": "Заменить на табличные условия (И)",
+    "actionsBlock": "Блок 2. Действия",
+    "actionsBlockHint": "выполняются последовательно",
+    "preloadTitle": "Предзагрузка",
+    "modifyTitle": "Изменить объект / переменную",
+    "startTitle": "Запустить следующий процесс",
+    "headerRequired": "Заполните обязательные поля шапки процесса",
+    "fixErrors": "Исправьте ошибки перед сохранением",
+    "formHasErrors": "Форма содержит ошибки",
+    "savedVersion": "Процесс сохранён (версия {version})",
+    "created": "Процесс создан",
+    "cycleDetected": "Обнаружен цикл запуска процессов — процесс не может (косвенно) запускать сам себя",
+    "serverValidationError": "Ошибка валидации на сервере",
+    "serverRejected": "Сервер отклонил сохранение",
+    "leave": {
+      "title": "Несохранённые изменения",
+      "message": "Есть несохранённые изменения. Покинуть страницу?",
+      "confirm": "Покинуть",
+      "cancel": "Остаться"
+    },
+    "validation": {
+      "condition": "Условие {n}: {error}",
+      "preload": "Предзагрузка {n} ({name}): {error}",
+      "action": "Действие {n}: {error}",
+      "startProcess": "Запуск процесса {n}: {error}",
+      "conditionField": "укажите поле (object.поле)",
+      "conditionCompareField": "укажите путь поля для сравнения",
+      "invalidVarName": "некорректное имя переменной",
+      "reservedObject": "имя «object» зарезервировано",
+      "duplicateVarName": "имя переменной уже используется",
+      "moduleRequired": "укажите модуль",
+      "valueRequired": "укажите значение",
+      "mustStartWithObject": "путь должен начинаться с object.",
+      "varMustBeDeclaredAbove": "переменная «{name}» должна быть объявлена выше",
+      "targetField": "укажите поле назначения (object.поле или v1.поле)",
+      "saveTargetRequired": "укажите сохраняемую переменную",
+      "selectProcess": "выберите процесс",
+      "selfStart": "процесс не может запускать сам себя"
+    }
+  },
+  "processHeader": {
+    "name": "Наименование процесса",
+    "namePlaceholder": "Например: VIP-контрагенты",
+    "nameRequired": "Укажите наименование процесса",
+    "nameMax": "Не более {max} символов",
+    "type": "Тип процесса",
+    "topLevel": "Процесс верхнего уровня",
+    "child": "Ведомый процесс",
+    "status": "Статус",
+    "objectType": "Тип объекта (object.type)",
+    "objectTypePlaceholder": "Модуль CRM, например Accounts",
+    "objectTypeRequired": "Выберите тип объекта",
+    "refreshModules": "Обновить список модулей из CRM",
+    "priority": "Приоритет",
+    "priorityRequired": "Укажите приоритет",
+    "priorityHint": "Меньше — выполняется раньше",
+    "repeatRuns": "Повторные запуски",
+    "runOnce": "Однократный запуск для записи",
+    "runOnceHint": "Процесс выполнится для каждой записи CRM не более одного раза. Повторные сохранения записи игнорируются. Снять ограничение для записи можно во вкладке «Однократные запуски». Работает только для событий, у которых есть id записи."
+  },
+  "conditions": {
+    "empty": "Условий нет — процесс запускается для любого события своего типа объекта.",
+    "colField": "Поле (object.поле / v1.поле)",
+    "colOperator": "Тип сравнения",
+    "colValueType": "Зона сравнения",
+    "colValue": "Сравниваемое значение",
+    "and": "И",
+    "valueTypeStatic": "Значение",
+    "valueTypeField": "Из поля объекта/переменной",
+    "fieldPlaceholder": "object.поле",
+    "valuePlaceholder": "Значение",
+    "removeRow": "Удалить строку",
+    "addRow": "Добавить строку",
+    "andHint": "Все строки объединяются по «И» (AND)"
+  },
+  "preload": {
+    "empty": "Предзагрузка не настроена. Добавьте строку, чтобы загрузить связанный объект CRM в переменную.",
+    "colVar": "Переменная",
+    "colSource": "Тип инициации",
+    "colValue": "Поле объекта / переменной / значение",
+    "colModule": "Модуль (тип объекта)",
+    "colByField": "Поле поиска",
+    "modulePlaceholder": "Модуль",
+    "manualPlaceholder": "Значение, например 123",
+    "addRow": "Добавить строку",
+    "byFieldHint": "Поле поиска «id» — загрузка по идентификатору, иное — поиск по полю (берётся первая запись).",
+    "errors": {
+      "varRequired": "Укажите имя переменной",
+      "varFormat": "Только латиница, цифры и «_», не с цифры",
+      "varReserved": "Имя «object» зарезервировано",
+      "varUnique": "Имя переменной должно быть уникальным",
+      "valueRequired": "Укажите значение",
+      "pathFormat": "Укажите путь вида переменная.поле",
+      "objectPath": "Для «{source}» путь начинается с object.",
+      "varDeclaredAbove": "Переменная «{name}» должна быть объявлена выше"
+    }
+  },
+  "modify": {
+    "empty": "Действий нет. Добавьте изменение поля объекта/переменной или сохранение переменной в CRM.",
+    "columns": {
+      "target": "Объект / переменная (target)",
+      "changeType": "Тип изменения",
+      "value": "Новое значение"
+    },
+    "saveToCrm": "Сохранить в CRM",
+    "valuePlaceholder": "Новое значение",
+    "variablePlaceholder": "Переменная",
+    "modulePlaceholder": "Модуль (для новых переменных, необязательно)",
+    "passthroughHint": "Это действие не редактируется в табличном редакторе и будет сохранено без изменений",
+    "preloadSummary": "{var} ← {module} по «{field}» = {value} ({source})",
+    "addModify": "Изменение",
+    "helpToggle": "Справка по выражениям «Расчёт»",
+    "help": {
+      "title": "Выражения для типа «Расчёт» (calculate)",
+      "literals": "Числа: {num1}, {num2}; строки в кавычках: {str1}, {str2}",
+      "paths": "Пути: {path1}, {path2} (отсутствующее поле даёт пустую строку)",
+      "operators": "Операторы: {ops} и скобки. {plus} складывает числа и конкатенирует строки, если хотя бы один операнд — не число",
+      "functions": "Функции: {list}",
+      "examples": "Примеры: {list}"
+    }
+  },
+  "startProcess": {
+    "empty": "Ведомые процессы не запускаются. Ведомые процессы стартуют асинхронно после всех изменений и получают событие и все переменные.",
+    "currentProcess": "Текущий процесс",
+    "selectPlaceholder": "Выберите ведомый процесс",
+    "notFound": "#{id} (не найден среди ведомых)",
+    "inactive": "неактивен",
+    "open": "открыть",
+    "addProcess": "Добавить процесс",
+    "refreshHint": "Обновить список ведомых процессов",
+    "noneAvailable": "Нет доступных ведомых процессов (тип «Ведомый процесс»)."
+  },
+  "variables": {
+    "title": "Переменные",
+    "kind": {
+      "object": "исходный объект",
+      "preload": "загружена из CRM",
+      "actions_preload": "загружена в действиях",
+      "created": "создана в процессе"
+    },
+    "type": "Тип:",
+    "typeNotSet": "не указан",
+    "hint": "Поля указываются через точку: {example1}, {example2}."
+  },
+  "json": {
+    "label": "JSON",
+    "empty": "Пустое значение",
+    "invalid": "Некорректный JSON: {error}",
+    "valid": "JSON корректен",
+    "format": "Форматировать"
+  },
+  "pathInput": {
+    "placeholder": "object.поле"
+  },
+  "processDetail": {
+    "loadFailed": "Не удалось загрузить процесс",
+    "cloned": "Создана копия «{name}»",
+    "deleted": "Процесс удалён",
+    "deleteConfirm": {
+      "title": "Удаление процесса",
+      "message": "Удалить процесс «{name}»? Действие необратимо."
+    },
+    "runOnceTooltip": "Однократный запуск: не более одного раза на запись CRM",
+    "runButton": "Выполнить (Run)",
+    "actionType": {
+      "modify": "Изменение",
+      "saveObject": "Сохранить в CRM",
+      "startProcess": "Запуск процесса",
+      "preload": "Предзагрузка"
+    },
+    "info": {
+      "objectType": "Тип объекта",
+      "processType": "Тип процесса",
+      "child": "Ведомый процесс",
+      "topLevel": "Процесс верхнего уровня",
+      "priority": "Приоритет",
+      "runOnce": "Однократный запуск",
+      "runOnceYes": "Да — не более одного запуска на запись",
+      "version": "Версия",
+      "createdAt": "Создан",
+      "updatedAt": "Изменён",
+      "startedFrom": "Запускается из"
+    },
+    "conditions": {
+      "title": "Блок 1. Условия запуска",
+      "hint": "все строки по «И»",
+      "advanced": "Условия в расширенной форме (группы / OR)",
+      "empty": "Условий нет — запуск для любого события",
+      "field": "Поле",
+      "operator": "Тип сравнения",
+      "valueType": "Зона сравнения",
+      "fromField": "Из поля объекта/переменной",
+      "staticValue": "Значение",
+      "value": "Значение"
+    },
+    "preload": {
+      "title": "Блок 2. Предзагрузка",
+      "empty": "Предзагрузка не настроена",
+      "variable": "Переменная",
+      "source": "Тип инициации",
+      "fieldOrValue": "Поле / значение",
+      "module": "Модуль",
+      "byField": "Поле поиска"
+    },
+    "actions": {
+      "title": "Блок 3. Действия",
+      "hint": "в порядке выполнения",
+      "empty": "Действий нет",
+      "type": "Тип",
+      "description": "Описание",
+      "plusSaveToCrm": "+ сохранить в CRM",
+      "saveObject": "Сохранить переменную {target} в CRM",
+      "moduleSuffix": "(модуль {module})",
+      "processFallback": "Процесс #{id}",
+      "preloadBy": "{module} по «{field}» =",
+      "children": "Ведомые процессы:",
+      "childInactive": "неактивен"
+    },
+    "executions": {
+      "tab": "Журнал выполнения",
+      "status": "Статус",
+      "periodStart": "Начало периода",
+      "periodEnd": "Конец периода",
+      "empty": "Запусков нет",
+      "eventId": "ID события",
+      "object": "Объект",
+      "trigger": "Источник",
+      "startedAt": "Начат",
+      "finishedAt": "Завершён",
+      "duration": "Длительность"
+    },
+    "runs": {
+      "tab": "Однократные запуски",
+      "disabledAlert": "Однократный запуск выключен — отметки сохранены, но не проверяются",
+      "hint": "Записи CRM, для которых процесс уже запускался. Повторные события этих записей процесс не запускают. «Сбросить» снимает отметку: следующее сохранение записи снова запустит процесс.",
+      "objectId": "ID записи",
+      "search": "Найти",
+      "empty": "Отметок нет",
+      "execution": "Выполнение",
+      "firstRun": "Первый запуск",
+      "blockedCount": "Заблокировано",
+      "lastBlocked": "Последняя блокировка",
+      "resetConfirm": {
+        "title": "Сброс однократного запуска",
+        "message": "Снять отметку для записи {type} «{id}»? Следующее сохранение этой записи снова запустит процесс."
+      },
+      "resetDone": "Отметка снята"
+    },
+    "run": {
+      "title": "Ручной запуск процесса",
+      "hint": "Укажите JSON исходного объекта (как он пришёл бы из CRM). Процесс выполнится с этим объектом, прогресс будет виден на странице выполнения.",
+      "force": "Без проверки условий (force)",
+      "runOnceNote": "У процесса включён однократный запуск: «force» не обходит его. Чтобы запустить повторно для той же записи, снимите отметку во вкладке «Однократные запуски».",
+      "blocked": "Процесс уже выполнялся для этой записи — новый запуск не создан",
+      "executionLabel": "Выполнение:",
+      "conditionsNotMet": "Условия запуска не выполнены — процесс не запущен",
+      "traceDescription": "Ниже — результат проверки каждого условия. Исправьте объект или включите «Без проверки условий».",
+      "jsonObjectExpected": "Ожидается JSON-объект {'{'} … {'}'}",
+      "fixJson": "Исправьте JSON объекта: {error}",
+      "runOnceNotApplied": "Однократный запуск не применён: у объекта нет id",
+      "started": "Процесс запущен",
+      "submit": "Запустить"
+    },
+    "trace": {
+      "field": "Поле",
+      "operator": "Оператор",
+      "expected": "Ожидалось",
+      "actual": "Фактически",
+      "result": "Результат",
+      "notChecked": "не проверено"
+    }
+  },
+  "processes": {
+    "title": "Процессы",
+    "create": "Создать процесс",
+    "searchPlaceholder": "Поиск по названию",
+    "objectType": "Тип объекта",
+    "processType": "Тип процесса",
+    "topLevel": "Верхнего уровня",
+    "child": "Ведомый",
+    "activity": "Активность",
+    "activeFilter": "Активные",
+    "inactiveFilter": "Неактивные",
+    "empty": "Процессы не найдены",
+    "runOnceHint": "Однократный запуск: не более одного раза на запись CRM",
+    "priority": "Приоритет",
+    "updatedAt": "Изменён",
+    "cloned": "Создана копия «{name}»",
+    "deleteConfirm": "Удалить процесс «{name}»? Действие необратимо.",
+    "deleteTitle": "Удаление процесса",
+    "deleted": "Процесс удалён"
+  },
+  "executionDetail": {
+    "title": "Выполнение",
+    "live": "live · обновлено {time}",
+    "backToProcess": "К процессу",
+    "loadFailed": "Не удалось загрузить выполнение",
+    "errorTitle": "Ошибка выполнения",
+    "executionId": "ID выполнения",
+    "process": "Процесс",
+    "version": "(версия {version})",
+    "status": "Статус",
+    "trigger": "Источник",
+    "parentExecution": "Родительское выполнение",
+    "retryCount": "Кол-во повторов (retry)",
+    "eventId": "ID события",
+    "object": "Объект",
+    "duration": "Длительность",
+    "startedAt": "Начато",
+    "finishedAt": "Завершено",
+    "started": "Начат",
+    "error": "Ошибка",
+    "children": "Дочерние выполнения",
+    "steps": {
+      "title": "Шаги выполнения",
+      "subtitle": "аудит каждого действия",
+      "pending": "Шаги ещё не выполнены…",
+      "empty": "Шагов нет",
+      "requestData": "Запрос (request_data)",
+      "resultData": "Результат (result_data)",
+      "actionType": "Тип действия",
+      "attempts": "Попыток",
+      "request": "Запрос",
+      "result": "Результат"
+    },
+    "context": {
+      "title": "Контекст выполнения",
+      "live": "живой контекст из Redis",
+      "event": "Событие (event)",
+      "variables": "Переменные (variables)",
+      "conditions": "Условия (conditions)"
+    }
+  },
+  "users": {
+    "title": "Пользователи",
+    "add": "Добавить пользователя",
+    "empty": "Пользователей нет",
+    "email": "Email",
+    "you": "это вы",
+    "role": "Роль",
+    "createdAt": "Создан",
+    "updatedAt": "Изменён",
+    "cannotDeleteSelf": "Нельзя удалить самого себя",
+    "editTitle": "Редактирование пользователя",
+    "createTitle": "Новый пользователь",
+    "password": "Пароль",
+    "passwordKeep": "Оставьте пустым, чтобы не менять",
+    "passwordMin": "Не менее 6 символов",
+    "passwordRequired": "Введите пароль",
+    "emailRequired": "Введите email",
+    "emailInvalid": "Некорректный email",
+    "roleRequired": "Выберите роль",
+    "create": "Создать",
+    "updated": "Пользователь обновлён",
+    "created": "Пользователь создан",
+    "deleted": "Пользователь удалён",
+    "deleteConfirm": "Удалить пользователя {email}?",
+    "deleteTitle": "Удаление пользователя",
+    "roleHint": {
+      "admin": "полный доступ, управление пользователями",
+      "editor": "создание и редактирование процессов, ручной запуск",
+      "viewer": "только просмотр процессов и аудита"
+    }
+  }
+}

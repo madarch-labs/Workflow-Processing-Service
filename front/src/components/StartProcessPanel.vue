@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Delete, Plus, Refresh, Right } from '@element-plus/icons-vue'
 import { processesApi } from '@/api/processes'
 import type { Process, StartProcessRow } from '@/types'
@@ -16,6 +17,8 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{ (e: 'update:startActions', value: StartProcessRow[]): void }>()
+
+const { t } = useI18n()
 
 const children = ref<Process[]>([])
 const loading = ref(false)
@@ -65,25 +68,24 @@ function removeRow(index: number): void {
 <template>
   <div class="start-panel">
     <div v-if="startActions.length === 0" class="empty-row">
-      Ведомые процессы не запускаются. Ведомые процессы стартуют асинхронно после всех изменений и получают событие и
-      все переменные.
+      {{ t('startProcess.empty') }}
     </div>
     <div v-for="(row, index) in startActions" :key="row._key" class="start-row">
-      <span class="current">{{ currentProcessName || 'Текущий процесс' }}</span>
+      <span class="current">{{ currentProcessName || t('startProcess.currentProcess') }}</span>
       <el-icon class="arrow"><Right /></el-icon>
       <el-select
         :model-value="row.process_id"
         filterable
         clearable
         :loading="loading"
-        placeholder="Выберите ведомый процесс"
+        :placeholder="t('startProcess.selectPlaceholder')"
         class="process-select"
         @update:model-value="(v) => updateRow(index, v === '' || v === undefined ? null : (v as number))"
       >
         <el-option
           v-if="row.process_id !== null && !processById(row.process_id)"
           :value="row.process_id"
-          :label="`#${row.process_id} (не найден среди ведомых)`"
+          :label="t('startProcess.notFound', { id: row.process_id })"
         />
         <el-option
           v-for="p in available"
@@ -95,25 +97,25 @@ function removeRow(index: number): void {
           <span>{{ p.name }}</span>
           <span class="opt-meta">
             #{{ p.id }} · {{ p.object_type }}
-            <el-tag v-if="!p.is_active" size="small" type="info">неактивен</el-tag>
+            <el-tag v-if="!p.is_active" size="small" type="info">{{ t('startProcess.inactive') }}</el-tag>
           </span>
         </el-option>
       </el-select>
       <el-tag v-if="processById(row.process_id) && !processById(row.process_id)!.is_active" type="warning" size="small">
-        неактивен
+        {{ t('startProcess.inactive') }}
       </el-tag>
       <router-link v-if="row.process_id !== null" :to="`/processes/${row.process_id}`" target="_blank" class="open-link">
-        открыть
+        {{ t('startProcess.open') }}
       </router-link>
       <el-button :icon="Delete" circle size="small" type="danger" plain @click="removeRow(index)" />
     </div>
     <div class="add-buttons">
-      <el-button :icon="Plus" size="small" @click="addRow">Добавить процесс</el-button>
-      <el-tooltip content="Обновить список ведомых процессов">
+      <el-button :icon="Plus" size="small" @click="addRow">{{ t('startProcess.addProcess') }}</el-button>
+      <el-tooltip :content="t('startProcess.refreshHint')">
         <el-button :icon="Refresh" size="small" :loading="loading" @click="load" />
       </el-tooltip>
       <span v-if="!loading && available.length === 0" class="muted hint">
-        Нет доступных ведомых процессов (тип «Ведомый процесс»).
+        {{ t('startProcess.noneAvailable') }}
       </span>
     </div>
   </div>

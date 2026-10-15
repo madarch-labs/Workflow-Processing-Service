@@ -9,29 +9,21 @@
         "ext-pdo": "*",
         "ext-redis": "*",
         "ext-swoole": ">=5.1",
-        "sidalex/swoole-app": "@dev"
+        "sidalex/swoole-app": "^0.3.0"
     },
-    "repositories": [
-        {
-            "type": "path",
-            "url": "../doc/SwooleApp",
-            "options": {
-                "symlink": true
-            }
-        }
-    ],
     "autoload": {
         "psr-4": {
             "Wps\\": "src/"
         }
     },
     "config": {
+        "preferred-install": "dist",
         "sort-packages": true,
         "allow-plugins": {
             "yurunsoft/composer-include-files": true,
             "yurunsoft/guzzle-swoole": true
         }
     },
-    "minimum-stability": "dev",
+    "minimum-stability": "stable",
     "prefer-stable": true
 }

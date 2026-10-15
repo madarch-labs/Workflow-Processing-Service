@@ -1,5 +1,7 @@
+import { watch } from 'vue'
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { i18n, t } from '@/i18n'
 import type { Role } from '@/types'
 
 declare module 'vue-router' {
@@ -8,7 +10,8 @@ declare module 'vue-router' {
     public?: boolean
     /** Разрешённые роли (пусто — все авторизованные) */
     roles?: Role[]
-    title?: string
+    /** Ключ перевода заголовка страницы (route.*) */
+    titleKey?: `route.${string}`
   }
 }
 
@@ -19,44 +22,44 @@ const routes: RouteRecordRaw[] = [
     path: '/login',
     name: 'login',
     component: () => import('@/views/LoginView.vue'),
-    meta: { public: true, title: 'Вход' },
+    meta: { public: true, titleKey: 'route.login' },
   },
   { path: '/', redirect: '/processes' },
   {
     path: '/processes',
     name: 'processes',
     component: () => import('@/views/ProcessesView.vue'),
-    meta: { title: 'Процессы' },
+    meta: { titleKey: 'route.processes' },
   },
   {
     path: '/processes/create',
     name: 'process-create',
     component: () => import('@/views/ProcessEditView.vue'),
-    meta: { roles: EDITORS, title: 'Новый процесс' },
+    meta: { roles: EDITORS, titleKey: 'route.processCreate' },
   },
   {
     path: '/processes/:id(\\d+)',
     name: 'process-detail',
     component: () => import('@/views/ProcessDetailView.vue'),
-    meta: { title: 'Процесс' },
+    meta: { titleKey: 'route.processDetail' },
   },
   {
     path: '/processes/:id(\\d+)/edit',
     name: 'process-edit',
     component: () => import('@/views/ProcessEditView.vue'),
-    meta: { roles: EDITORS, title: 'Редактирование процесса' },
+    meta: { roles: EDITORS, titleKey: 'route.processEdit' },
   },
   {
     path: '/executions/:id',
     name: 'execution-detail',
     component: () => import('@/views/ExecutionDetailView.vue'),
-    meta: { title: 'Выполнение' },
+    meta: { titleKey: 'route.executionDetail' },
   },
   {
     path: '/users',
     name: 'users',
     component: () => import('@/views/UsersView.vue'),
-    meta: { roles: ['admin'], title: 'Пользователи' },
+    meta: { roles: ['admin'], titleKey: 'route.users' },
   },
   { path: '/:pathMatch(.*)*', redirect: '/processes' },
 ]
@@ -94,8 +97,12 @@ router.beforeEach(async (to) => {
   return true
 })
 
-router.afterEach((to) => {
-  document.title = to.meta.title ? `${to.meta.title} — WPS` : 'WPS'
-})
+function updateDocumentTitle(): void {
+  const key = router.currentRoute.value.meta.titleKey
+  document.title = key ? `${t(key)} — WPS` : 'WPS'
+}
+
+router.afterEach(updateDocumentTitle)
+watch(i18n.global.locale, updateDocumentTitle)
 
 export default router

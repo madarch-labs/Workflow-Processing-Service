@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ArrowDown, ArrowUp, Delete, Plus } from '@element-plus/icons-vue'
 import type { DictionaryItem, PreloadAction, PreloadSource } from '@/types'
 import { nextFreeVar, pathVar, VAR_NAME_RE } from '@/utils/variables'
@@ -17,6 +18,8 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{ (e: 'update:preload', value: PreloadAction[]): void }>()
+
+const { t } = useI18n()
 
 function updateRow(index: number, patch: Partial<PreloadAction>): void {
   emit(
@@ -63,23 +66,26 @@ function onSourceChange(index: number, source: PreloadSource): void {
 /** Текст ошибки строки (или null) */
 function varError(index: number): string | null {
   const name = props.preload[index].var.trim()
-  if (!name) return 'Укажите имя переменной'
-  if (!VAR_NAME_RE.test(name)) return 'Только латиница, цифры и «_», не с цифры'
-  if (name === 'object') return 'Имя «object» зарезервировано'
-  if (props.preload.findIndex((p) => p.var.trim() === name) !== index) return 'Имя переменной должно быть уникальным'
+  if (!name) return t('preload.errors.varRequired')
+  if (!VAR_NAME_RE.test(name)) return t('preload.errors.varFormat')
+  if (name === 'object') return t('preload.errors.varReserved')
+  if (props.preload.findIndex((p) => p.var.trim() === name) !== index) return t('preload.errors.varUnique')
   return null
 }
 
 function valueError(index: number): string | null {
   const row = props.preload[index]
   const value = row.value.trim()
-  if (row.source === 'manual') return value ? null : 'Укажите значение'
-  if (!value || !value.includes('.') || value.endsWith('.')) return 'Укажите путь вида переменная.поле'
-  if (row.source === 'object_field' && !value.startsWith('object.')) return 'Для «Из поля объекта» путь начинается с object.'
+  if (row.source === 'manual') return value ? null : t('preload.errors.valueRequired')
+  if (!value || !value.includes('.') || value.endsWith('.')) return t('preload.errors.pathFormat')
+  if (row.source === 'object_field' && !value.startsWith('object.')) {
+    const source = props.sources.find((s) => s.value === 'object_field')?.label ?? t('dict.preloadSource.object_field')
+    return t('preload.errors.objectPath', { source })
+  }
   if (row.source === 'variable_field') {
     const v = pathVar(value)
     const earlier = props.preload.slice(0, index).map((p) => p.var.trim())
-    if (!earlier.includes(v)) return `Переменная «${v}» должна быть объявлена выше`
+    if (!earlier.includes(v)) return t('preload.errors.varDeclaredAbove', { name: v })
   }
   return null
 }
@@ -87,7 +93,7 @@ function valueError(index: number): string | null {
 function placeholder(source: PreloadSource): string {
   if (source === 'object_field') return 'object.account_id'
   if (source === 'variable_field') return 'v1.contact_id'
-  return 'Значение, например 123'
+  return t('preload.manualPlaceholder')
 }
 
 const GRID = '90px 1.1fr 1.3fr 1.2fr 0.8fr 100px'
@@ -96,15 +102,15 @@ const GRID = '90px 1.1fr 1.3fr 1.2fr 0.8fr 100px'
 <template>
   <div class="preload-panel">
     <div v-if="preload.length === 0" class="empty-row">
-      Предзагрузка не настроена. Добавьте строку, чтобы загрузить связанный объект CRM в переменную.
+      {{ t('preload.empty') }}
     </div>
     <template v-else>
       <div class="row-grid head" :style="{ gridTemplateColumns: GRID }">
-        <span>Переменная</span>
-        <span>Тип инициации</span>
-        <span>Поле объекта / переменной / значение</span>
-        <span>Модуль (тип объекта)</span>
-        <span>Поле поиска</span>
+        <span>{{ t('preload.colVar') }}</span>
+        <span>{{ t('preload.colSource') }}</span>
+        <span>{{ t('preload.colValue') }}</span>
+        <span>{{ t('preload.colModule') }}</span>
+        <span>{{ t('preload.colByField') }}</span>
         <span></span>
       </div>
       <div v-for="(p, index) in preload" :key="index" class="row-grid row" :style="{ gridTemplateColumns: GRID }">
@@ -146,7 +152,7 @@ const GRID = '90px 1.1fr 1.3fr 1.2fr 0.8fr 100px'
           filterable
           allow-create
           default-first-option
-          placeholder="Модуль"
+          :placeholder="t('preload.modulePlaceholder')"
           :class="{ 'is-invalid': !p.module.trim() }"
           @update:model-value="(v: string) => updateRow(index, { module: v ?? '' })"
         >
@@ -172,9 +178,9 @@ const GRID = '90px 1.1fr 1.3fr 1.2fr 0.8fr 100px'
       </div>
     </template>
     <div class="add-buttons">
-      <el-button :icon="Plus" size="small" @click="addRow">Добавить строку</el-button>
+      <el-button :icon="Plus" size="small" @click="addRow">{{ t('preload.addRow') }}</el-button>
       <span class="muted hint">
-        Поле поиска «id» — загрузка по идентификатору, иное — поиск по полю (берётся первая запись).
+        {{ t('preload.byFieldHint') }}
       </span>
     </div>
   </div>

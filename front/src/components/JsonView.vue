@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { prettyJson } from '@/utils/format'
 
 const props = withDefaults(defineProps<{ value: unknown; collapsible?: boolean; label?: string }>(), {
   collapsible: false,
-  label: 'JSON',
+  label: undefined,
 })
+
+const { t } = useI18n()
+const labelText = computed(() => props.label ?? t('json.label'))
 
 const open = ref(false)
 const text = computed(() => prettyJson(props.value))
@@ -26,7 +30,7 @@ const preview = computed(() => {
   <div v-else-if="collapsible">
     <el-button link type="primary" size="small" @click="open = !open">
       <el-icon><component :is="open ? 'ArrowDown' : 'ArrowRight'" /></el-icon>
-      {{ open ? 'Скрыть' : label }}
+      {{ open ? t('common.hide') : labelText }}
     </el-button>
     <span v-if="!open" class="mono preview">{{ preview }}</span>
     <pre v-if="open" class="json-block">{{ text }}</pre>

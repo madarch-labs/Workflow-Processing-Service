@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ArrowDown, ArrowUp, Delete, Plus, QuestionFilled, Upload } from '@element-plus/icons-vue'
 import type { ChangeType, DictionaryItem, ModifyRow } from '@/types'
 import { rowKey } from '@/utils/keys'
@@ -18,6 +19,8 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{ (e: 'update:modifyActions', value: ModifyRow[]): void }>()
+
+const { t } = useI18n()
 
 const showHelp = ref(false)
 
@@ -58,17 +61,23 @@ function move(index: number, delta: number): void {
 function valuePlaceholder(ct: ChangeType): string {
   if (ct === 'set_from_variable') return 'v2.sale'
   if (ct === 'calculate') return "object.amount * 0.9 + 10"
-  return 'Новое значение'
+  return t('modify.valuePlaceholder')
 }
 
 function targetInvalid(target: string): boolean {
-  const t = target.trim()
-  return !t || !t.includes('.') || t.endsWith('.')
+  const trimmed = target.trim()
+  return !trimmed || !trimmed.includes('.') || trimmed.endsWith('.')
 }
 
 function passthroughSummary(raw: Record<string, unknown>): string {
   if (raw.type === 'preload') {
-    return `${raw.var ?? '?'} ← ${raw.module ?? '?'} по «${raw.by_field ?? 'id'}» = ${raw.value ?? ''} (${raw.source ?? ''})`
+    return t('modify.preloadSummary', {
+      var: String(raw.var ?? '?'),
+      module: String(raw.module ?? '?'),
+      field: String(raw.by_field ?? 'id'),
+      value: String(raw.value ?? ''),
+      source: String(raw.source ?? ''),
+    })
   }
   const rest = { ...raw }
   delete rest.type
@@ -87,15 +96,15 @@ const GRID = '1.2fr 1fr 1.6fr 110px 100px'
 <template>
   <div class="modify-panel">
     <div v-if="modifyActions.length === 0" class="empty-row">
-      Действий нет. Добавьте изменение поля объекта/переменной или сохранение переменной в CRM.
+      {{ t('modify.empty') }}
     </div>
     <template v-else>
       <div class="row-grid head" :style="{ gridTemplateColumns: '28px ' + GRID }">
         <span>#</span>
-        <span>Объект / переменная (target)</span>
-        <span>Тип изменения</span>
-        <span>Новое значение</span>
-        <span>Сохранить в CRM</span>
+        <span>{{ t('modify.columns.target') }}</span>
+        <span>{{ t('modify.columns.changeType') }}</span>
+        <span>{{ t('modify.columns.value') }}</span>
+        <span>{{ t('modify.saveToCrm') }}</span>
         <span></span>
       </div>
       <div
@@ -148,7 +157,7 @@ const GRID = '1.2fr 1fr 1.6fr 110px 100px'
             :model-value="row.save_to_crm"
             @update:model-value="(v) => updateRow(index, { save_to_crm: !!v })"
           >
-            Да
+            {{ t('common.yes') }}
           </el-checkbox>
         </template>
 
@@ -159,13 +168,13 @@ const GRID = '1.2fr 1fr 1.6fr 110px 100px'
             filterable
             allow-create
             default-first-option
-            placeholder="Переменная"
+            :placeholder="t('modify.variablePlaceholder')"
             @update:model-value="(v: string) => updateRow(index, { target: v ?? '' })"
           >
             <el-option v-for="n in saveTargets" :key="n" :label="n" :value="n" />
           </el-select>
           <div class="save-label">
-            <el-tag type="success" effect="plain"><el-icon><Upload /></el-icon> Сохранить в CRM</el-tag>
+            <el-tag type="success" effect="plain"><el-icon><Upload /></el-icon> {{ t('modify.saveToCrm') }}</el-tag>
           </div>
           <el-select
             :model-value="row.module ?? ''"
@@ -173,7 +182,7 @@ const GRID = '1.2fr 1fr 1.6fr 110px 100px'
             allow-create
             default-first-option
             clearable
-            placeholder="Модуль (для новых переменных, необязательно)"
+            :placeholder="t('modify.modulePlaceholder')"
             @update:model-value="(v: string) => updateRow(index, { module: v ?? '' })"
           >
             <el-option v-for="m in modules" :key="m.value" :label="m.label" :value="m.value" />
@@ -186,7 +195,7 @@ const GRID = '1.2fr 1fr 1.6fr 110px 100px'
           <div class="passthrough">
             <el-tag type="info">{{ (row.raw as Record<string, unknown>).type }}</el-tag>
             <span class="mono">{{ passthroughSummary(row.raw as Record<string, unknown>) }}</span>
-            <el-tooltip content="Это действие не редактируется в табличном редакторе и будет сохранено без изменений">
+            <el-tooltip :content="t('modify.passthroughHint')">
               <el-icon class="muted"><InfoFilled /></el-icon>
             </el-tooltip>
           </div>
@@ -207,32 +216,44 @@ const GRID = '1.2fr 1fr 1.6fr 110px 100px'
     </template>
 
     <div class="add-buttons">
-      <el-button :icon="Plus" size="small" @click="addModify">Изменение</el-button>
-      <el-button :icon="Upload" size="small" @click="addSave">Сохранить в CRM</el-button>
+      <el-button :icon="Plus" size="small" @click="addModify">{{ t('modify.addModify') }}</el-button>
+      <el-button :icon="Upload" size="small" @click="addSave">{{ t('modify.saveToCrm') }}</el-button>
       <el-button link size="small" type="primary" :icon="QuestionFilled" @click="showHelp = !showHelp">
-        Справка по выражениям «Расчёт»
+        {{ t('modify.helpToggle') }}
       </el-button>
     </div>
 
     <el-collapse-transition>
       <el-alert v-show="showHelp" type="info" :closable="false" class="calc-help">
-        <template #title>Выражения для типа «Расчёт» (calculate)</template>
+        <template #title>{{ t('modify.help.title') }}</template>
         <ul>
-          <li>Числа: <code>10</code>, <code>0.9</code>; строки в кавычках: <code>'abc'</code>, <code>"abc"</code></li>
-          <li>Пути: <code>object.amount</code>, <code>v1.price</code> (отсутствующее поле даёт пустую строку)</li>
-          <li>
-            Операторы: <code>+ - * / %</code> и скобки. <code>+</code> складывает числа и конкатенирует строки, если
-            хотя бы один операнд — не число
-          </li>
-          <li>
-            Функции: <code>concat(a, b, …)</code>, <code>upper(s)</code>, <code>lower(s)</code>, <code>trim(s)</code>,
-            <code>len(s)</code>, <code>substr(s, start[, length])</code>, <code>round(x[, precision])</code>,
-            <code>abs(x)</code>, <code>min(a, b, …)</code>, <code>max(a, b, …)</code>
-          </li>
-          <li>
-            Примеры: <code>object.amount * 0.9 + 10</code>, <code>concat(upper(v1.name), ' — ', object.id)</code>,
-            <code>round(v2.price / 3, 2)</code>
-          </li>
+          <i18n-t keypath="modify.help.literals" tag="li" scope="global">
+            <template #num1><code>10</code></template>
+            <template #num2><code>0.9</code></template>
+            <template #str1><code>'abc'</code></template>
+            <template #str2><code>"abc"</code></template>
+          </i18n-t>
+          <i18n-t keypath="modify.help.paths" tag="li" scope="global">
+            <template #path1><code>object.amount</code></template>
+            <template #path2><code>v1.price</code></template>
+          </i18n-t>
+          <i18n-t keypath="modify.help.operators" tag="li" scope="global">
+            <template #ops><code>+ - * / %</code></template>
+            <template #plus><code>+</code></template>
+          </i18n-t>
+          <i18n-t keypath="modify.help.functions" tag="li" scope="global">
+            <template #list>
+              <code>concat(a, b, …)</code>, <code>upper(s)</code>, <code>lower(s)</code>, <code>trim(s)</code>,
+              <code>len(s)</code>, <code>substr(s, start[, length])</code>, <code>round(x[, precision])</code>,
+              <code>abs(x)</code>, <code>min(a, b, …)</code>, <code>max(a, b, …)</code>
+            </template>
+          </i18n-t>
+          <i18n-t keypath="modify.help.examples" tag="li" scope="global">
+            <template #list>
+              <code>object.amount * 0.9 + 10</code>, <code>concat(upper(v1.name), ' — ', object.id)</code>,
+              <code>round(v2.price / 3, 2)</code>
+            </template>
+          </i18n-t>
         </ul>
       </el-alert>
     </el-collapse-transition>

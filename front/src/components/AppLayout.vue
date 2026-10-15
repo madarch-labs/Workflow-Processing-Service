@@ -4,8 +4,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { SwitchButton } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
-import { ROLE_LABELS, ROLE_TAG } from '@/utils/format'
+import { useI18n } from 'vue-i18n'
+import { roleLabel, ROLE_TAG } from '@/utils/format'
+import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 
+const { t } = useI18n()
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
@@ -18,9 +21,9 @@ const activeMenu = computed(() => {
 
 async function onLogout(): Promise<void> {
   try {
-    await ElMessageBox.confirm('Выйти из системы?', 'Выход', {
-      confirmButtonText: 'Выйти',
-      cancelButtonText: 'Отмена',
+    await ElMessageBox.confirm(t('app.logoutConfirm.message'), t('app.logoutConfirm.title'), {
+      confirmButtonText: t('app.logout'),
+      cancelButtonText: t('common.cancel'),
       type: 'warning',
     })
   } catch {
@@ -36,18 +39,19 @@ async function onLogout(): Promise<void> {
     <el-header class="layout-header">
       <router-link to="/processes" class="brand">
         <el-icon :size="22"><Share /></el-icon>
-        <span class="brand-title">Workflow Processing Service</span>
-        <span class="brand-short">WPS</span>
+        <span class="brand-title">{{ t('app.name') }}</span>
+        <span class="brand-short">{{ t('app.short') }}</span>
       </router-link>
       <div class="user-box">
         <template v-if="auth.user">
           <el-icon><User /></el-icon>
           <span class="email">{{ auth.user.email }}</span>
           <el-tag :type="ROLE_TAG[auth.user.role]" size="small" effect="dark">
-            {{ ROLE_LABELS[auth.user.role] ?? auth.user.role }}
+            {{ roleLabel(auth.user.role) }}
           </el-tag>
         </template>
-        <el-button text :icon="SwitchButton" @click="onLogout">Выйти</el-button>
+        <LanguageSwitcher dark />
+        <el-button text :icon="SwitchButton" @click="onLogout">{{ t('app.logout') }}</el-button>
       </div>
     </el-header>
     <el-container class="layout-body">
@@ -55,15 +59,15 @@ async function onLogout(): Promise<void> {
         <el-menu :default-active="activeMenu" router class="side-menu">
           <el-menu-item index="/processes">
             <el-icon><List /></el-icon>
-            <span>Процессы</span>
+            <span>{{ t('nav.processes') }}</span>
           </el-menu-item>
           <el-menu-item v-if="auth.canEdit" index="/processes/create">
             <el-icon><CirclePlus /></el-icon>
-            <span>Создать процесс</span>
+            <span>{{ t('nav.processCreate') }}</span>
           </el-menu-item>
           <el-menu-item v-if="auth.isAdmin" index="/users">
             <el-icon><UserFilled /></el-icon>
-            <span>Пользователи</span>
+            <span>{{ t('nav.users') }}</span>
           </el-menu-item>
         </el-menu>
       </el-aside>

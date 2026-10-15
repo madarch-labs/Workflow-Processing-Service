@@ -9,7 +9,7 @@ use Swoole\Http\Response;
 use Wps\Controllers\BaseController;
 
 /**
- * run_once marks of a process: records the process has already been started for (doc/idempotentie_plan.md).
+ * run_once marks of a process: records the process has already been started for (md/idempotentie_plan.md).
  */
 #[Route(uri: '/api/processes/{id}/runs', method: 'GET')]
 final class ProcessRunsController extends BaseController

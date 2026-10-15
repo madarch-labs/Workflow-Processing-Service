@@ -22,7 +22,7 @@ use Wps\Support\Uuid;
  *  1. idempotency  SET NX idem:{event_id}:{process_id} — a redelivered event resumes/skips instead of re-running;
  *  2. conditions   object.* rows first; rows on variables trigger a lazy preload (PreparedRun);
  *     run_once     process flag: one start per CRM record — atomic mark in process_object_runs
- *                  (doc/idempotentie_plan.md), taken only when the conditions are met;
+ *                  (md/idempotentie_plan.md), taken only when the conditions are met;
  *  3. execution    row in PostgreSQL + context Hash exec:{uuid} in Redis;
  *  4. steps        preload rows, then actions, strictly sequentially; after every step the context and
  *                  current_step are written to Redis and the step to the audit table;
@@ -125,7 +125,7 @@ final class ExecutionEngineService
     }
 
     /**
-     * run_once (doc/idempotentie_plan.md): atomically takes the slot "process × CRM record" before the start.
+     * run_once (md/idempotentie_plan.md): atomically takes the slot "process × CRM record" before the start.
      * The record is the object of the event — its "id" is the id of the saved CRM record (for a child
      * process: the record of the parent event). Without an id the flag is not applied (accepted limitation).
      *

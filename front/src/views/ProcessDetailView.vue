@@ -2,12 +2,14 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useI18n } from 'vue-i18n'
 import { CopyDocument, Delete, Edit, Refresh, VideoPlay } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import { processesApi } from '@/api/processes'
 import { executionsApi } from '@/api/executions'
 import { dictionariesApi, FALLBACK } from '@/api/dictionaries'
 import { ApiRequestError } from '@/api/client'
+import { apiErrorTitle } from '@/utils/errors'
 import type {
   Condition,
   ConditionGroup,
@@ -20,13 +22,22 @@ import type {
   ProcessAction,
   ProcessObjectRun,
 } from '@/types'
-import { EXECUTION_STATUS, formatDate, formatDuration, shortId, statusTag, TRIGGER_LABELS } from '@/utils/format'
+import {
+  EXECUTION_STATUSES,
+  formatDate,
+  formatDuration,
+  localizeDict,
+  shortId,
+  statusTag,
+  triggerLabel,
+} from '@/utils/format'
 import JsonEditor from '@/components/JsonEditor.vue'
 import JsonView from '@/components/JsonView.vue'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const { t } = useI18n()
 
 const id = computed(() => Number(route.params.id))
 const process = ref<Process | null>(null)
@@ -37,6 +48,10 @@ const operators = ref<DictionaryItem[]>(FALLBACK.operators)
 const changeTypes = ref<DictionaryItem[]>(FALLBACK.changeTypes)
 const preloadSources = ref<DictionaryItem[]>(FALLBACK.preloadSources)
 const processNames = ref<Record<number, string>>({})
+
+const operatorsView = computed(() => localizeDict('operator', operators.value))
+const changeTypesView = computed(() => localizeDict('changeType', changeTypes.value))
+const preloadSourcesView = computed(() => localizeDict('preloadSource', preloadSources.value))
 
 function dictLabel(list: DictionaryItem[], value: string): string {
   return list.find((d) => d.value === value)?.label ?? value
@@ -55,14 +70,13 @@ const preload = computed(() => process.value?.definition?.preload ?? [])
 const actions = computed<ProcessAction[]>(() => process.value?.definition?.actions ?? [])
 
 function actionTypeLabel(type: string): string {
-  return (
-    {
-      modify: 'Изменение',
-      save_object: 'Сохранить в CRM',
-      start_process: 'Запуск процесса',
-      preload: 'Предзагрузка',
-    }[type] ?? type
-  )
+  const keys: Record<string, string> = {
+    modify: 'processDetail.actionType.modify',
+    save_object: 'processDetail.actionType.saveObject',
+    start_process: 'processDetail.actionType.startProcess',
+    preload: 'processDetail.actionType.preload',
+  }
+  return keys[type] ? t(keys[type]) : type
 }
 
 function startIds(a: ProcessAction): number[] {
@@ -87,7 +101,7 @@ async function load(): Promise<void> {
     for (const r of [...(p.references?.children ?? []), ...(p.references?.parents ?? [])]) names[r.id] = r.name
     processNames.value = names
   } catch (e) {
-    loadError.value = e instanceof ApiRequestError ? e.message : 'Не удалось загрузить процесс'
+    loadError.value = e instanceof ApiRequestError ? apiErrorTitle(e) : t('processDetail.loadFailed')
   } finally {
     loading.value = false
   }
@@ -98,7 +112,7 @@ async function clone(): Promise<void> {
   if (!process.value) return
   try {
     const copy = await processesApi.clone(process.value.id)
-    ElMessage.success(`Создана копия «${copy.name}»`)
+    ElMessage.success(t('processDetail.cloned', { name: copy.name }))
     router.push(`/processes/${copy.id}/edit`)
   } catch {
     /* сообщение уже показано */
@@ -108,18 +122,22 @@ async function clone(): Promise<void> {
 async function remove(): Promise<void> {
   if (!process.value) return
   try {
-    await ElMessageBox.confirm(`Удалить процесс «${process.value.name}»? Действие необратимо.`, 'Удаление процесса', {
-      confirmButtonText: 'Удалить',
-      cancelButtonText: 'Отмена',
-      type: 'warning',
-      confirmButtonClass: 'el-button--danger',
-    })
+    await ElMessageBox.confirm(
+      t('processDetail.deleteConfirm.message', { name: process.value.name }),
+      t('processDetail.deleteConfirm.title'),
+      {
+        confirmButtonText: t('common.delete'),
+        cancelButtonText: t('common.cancel'),
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger',
+      },
+    )
   } catch {
     return
   }
   try {
     await processesApi.remove(process.value.id)
-    ElMessage.success('Процесс удалён')
+    ElMessage.success(t('processDetail.deleted'))
     router.push('/processes')
   } catch {
     /* сообщение уже показано */
@@ -164,7 +182,7 @@ function openRun(): void {
 const runJsonError = computed(() => {
   try {
     const v = JSON.parse(runJson.value)
-    if (v === null || typeof v !== 'object' || Array.isArray(v)) return 'Ожидается JSON-объект { … }'
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return t('processDetail.run.jsonObjectExpected')
     return null
   } catch (e) {
     return (e as Error).message
@@ -174,7 +192,7 @@ const runJsonError = computed(() => {
 async function doRun(): Promise<void> {
   if (!process.value) return
   if (runJsonError.value) {
-    ElMessage.error('Исправьте JSON объекта: ' + runJsonError.value)
+    ElMessage.error(t('processDetail.run.fixJson', { error: runJsonError.value }))
     return
   }
   running.value = true
@@ -184,18 +202,18 @@ async function doRun(): Promise<void> {
     const { status, data } = await processesApi.run(process.value.id, JSON.parse(runJson.value), runForce.value)
     if (data.run_once_blocked) {
       runBlockedBy.value = data.previous_execution_id ?? null
-      ElMessage.warning('Процесс уже выполнялся для этой записи — новый запуск не создан')
+      ElMessage.warning(t('processDetail.run.blocked'))
       loadRuns()
     } else if (data.execution_id && (status === 201 || data.conditions_met)) {
       if (process.value.run_once && data.run_once_applied === false) {
-        ElMessage.warning('Однократный запуск не применён: у объекта нет id')
+        ElMessage.warning(t('processDetail.run.runOnceNotApplied'))
       }
-      ElMessage.success('Процесс запущен')
+      ElMessage.success(t('processDetail.run.started'))
       runVisible.value = false
       router.push(`/executions/${data.execution_id}`)
     } else {
       runTrace.value = data.conditions ?? []
-      ElMessage.warning('Условия запуска не выполнены — процесс не запущен')
+      ElMessage.warning(t('processDetail.run.conditionsNotMet'))
     }
   } catch {
     /* сообщение уже показано */
@@ -301,16 +319,16 @@ function onRunsSize(size: number): void {
 async function resetRun(row: ProcessObjectRun): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `Снять отметку для записи ${row.object_type} «${row.object_id}»? Следующее сохранение этой записи снова запустит процесс.`,
-      'Сброс однократного запуска',
-      { confirmButtonText: 'Сбросить', cancelButtonText: 'Отмена', type: 'warning' },
+      t('processDetail.runs.resetConfirm.message', { type: row.object_type, id: row.object_id }),
+      t('processDetail.runs.resetConfirm.title'),
+      { confirmButtonText: t('common.reset'), cancelButtonText: t('common.cancel'), type: 'warning' },
     )
   } catch {
     return
   }
   try {
     await processesApi.resetRun(id.value, row.object_type, row.object_id)
-    ElMessage.success('Отметка снята')
+    ElMessage.success(t('processDetail.runs.resetDone'))
     loadRuns()
   } catch {
     /* сообщение уже показано */
@@ -329,9 +347,9 @@ onMounted(() => {
 
 <template>
   <div v-loading="loading" class="process-detail">
-    <el-result v-if="loadError" icon="error" title="Не удалось загрузить процесс" :sub-title="loadError">
+    <el-result v-if="loadError" icon="error" :title="t('processDetail.loadFailed')" :sub-title="loadError">
       <template #extra>
-        <el-button @click="router.push('/processes')">К списку процессов</el-button>
+        <el-button @click="router.push('/processes')">{{ t('common.backToProcesses') }}</el-button>
       </template>
     </el-result>
 
@@ -340,37 +358,37 @@ onMounted(() => {
         <h1>
           {{ process.name }}
           <el-tag :type="process.is_active ? 'success' : 'info'" class="h-tag">
-            {{ process.is_active ? 'Активен' : 'Неактивен' }}
+            {{ process.is_active ? t('common.active') : t('common.inactive') }}
           </el-tag>
-          <el-tooltip v-if="process.run_once" content="Однократный запуск: не более одного раза на запись CRM">
+          <el-tooltip v-if="process.run_once" :content="t('processDetail.runOnceTooltip')">
             <el-tag type="warning" effect="dark" class="h-tag">1×</el-tag>
           </el-tooltip>
         </h1>
         <div class="actions">
           <template v-if="auth.canEdit">
-            <el-button :icon="Edit" @click="router.push(`/processes/${process.id}/edit`)">Редактировать</el-button>
-            <el-button :icon="CopyDocument" @click="clone">Клонировать</el-button>
-            <el-button type="primary" :icon="VideoPlay" @click="openRun">Выполнить (Run)</el-button>
+            <el-button :icon="Edit" @click="router.push(`/processes/${process.id}/edit`)">{{ t('common.edit') }}</el-button>
+            <el-button :icon="CopyDocument" @click="clone">{{ t('common.clone') }}</el-button>
+            <el-button type="primary" :icon="VideoPlay" @click="openRun">{{ t('processDetail.runButton') }}</el-button>
           </template>
-          <el-button v-if="auth.isAdmin" type="danger" plain :icon="Delete" @click="remove">Удалить</el-button>
+          <el-button v-if="auth.isAdmin" type="danger" plain :icon="Delete" @click="remove">{{ t('common.delete') }}</el-button>
         </div>
       </div>
 
       <el-card shadow="never" class="panel-card">
         <el-descriptions :column="4" border>
-          <el-descriptions-item label="ID">{{ process.id }}</el-descriptions-item>
-          <el-descriptions-item label="Тип объекта">{{ process.object_type }}</el-descriptions-item>
-          <el-descriptions-item label="Тип процесса">
-            {{ process.is_child ? 'Ведомый процесс' : 'Процесс верхнего уровня' }}
+          <el-descriptions-item :label="t('common.id')">{{ process.id }}</el-descriptions-item>
+          <el-descriptions-item :label="t('processDetail.info.objectType')">{{ process.object_type }}</el-descriptions-item>
+          <el-descriptions-item :label="t('processDetail.info.processType')">
+            {{ process.is_child ? t('processDetail.info.child') : t('processDetail.info.topLevel') }}
           </el-descriptions-item>
-          <el-descriptions-item label="Приоритет">{{ process.priority }}</el-descriptions-item>
-          <el-descriptions-item label="Однократный запуск">
-            {{ process.run_once ? 'Да — не более одного запуска на запись' : 'Нет' }}
+          <el-descriptions-item :label="t('processDetail.info.priority')">{{ process.priority }}</el-descriptions-item>
+          <el-descriptions-item :label="t('processDetail.info.runOnce')">
+            {{ process.run_once ? t('processDetail.info.runOnceYes') : t('common.no') }}
           </el-descriptions-item>
-          <el-descriptions-item label="Версия">{{ process.version }}</el-descriptions-item>
-          <el-descriptions-item label="Создан">{{ formatDate(process.created_at) }}</el-descriptions-item>
-          <el-descriptions-item label="Изменён">{{ formatDate(process.updated_at) }}</el-descriptions-item>
-          <el-descriptions-item label="Запускается из">
+          <el-descriptions-item :label="t('processDetail.info.version')">{{ process.version }}</el-descriptions-item>
+          <el-descriptions-item :label="t('processDetail.info.createdAt')">{{ formatDate(process.created_at) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('processDetail.info.updatedAt')">{{ formatDate(process.updated_at) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('processDetail.info.startedFrom')">
             <template v-if="process.references?.parents?.length">
               <router-link
                 v-for="p in process.references.parents"
@@ -388,26 +406,26 @@ onMounted(() => {
 
       <el-card shadow="never" class="panel-card">
         <template #header>
-          <div class="panel-title"><span>Блок 1. Условия запуска <small>все строки по «И»</small></span></div>
+          <div class="panel-title"><span>{{ t('processDetail.conditions.title') }} <small>{{ t('processDetail.conditions.hint') }}</small></span></div>
         </template>
         <template v-if="conditionsGroup">
-          <el-alert type="info" :closable="false" title="Условия в расширенной форме (группы / OR)" class="mb8" />
+          <el-alert type="info" :closable="false" :title="t('processDetail.conditions.advanced')" class="mb8" />
           <JsonView :value="conditionsGroup" />
         </template>
-        <el-table v-else :data="conditionsList" size="small" empty-text="Условий нет — запуск для любого события">
+        <el-table v-else :data="conditionsList" size="small" :empty-text="t('processDetail.conditions.empty')">
           <el-table-column type="index" label="#" width="50" />
-          <el-table-column label="Поле" min-width="180">
+          <el-table-column :label="t('processDetail.conditions.field')" min-width="180">
             <template #default="{ row }"><span class="mono">{{ row.field }}</span></template>
           </el-table-column>
-          <el-table-column label="Тип сравнения" width="160">
-            <template #default="{ row }">{{ dictLabel(operators, row.operator) }}</template>
+          <el-table-column :label="t('processDetail.conditions.operator')" width="160">
+            <template #default="{ row }">{{ dictLabel(operatorsView, row.operator) }}</template>
           </el-table-column>
-          <el-table-column label="Зона сравнения" width="200">
+          <el-table-column :label="t('processDetail.conditions.valueType')" width="200">
             <template #default="{ row }">
-              {{ row.value_type === 'from_object_field' ? 'Из поля объекта/переменной' : 'Значение' }}
+              {{ row.value_type === 'from_object_field' ? t('processDetail.conditions.fromField') : t('processDetail.conditions.staticValue') }}
             </template>
           </el-table-column>
-          <el-table-column label="Значение" min-width="180">
+          <el-table-column :label="t('processDetail.conditions.value')" min-width="180">
             <template #default="{ row }"><span class="mono">{{ row.value }}</span></template>
           </el-table-column>
         </el-table>
@@ -415,20 +433,20 @@ onMounted(() => {
 
       <el-card shadow="never" class="panel-card">
         <template #header>
-          <div class="panel-title"><span>Блок 2. Предзагрузка</span></div>
+          <div class="panel-title"><span>{{ t('processDetail.preload.title') }}</span></div>
         </template>
-        <el-table :data="preload" size="small" empty-text="Предзагрузка не настроена">
-          <el-table-column label="Переменная" width="120">
+        <el-table :data="preload" size="small" :empty-text="t('processDetail.preload.empty')">
+          <el-table-column :label="t('processDetail.preload.variable')" width="120">
             <template #default="{ row }"><b class="mono">{{ row.var }}</b></template>
           </el-table-column>
-          <el-table-column label="Тип инициации" width="190">
-            <template #default="{ row }">{{ dictLabel(preloadSources, row.source) }}</template>
+          <el-table-column :label="t('processDetail.preload.source')" width="190">
+            <template #default="{ row }">{{ dictLabel(preloadSourcesView, row.source) }}</template>
           </el-table-column>
-          <el-table-column label="Поле / значение" min-width="180">
+          <el-table-column :label="t('processDetail.preload.fieldOrValue')" min-width="180">
             <template #default="{ row }"><span class="mono">{{ row.value }}</span></template>
           </el-table-column>
-          <el-table-column prop="module" label="Модуль" width="160" />
-          <el-table-column label="Поле поиска" width="140">
+          <el-table-column prop="module" :label="t('processDetail.preload.module')" width="160" />
+          <el-table-column :label="t('processDetail.preload.byField')" width="140">
             <template #default="{ row }"><span class="mono">{{ row.by_field || 'id' }}</span></template>
           </el-table-column>
         </el-table>
@@ -436,11 +454,11 @@ onMounted(() => {
 
       <el-card shadow="never" class="panel-card">
         <template #header>
-          <div class="panel-title"><span>Блок 3. Действия <small>в порядке выполнения</small></span></div>
+          <div class="panel-title"><span>{{ t('processDetail.actions.title') }} <small>{{ t('processDetail.actions.hint') }}</small></span></div>
         </template>
-        <el-table :data="actions" size="small" empty-text="Действий нет">
+        <el-table :data="actions" size="small" :empty-text="t('processDetail.actions.empty')">
           <el-table-column type="index" label="#" width="50" />
-          <el-table-column label="Тип" width="170">
+          <el-table-column :label="t('processDetail.actions.type')" width="170">
             <template #default="{ row }">
               <el-tag
                 size="small"
@@ -451,25 +469,28 @@ onMounted(() => {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="Описание" min-width="360">
+          <el-table-column :label="t('processDetail.actions.description')" min-width="360">
             <template #default="{ row }">
               <template v-if="row.type === 'modify'">
                 <span class="mono">{{ row.target }}</span>
-                ← <span class="muted">{{ dictLabel(changeTypes, row.change_type) }}:</span>
+                ← <span class="muted">{{ dictLabel(changeTypesView, row.change_type) }}:</span>
                 <span class="mono">{{ row.value }}</span>
-                <el-tag v-if="row.save_to_crm" size="small" type="success" class="ml8">+ сохранить в CRM</el-tag>
+                <el-tag v-if="row.save_to_crm" size="small" type="success" class="ml8">{{ t('processDetail.actions.plusSaveToCrm') }}</el-tag>
               </template>
               <template v-else-if="row.type === 'save_object'">
-                Сохранить переменную <b class="mono">{{ row.target }}</b> в CRM
-                <span v-if="row.module" class="muted">(модуль {{ row.module }})</span>
+                <i18n-t keypath="processDetail.actions.saveObject" scope="global">
+                  <template #target><b class="mono">{{ row.target }}</b></template>
+                </i18n-t>
+                <span v-if="row.module" class="muted">{{ t('processDetail.actions.moduleSuffix', { module: row.module }) }}</span>
               </template>
               <template v-else-if="row.type === 'start_process'">
                 <span v-for="pid in startIds(row as ProcessAction)" :key="pid" class="ref-link">
-                  <router-link :to="`/processes/${pid}`">{{ processNames[pid] ?? `Процесс #${pid}` }}</router-link>
+                  <router-link :to="`/processes/${pid}`">{{ processNames[pid] ?? t('processDetail.actions.processFallback', { id: pid }) }}</router-link>
                 </span>
               </template>
               <template v-else-if="row.type === 'preload'">
-                <b class="mono">{{ row.var }}</b> ← {{ row.module }} по «{{ row.by_field || 'id' }}» =
+                <b class="mono">{{ row.var }}</b> ←
+                {{ t('processDetail.actions.preloadBy', { module: row.module, field: row.by_field || 'id' }) }}
                 <span class="mono">{{ row.value }}</span>
               </template>
               <span v-else class="mono small">{{ JSON.stringify(asRecord(row)) }}</span>
@@ -477,29 +498,29 @@ onMounted(() => {
           </el-table-column>
         </el-table>
         <div v-if="process.references?.children?.length" class="children-refs">
-          <span class="muted">Ведомые процессы:</span>
+          <span class="muted">{{ t('processDetail.actions.children') }}</span>
           <span v-for="c in process.references.children" :key="c.id" class="ref-link">
             <router-link :to="`/processes/${c.id}`">{{ c.name }}</router-link>
-            <el-tag v-if="c.is_active === false" size="small" type="info">неактивен</el-tag>
+            <el-tag v-if="c.is_active === false" size="small" type="info">{{ t('processDetail.actions.childInactive') }}</el-tag>
           </span>
         </div>
       </el-card>
 
       <el-card shadow="never" class="panel-card">
         <el-tabs v-model="activeTab">
-          <el-tab-pane label="Журнал выполнения" name="executions">
+          <el-tab-pane :label="t('processDetail.executions.tab')" name="executions">
             <div class="tab-toolbar">
-              <el-button :icon="Refresh" size="small" @click="loadExecutions">Обновить</el-button>
+              <el-button :icon="Refresh" size="small" @click="loadExecutions">{{ t('common.refresh') }}</el-button>
             </div>
             <div class="filters">
-              <el-select v-model="execFilters.status" placeholder="Статус" clearable style="width: 180px" @change="applyExecFilters">
-                <el-option v-for="(s, key) in EXECUTION_STATUS" :key="key" :label="s.label" :value="key" />
+              <el-select v-model="execFilters.status" :placeholder="t('processDetail.executions.status')" clearable style="width: 180px" @change="applyExecFilters">
+                <el-option v-for="s in EXECUTION_STATUSES" :key="s" :label="statusTag(s).label" :value="s" />
               </el-select>
               <el-date-picker
                 v-model="execFilters.range"
                 type="datetimerange"
-                start-placeholder="Начало периода"
-                end-placeholder="Конец периода"
+                :start-placeholder="t('processDetail.executions.periodStart')"
+                :end-placeholder="t('processDetail.executions.periodEnd')"
                 range-separator="—"
                 value-format="YYYY-MM-DDTHH:mm:ssZ"
                 :default-time="[new Date(2000, 0, 1, 0, 0, 0), new Date(2000, 0, 1, 23, 59, 59)]"
@@ -512,35 +533,35 @@ onMounted(() => {
               size="small"
               stripe
               class="clickable-rows"
-              empty-text="Запусков нет"
+              :empty-text="t('processDetail.executions.empty')"
               @row-click="openExecution"
             >
-              <el-table-column label="ID" width="110">
+              <el-table-column :label="t('common.id')" width="110">
                 <template #default="{ row }">
                   <el-tooltip :content="row.id"><span class="mono">{{ shortId(row.id) }}</span></el-tooltip>
                 </template>
               </el-table-column>
-              <el-table-column label="ID события" min-width="150">
+              <el-table-column :label="t('processDetail.executions.eventId')" min-width="150">
                 <template #default="{ row }"><span class="mono">{{ row.event_id || '—' }}</span></template>
               </el-table-column>
-              <el-table-column label="Объект" width="110">
+              <el-table-column :label="t('processDetail.executions.object')" width="110">
                 <template #default="{ row }"><span class="mono">{{ row.object_id || '—' }}</span></template>
               </el-table-column>
-              <el-table-column label="Источник" width="130">
-                <template #default="{ row }">{{ TRIGGER_LABELS[row.trigger] ?? row.trigger }}</template>
+              <el-table-column :label="t('processDetail.executions.trigger')" width="130">
+                <template #default="{ row }">{{ triggerLabel(row.trigger) }}</template>
               </el-table-column>
-              <el-table-column label="Статус" width="120">
+              <el-table-column :label="t('processDetail.executions.status')" width="120">
                 <template #default="{ row }">
                   <el-tag size="small" :type="statusTag(row.status).type">{{ statusTag(row.status).label }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="Начат" width="160">
+              <el-table-column :label="t('processDetail.executions.startedAt')" width="160">
                 <template #default="{ row }">{{ formatDate(row.started_at) }}</template>
               </el-table-column>
-              <el-table-column label="Завершён" width="160">
+              <el-table-column :label="t('processDetail.executions.finishedAt')" width="160">
                 <template #default="{ row }">{{ formatDate(row.finished_at) }}</template>
               </el-table-column>
-              <el-table-column label="Длительность" width="110">
+              <el-table-column :label="t('processDetail.executions.duration')" width="110">
                 <template #default="{ row }">{{ formatDuration(row.duration_ms) }}</template>
               </el-table-column>
               <el-table-column prop="retry_count" label="Retry" width="70" align="center" />
@@ -562,7 +583,7 @@ onMounted(() => {
 
           <el-tab-pane v-if="showRunsTab" name="runs">
             <template #label>
-              Однократные запуски <el-badge v-if="runsMeta.total" :value="runsMeta.total" type="info" class="tab-badge" />
+              {{ t('processDetail.runs.tab') }} <el-badge v-if="runsMeta.total" :value="runsMeta.total" type="info" class="tab-badge" />
             </template>
             <el-alert
               v-if="!process.run_once"
@@ -570,47 +591,46 @@ onMounted(() => {
               :closable="false"
               show-icon
               class="mb8"
-              title="Однократный запуск выключен — отметки сохранены, но не проверяются"
+              :title="t('processDetail.runs.disabledAlert')"
             />
             <p class="muted run-hint">
-              Записи CRM, для которых процесс уже запускался. Повторные события этих записей процесс не запускают.
-              «Сбросить» снимает отметку: следующее сохранение записи снова запустит процесс.
+              {{ t('processDetail.runs.hint') }}
             </p>
             <div class="filters">
               <el-input
                 v-model="runsFilters.object_id"
-                placeholder="ID записи"
+                :placeholder="t('processDetail.runs.objectId')"
                 clearable
                 style="width: 320px"
                 @keyup.enter="applyRunsFilters"
                 @clear="applyRunsFilters"
               />
-              <el-button @click="applyRunsFilters">Найти</el-button>
-              <el-button :icon="Refresh" @click="loadRuns">Обновить</el-button>
+              <el-button @click="applyRunsFilters">{{ t('processDetail.runs.search') }}</el-button>
+              <el-button :icon="Refresh" @click="loadRuns">{{ t('common.refresh') }}</el-button>
             </div>
-            <el-table v-loading="runsLoading" :data="runs" size="small" stripe empty-text="Отметок нет">
-              <el-table-column prop="object_type" label="Тип объекта" width="130" />
-              <el-table-column label="ID записи" min-width="260">
+            <el-table v-loading="runsLoading" :data="runs" size="small" stripe :empty-text="t('processDetail.runs.empty')">
+              <el-table-column prop="object_type" :label="t('processDetail.info.objectType')" width="130" />
+              <el-table-column :label="t('processDetail.runs.objectId')" min-width="260">
                 <template #default="{ row }"><span class="mono">{{ row.object_id }}</span></template>
               </el-table-column>
-              <el-table-column label="Выполнение" width="110">
+              <el-table-column :label="t('processDetail.runs.execution')" width="110">
                 <template #default="{ row }">
                   <router-link :to="`/executions/${row.execution_id}`" class="mono">{{ shortId(row.execution_id) }}</router-link>
                 </template>
               </el-table-column>
-              <el-table-column label="Источник" width="120">
-                <template #default="{ row }">{{ TRIGGER_LABELS[row.trigger] ?? row.trigger }}</template>
+              <el-table-column :label="t('processDetail.executions.trigger')" width="120">
+                <template #default="{ row }">{{ triggerLabel(row.trigger) }}</template>
               </el-table-column>
-              <el-table-column label="Первый запуск" width="160">
+              <el-table-column :label="t('processDetail.runs.firstRun')" width="160">
                 <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
               </el-table-column>
-              <el-table-column prop="blocked_count" label="Заблокировано" width="120" align="center" />
-              <el-table-column label="Последняя блокировка" width="170">
+              <el-table-column prop="blocked_count" :label="t('processDetail.runs.blockedCount')" width="120" align="center" />
+              <el-table-column :label="t('processDetail.runs.lastBlocked')" width="170">
                 <template #default="{ row }">{{ formatDate(row.last_blocked_at) }}</template>
               </el-table-column>
               <el-table-column v-if="auth.canEdit" label="" width="110" align="right">
                 <template #default="{ row }">
-                  <el-button size="small" type="warning" plain @click="resetRun(row as ProcessObjectRun)">Сбросить</el-button>
+                  <el-button size="small" type="warning" plain @click="resetRun(row as ProcessObjectRun)">{{ t('common.reset') }}</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -632,22 +652,20 @@ onMounted(() => {
       </el-card>
     </template>
 
-    <el-dialog v-model="runVisible" title="Ручной запуск процесса" width="760px" :close-on-click-modal="false">
+    <el-dialog v-model="runVisible" :title="t('processDetail.run.title')" width="760px" :close-on-click-modal="false">
       <p class="muted run-hint">
-        Укажите JSON исходного объекта (как он пришёл бы из CRM). Процесс выполнится с этим объектом, прогресс будет
-        виден на странице выполнения.
+        {{ t('processDetail.run.hint') }}
       </p>
       <JsonEditor v-model="runJson" :rows="14" />
-      <el-checkbox v-model="runForce" class="force-cb">Без проверки условий (force)</el-checkbox>
+      <el-checkbox v-model="runForce" class="force-cb">{{ t('processDetail.run.force') }}</el-checkbox>
       <div v-if="process?.run_once" class="muted small">
-        У процесса включён однократный запуск: «force» не обходит его. Чтобы запустить повторно для той же записи,
-        снимите отметку во вкладке «Однократные запуски».
+        {{ t('processDetail.run.runOnceNote') }}
       </div>
 
       <el-alert v-if="runBlockedBy !== undefined" type="warning" show-icon :closable="false" class="trace">
-        <template #title>Процесс уже выполнялся для этой записи — новый запуск не создан</template>
+        <template #title>{{ t('processDetail.run.blocked') }}</template>
         <template v-if="runBlockedBy">
-          Выполнение:
+          {{ t('processDetail.run.executionLabel') }}
           <router-link :to="`/executions/${runBlockedBy}`" class="mono" @click="runVisible = false">{{ runBlockedBy }}</router-link>
         </template>
       </el-alert>
@@ -657,36 +675,36 @@ onMounted(() => {
           type="warning"
           show-icon
           :closable="false"
-          title="Условия запуска не выполнены — процесс не запущен"
-          description="Ниже — результат проверки каждого условия. Исправьте объект или включите «Без проверки условий»."
+          :title="t('processDetail.run.conditionsNotMet')"
+          :description="t('processDetail.run.traceDescription')"
         />
         <el-table :data="runTrace" size="small" class="trace-table">
-          <el-table-column label="Поле" min-width="140">
+          <el-table-column :label="t('processDetail.trace.field')" min-width="140">
             <template #default="{ row }"><span class="mono">{{ row.field }}</span></template>
           </el-table-column>
-          <el-table-column label="Оператор" width="120">
-            <template #default="{ row }">{{ dictLabel(operators, row.operator) }}</template>
+          <el-table-column :label="t('processDetail.trace.operator')" width="120">
+            <template #default="{ row }">{{ dictLabel(operatorsView, row.operator) }}</template>
           </el-table-column>
-          <el-table-column label="Ожидалось" min-width="120">
+          <el-table-column :label="t('processDetail.trace.expected')" min-width="120">
             <template #default="{ row }"><span class="mono">{{ traceValue(row.expected) }}</span></template>
           </el-table-column>
-          <el-table-column label="Фактически" min-width="120">
+          <el-table-column :label="t('processDetail.trace.actual')" min-width="120">
             <template #default="{ row }"><span class="mono">{{ traceValue(row.actual) }}</span></template>
           </el-table-column>
-          <el-table-column label="Результат" width="110">
+          <el-table-column :label="t('processDetail.trace.result')" width="110">
             <template #default="{ row }">
               <el-tag v-if="row.result === true" type="success" size="small">OK</el-tag>
               <el-tag v-else-if="row.result === false" type="danger" size="small">FAIL</el-tag>
-              <el-tag v-else type="info" size="small">не проверено</el-tag>
+              <el-tag v-else type="info" size="small">{{ t('processDetail.trace.notChecked') }}</el-tag>
             </template>
           </el-table-column>
         </el-table>
       </div>
 
       <template #footer>
-        <el-button @click="runVisible = false">Отмена</el-button>
+        <el-button @click="runVisible = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :icon="VideoPlay" :loading="running" :disabled="!!runJsonError" @click="doRun">
-          Запустить
+          {{ t('processDetail.run.submit') }}
         </el-button>
       </template>
     </el-dialog>

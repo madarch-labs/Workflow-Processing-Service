@@ -1,26 +1,20 @@
-import type { ExecutionStatus } from '@/types'
+import type { DictionaryItem, ExecutionStatus } from '@/types'
+import { d, t, te } from '@/i18n'
 
 export function formatDate(value?: string | null): string {
   if (!value) return '—'
-  const d = new Date(value)
-  if (isNaN(d.getTime())) return value
-  return d.toLocaleString('ru-RU', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
+  const date = new Date(value)
+  if (isNaN(date.getTime())) return value
+  return d(date, 'long')
 }
 
 export function formatDuration(ms?: number | null): string {
   if (ms === null || ms === undefined) return '—'
-  if (ms < 1000) return `${ms} мс`
-  if (ms < 60000) return `${(ms / 1000).toFixed(2)} с`
+  if (ms < 1000) return t('units.ms', { n: ms })
+  if (ms < 60000) return t('units.s', { n: (ms / 1000).toFixed(2) })
   const m = Math.floor(ms / 60000)
   const s = Math.round((ms % 60000) / 1000)
-  return `${m} мин ${s} с`
+  return t('units.minSec', { m, s })
 }
 
 export function shortId(id?: string | null): string {
@@ -39,30 +33,24 @@ export function prettyJson(value: unknown): string {
 
 type TagType = 'primary' | 'success' | 'warning' | 'danger' | 'info'
 
-export const EXECUTION_STATUS: Record<ExecutionStatus, { label: string; type: TagType }> = {
-  running: { label: 'Выполняется', type: 'primary' },
-  retrying: { label: 'Повтор', type: 'warning' },
-  completed: { label: 'Завершено', type: 'success' },
-  failed: { label: 'Ошибка', type: 'danger' },
+/*
+ * Словари хранят только тип тега; подписи переводятся в момент вызова,
+ * чтобы при смене языка шаблоны перерисовывались с новым текстом.
+ */
+const EXECUTION_STATUS_TAG: Record<ExecutionStatus, TagType> = {
+  running: 'primary',
+  retrying: 'warning',
+  completed: 'success',
+  failed: 'danger',
 }
 
-export const STEP_STATUS: Record<string, { label: string; type: TagType }> = {
-  success: { label: 'Успех', type: 'success' },
-  failed: { label: 'Ошибка', type: 'danger' },
-  skipped: { label: 'Пропущен', type: 'info' },
+const STEP_STATUS_TAG: Record<string, TagType> = {
+  success: 'success',
+  failed: 'danger',
+  skipped: 'info',
 }
 
-export const TRIGGER_LABELS: Record<string, string> = {
-  stream: 'Событие CRM',
-  manual: 'Ручной запуск',
-  child: 'Дочерний',
-}
-
-export const ROLE_LABELS: Record<string, string> = {
-  admin: 'Администратор',
-  editor: 'Редактор',
-  viewer: 'Наблюдатель',
-}
+export const EXECUTION_STATUSES = Object.keys(EXECUTION_STATUS_TAG) as ExecutionStatus[]
 
 export const ROLE_TAG: Record<string, TagType> = {
   admin: 'danger',
@@ -70,10 +58,38 @@ export const ROLE_TAG: Record<string, TagType> = {
   viewer: 'info',
 }
 
+/** Перевод по ключу `prefix.value`, если он есть; иначе — fallback (обычно исходное значение) */
+function labelOr(key: string, fallback: string): string {
+  return te(key) ? t(key) : fallback
+}
+
 export function statusTag(status: string): { label: string; type: TagType } {
-  return EXECUTION_STATUS[status as ExecutionStatus] ?? { label: status, type: 'info' }
+  return {
+    label: labelOr(`execution.status.${status}`, status),
+    type: EXECUTION_STATUS_TAG[status as ExecutionStatus] ?? 'info',
+  }
 }
 
 export function stepTag(status: string): { label: string; type: TagType } {
-  return STEP_STATUS[status] ?? { label: status, type: 'info' }
+  return { label: labelOr(`step.status.${status}`, status), type: STEP_STATUS_TAG[status] ?? 'info' }
+}
+
+export function triggerLabel(trigger: string): string {
+  return labelOr(`trigger.${trigger}`, trigger)
+}
+
+export function roleLabel(role: string): string {
+  return labelOr(`role.${role}`, role)
+}
+
+export type DictKind = 'operator' | 'changeType' | 'preloadSource'
+
+/** Подпись элемента справочника: известные значения переводятся на клиенте, остальные — как пришли с сервера */
+export function dictItemLabel(kind: DictKind, item: DictionaryItem): string {
+  return labelOr(`dict.${kind}.${item.value}`, item.label)
+}
+
+/** Справочник с переведёнными подписями (использовать внутри computed) */
+export function localizeDict(kind: DictKind, items: DictionaryItem[]): DictionaryItem[] {
+  return items.map((item) => ({ ...item, label: dictItemLabel(kind, item) }))
 }

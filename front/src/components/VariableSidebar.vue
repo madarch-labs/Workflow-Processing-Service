@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { DictionaryItem } from '@/types'
 import type { VariableInfo } from '@/utils/variables'
 
@@ -11,16 +12,19 @@ const props = withDefaults(
   { sources: () => [] },
 )
 
+const { t } = useI18n()
+
 function sourceLabel(value?: string): string {
   if (!value) return ''
   return props.sources.find((s) => s.value === value)?.label ?? value
 }
 
-const KIND: Record<VariableInfo['kind'], { label: string; type: 'primary' | 'success' | 'warning' | 'info' }> = {
-  object: { label: 'исходный объект', type: 'primary' },
-  preload: { label: 'загружена из CRM', type: 'success' },
-  actions_preload: { label: 'загружена в действиях', type: 'success' },
-  created: { label: 'создана в процессе', type: 'warning' },
+// Подписи видов переменных переводятся при рендере: variables.kind.<kind>
+const KIND: Record<VariableInfo['kind'], { type: 'primary' | 'success' | 'warning' | 'info' }> = {
+  object: { type: 'primary' },
+  preload: { type: 'success' },
+  actions_preload: { type: 'success' },
+  created: { type: 'warning' },
 }
 
 const items = computed(() => props.variables)
@@ -30,7 +34,7 @@ const items = computed(() => props.variables)
   <el-card class="variable-sidebar" shadow="never">
     <template #header>
       <div class="panel-title">
-        <span>Переменные</span>
+        <span>{{ t('variables.title') }}</span>
         <el-tag size="small" round>{{ items.length }}</el-tag>
       </div>
     </template>
@@ -44,12 +48,12 @@ const items = computed(() => props.variables)
       >
         <div class="var-head">
           <span class="var-name mono">{{ v.name }}</span>
-          <el-tag size="small" :type="KIND[v.kind].type" effect="plain">{{ KIND[v.kind].label }}</el-tag>
+          <el-tag size="small" :type="KIND[v.kind].type" effect="plain">{{ t(`variables.kind.${v.kind}`) }}</el-tag>
         </div>
         <div class="var-line">
-          <span class="muted">Тип:</span>
+          <span class="muted">{{ t('variables.type') }}</span>
           <b v-if="v.module">{{ v.module }}</b>
-          <span v-else class="muted">не указан</span>
+          <span v-else class="muted">{{ t('variables.typeNotSet') }}</span>
         </div>
         <div v-if="v.source" class="var-line">
           <span class="muted">{{ sourceLabel(v.source) }}:</span>
@@ -60,9 +64,10 @@ const items = computed(() => props.variables)
         </div>
       </el-timeline-item>
     </el-timeline>
-    <div class="muted small">
-      Поля указываются через точку: <span class="mono">object.phone</span>, <span class="mono">v1.contact_id</span>.
-    </div>
+    <i18n-t keypath="variables.hint" tag="div" class="muted small" scope="global">
+      <template #example1><span class="mono">object.phone</span></template>
+      <template #example2><span class="mono">v1.contact_id</span></template>
+    </i18n-t>
   </el-card>
 </template>
 
