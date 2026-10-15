@@ -1,0 +1,6 @@
+{"name":"Create follow-up task","object_type":"Leads","is_child":true,"is_active":true,"priority":0,"run_once":false,
+ "definition":{"conditions":[],"preload":[],
+  "actions":[{"type":"modify","target":"task.name","change_type":"calculate","value":"concat('Call back: ', object.name)","save_to_crm":false},
+             {"type":"modify","target":"task.status","change_type":"set_value","value":"Not Started","save_to_crm":false},
+             {"type":"modify","target":"task.parent_id","change_type":"calculate","value":"object.id","save_to_crm":false},
+             {"type":"save_object","target":"task","module":"Tasks"}]}}

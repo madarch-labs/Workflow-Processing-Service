@@ -1,0 +1,5 @@
+{"name":"Contact: copy account name","object_type":"Contacts","is_child":false,"is_active":true,"priority":0,"run_once":false,
+ "definition":{"conditions":[{"field":"object.status","operator":"not_equals","value_type":"static","value":"Closed"},
+                             {"field":"v1.status","operator":"equals","value_type":"static","value":"Active"}],
+  "preload":[{"var":"v1","source":"object_field","module":"Accounts","by_field":"id","value":"object.account_id"}],
+  "actions":[{"type":"modify","target":"object.description","change_type":"set_from_variable","value":"v1.name","save_to_crm":true}]}}

@@ -1,0 +1,141 @@
+# Поток событий
+
+Путь одного события CRM: от сохранения записи до Redis Stream, выполнения подходящих процессов, аудита и подтверждения сообщения.
+
+<!-- lang-switch -->
+[🇬🇧 English](../../en/05-architecture/event-flow.md) | 🇷🇺 Русский
+<!-- /lang-switch -->
+
+## Основной поток
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CRM as CRM / мок
+    participant RS as redis-stream<br/>crm_events
+    participant Job as StreamConsumerJob<br/>StreamService
+    participant EP as EventProcessorService
+    participant PR as ProcessResolverService
+    participant RD as redis-data
+    participant EE as ExecutionEngineService
+    participant DB as PostgreSQL
+    participant AR as ActionHandlerRegistry<br/>обработчики
+    participant API as REST API CRM
+
+    CRM->>RS: XADD crm_events * data={"id","module",...}
+    loop каждые 0,5 с, в каждом HTTP-воркере
+        Job->>RS: XREADGROUP wps_workers {consumer} COUNT 10 BLOCK 2000
+    end
+    RS-->>Job: сообщения
+    Job->>EP: process(messageId, fields)
+    EP->>EP: parse(): JSON в data, module или object_type, id
+    EP->>PR: resolve(module)
+    PR->>RD: GET proc_cache:{module}
+    alt нет в кэше
+        PR->>DB: активные процессы верхнего уровня ORDER BY priority
+        PR->>RD: SET proc_cache:{module} EX 60
+    end
+    loop каждый процесс по приоритету, со своим контекстом
+        EP->>EE: handle(process, context, "stream", ключ idem:{event_id}:{process_id})
+        EE->>RD: SET idem:... NX EX 24h
+        EE->>EE: условия по object.* (ConditionEngineService)
+        opt условие ссылается на переменную предзагрузки
+            EE->>AR: строки предзагрузки
+            AR->>API: GET /{module}/{id} или поиск по полю
+            EE->>EE: повторная проверка условий
+        end
+        opt у процесса run_once
+            EE->>DB: INSERT process_object_runs (захват отметки)
+        end
+        EE->>DB: INSERT executions (status running)
+        EE->>RD: HMSET exec:{uuid}, SET lock:exec:{uuid} NX
+        loop каждый шаг: строки предзагрузки, затем действия
+            EE->>AR: execute(context, step)
+            AR->>API: GET / PUT / POST, если шагу нужна CRM
+            EE->>DB: INSERT execution_actions (аудит)
+            EE->>RD: HMSET exec:{uuid} current_step, контекст
+        end
+        EE->>DB: UPDATE executions status, finished_at, context_snapshot
+        EE->>RD: статус в exec:{uuid}, EXPIRE 1h, снятие блокировки
+    end
+    EP-->>Job: status ok
+    Job->>RS: XACK crm_events wps_workers id
+```
+
+1. CRM публикует весь сохранённый объект (ответ заказчика №2). Плагин SuiteCRM делает это в logic hook `after_save`,
+   мок — по запросу `/test-event`. Принимаются два формата: поле `data` с JSON-объектом или поля объекта напрямую.
+2. Каждый HTTP-воркер — потребитель группы `wps_workers`; Redis отдаёт каждое сообщение только одному потребителю.
+3. `EventProcessorService::parse()` требует `module` (или `object_type`) и `id`. `event_id` берётся из объекта,
+   если он там есть, иначе используется id сообщения стрима.
+4. `ProcessResolverService` возвращает активные, не удалённые процессы **верхнего уровня** этого типа объекта,
+   отсортированные по `priority` по возрастанию. Список кэшируется на `PROCESS_CACHE_TTL` секунд и сбрасывается при
+   сохранении процесса.
+5. Для каждого процесса движок строит собственный `ExecutionContext` из события и вызывает `handle()` — подробности в
+   разделе [Движок выполнения](execution-engine.md). Если условия процесса не выполнены, выполнение не создаётся,
+   остаётся только ключ идемпотентности со значением `skipped`.
+6. Сообщение подтверждается после обработки всех процессов — и тогда, когда ни один процесс не подошёл (ответ №23).
+
+## Ведомые процессы
+
+```mermaid
+sequenceDiagram
+    participant EE as ExecutionEngineService<br/>родительское выполнение
+    participant SP as StartProcessHandler
+    participant DB as PostgreSQL
+    participant CO as новая корутина
+    participant EC as ExecutionEngineService<br/>выполнение ведомого
+
+    EE->>SP: execute(context, шаг start_process)
+    SP->>DB: найти ведомые процессы
+    SP->>SP: проверить is_child и depth + 1 <= MAX_CHILD_DEPTH
+    alt ведомый процесс неактивен
+        SP-->>EE: children: status skipped
+    else
+        SP->>CO: spawnChild(child, context.forChild())
+        SP-->>EE: children: status started
+        Note over EE: родитель сразу переходит к следующему шагу
+        CO->>EC: handle(child, childContext, "child", parentExecutionId, idem:{parentExec}.{step}:{childId})
+        EC->>EC: условия, run_once, шаги и аудит — как обычно
+    end
+```
+
+Шаг `start_process` завершается, как только ведомые процессы запущены, и никогда их не ждёт (ответ №13). Ведомый
+процесс получает копию события родителя и **все** переменные, глубина вложенности увеличивается на единицу (ответ №20).
+Ключ идемпотентности включает родительское выполнение и номер шага, поэтому шаг родителя, повторённый после сбоя, не
+запустит тот же ведомый процесс дважды. Выполнение ведомого процесса хранит `parent_execution_id` — по нему интерфейс
+строит таблицу «Дочерние выполнения».
+
+## Некорректные события и сбои
+
+```mermaid
+flowchart TB
+    msg["Сообщение стрима"] --> parse{"parse(): data — JSON-объект,<br/>есть module и id?"}
+    parse -- "нет" --> dlq["XADD crm_events:dlq<br/>original_id, reason, fields"] --> ack1["XACK"]
+    parse -- "да" --> run["Подбор и запуск процессов"]
+    run -- "обработано, даже если выполнения упали" --> ack2["XACK"]
+    run -- "исключение: Redis или БД недоступны" --> pending["Не подтверждено:<br/>остаётся в списке pending"]
+    pending --> claim["RecoveryJob каждые 30 с:<br/>XAUTOCLAIM, простой > REDIS_STREAM_CLAIM_IDLE_MS"]
+    claim --> deliveries{"доставлено больше 5 раз?"}
+    deliveries -- "нет" --> run
+    deliveries -- "да" --> dlq2["XADD crm_events:dlq"] --> ack3["XACK"]
+```
+
+Упавшее **выполнение** (например, CRM вернула HTTP 500 после всех повторов) — нормальный исход: оно записано в аудит, а
+сообщение подтверждается. Неподтверждённым сообщение остаётся только при **инфраструктурной** ошибке, которая помешала
+обработке, — тогда оно будет доставлено ещё раз. Это гарантия «хотя бы один раз» (at-least-once, ответ №22). Повторная
+доставка безопасна, потому что каждый запуск процесса защищён ключом идемпотентности `idem:{event_id}:{process_id}`.
+Сообщения, которые не удалось разобрать, и сообщения, доставленные больше пяти раз, попадают в стрим недоставленных
+сообщений `crm_events:dlq` (он обрезается примерно до 10 000 записей).
+
+## Ручной запуск
+
+`POST /api/processes/{id}/run` входит в движок иначе: `ExecutionEngineService::runManual()` проверяет условия
+синхронно (или пропускает их при `force: true`), учитывает `run_once`, создаёт выполнение и запускает шаги в фоновой
+корутине. HTTP-ответ с `execution_id` приходит сразу; дальше интерфейс опрашивает `GET /api/executions/{id}`, который,
+пока выполнение идёт, отдаёт живой контекст из Redis. См. [Ручной запуск и сброс](../03-user-guide/manual-run-and-reset.md).
+
+<!-- footer-nav -->
+---
+
+← Назад: [Архитектура backend](backend.md) | [Оглавление](../README.md) | [Движок выполнения](execution-engine.md) Далее →
+<!-- /footer-nav -->

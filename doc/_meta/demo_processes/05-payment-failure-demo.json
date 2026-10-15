@@ -1,0 +1,4 @@
+{"name":"Payment sync (CRM failure demo)","object_type":"Payments","is_child":false,"is_active":true,"priority":0,"run_once":false,
+ "definition":{"conditions":[],"preload":[],
+  "actions":[{"type":"preload","var":"v1","source":"manual","module":"Accounts","by_field":"id","value":"fail500-demo"},
+             {"type":"modify","target":"object.status","change_type":"set_value","value":"Synced","save_to_crm":true}]}}

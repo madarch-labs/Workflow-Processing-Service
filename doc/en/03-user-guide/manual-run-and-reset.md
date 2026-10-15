@@ -1,0 +1,157 @@
+# Manual run and run-once reset
+
+How to run a process with a test object without the CRM, and how to lift the "run once per record" restriction.
+
+<!-- lang-switch -->
+🇬🇧 English | [🇷🇺 Русский](../../ru/03-user-guide/manual-run-and-reset.md)
+<!-- /lang-switch -->
+
+## Manual run
+
+A manual run starts the process with an object you type in, exactly as if the CRM had sent it. Use it to test a new
+process, to repeat a failed run, or to find out why the process does not start for an event.
+
+Available to the roles **Administrator** and **Editor** (see [Users and roles](users-and-roles.md)). A manual run works
+for any process: inactive and child processes too.
+
+### Run from the UI
+
+1. Open the process card and click **Run**.
+2. In the **Run process manually** dialog edit the JSON of the source object. The dialog fills in a template: `id`,
+   `module` and the fields used in the conditions and in the preload (for `equals` conditions with their expected
+   values).
+3. The object **must** have an `id` — the id of a CRM record. If the process loads related records, put real ids
+   there (for example `account_id` of an existing account).
+4. Optionally enable **Skip condition check (force)**.
+5. Click **Run**.
+
+![Manual run dialog with the object JSON and the force checkbox](../../images/screenshots/en/14-manual-run-dialog.png)
+
+*Manual run of process #1: the template contains `id`, `module`, `status` from the condition and `account_id` from the preload.*
+
+The editor checks the JSON as you type (**JSON is valid** / **Invalid JSON: …**); **Format** pretty-prints it.
+
+### What happens next
+
+| Result | Response | In the UI |
+|---|---|---|
+| Conditions met | `201`, `execution_id` | **Process started** and a link to the execution. The steps run in the background, the execution page updates live |
+| Conditions not met | `200`, `conditions_met: false` | **Start conditions not met — process was not started** and a table: **Field**, **Operator**, **Expected**, **Actual**, **Result** |
+| Run once already used for this record | `200`, `run_once_blocked: true`, `previous_execution_id` | **The process has already run for this record — no new run was created** and a link to the earlier execution |
+| Object without `id` | `422 VALIDATION_ERROR`, field `object.id` | Error message |
+
+**Skip condition check (force)** skips the conditions only. It does **not** bypass **Run once per record**: the dialog
+reminds you about it with **Run once is enabled for this process: «force» does not bypass it…**.
+
+> **Note**
+> A manual run uses the real CRM: `save_object` and **Save to CRM** really change records. Test on a test CRM or on the
+> bundled mock (see [Quick start](../02-getting-started/quick-start.md)).
+
+### Run through the API
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:9501/api/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"admin@wps.local","password":"admin"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["access_token"])')
+
+curl -s -X POST http://localhost:9501/api/processes/1/run \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"object":{"id":"5001","module":"Deals","status":"Active","account_id":"706"},"force":false}'
+```
+
+Response when the conditions are met (`201`):
+
+```json
+{
+  "success": true,
+  "data": {
+    "conditions_met": true,
+    "execution_id": "b83cb6ce-6bfa-4e18-b189-ce99aedbf8e5",
+    "conditions": [
+      { "field": "object.status", "operator": "equals", "value_type": "static", "value": "Active",
+        "actual": "Active", "expected": "Active", "result": true }
+    ],
+    "run_once_applied": false,
+    "run_once_blocked": false,
+    "previous_execution_id": null
+  },
+  "error": null
+}
+```
+
+Response when the conditions are not met (`200`): `"conditions_met": false`, `"execution_id": null` and `result: false`
+in the failed row of `conditions`. A row that was not evaluated has `result: null` (**not checked** in the UI).
+
+The `object` key can be omitted: then the whole body is the object, and `force` is taken from the same body:
+
+```bash
+curl -s -X POST http://localhost:9501/api/processes/1/run \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"id":"5002","module":"Deals","status":"Closed","account_id":"706","force":true}'
+```
+
+Follow the execution: `GET /api/executions/{execution_id}`.
+
+## Run once per record
+
+When **Run once per record** (`run_once`) is enabled in the process header, the process runs at most once for each CRM
+record — for the pair "object type + `id` of the record". It works for every trigger: CRM event, child start and manual run.
+
+- The mark is taken at the moment of the start, and only if the conditions are met. An event that does not meet the
+  conditions does not use up the run.
+- The mark stays after a failed execution: the record remains blocked until you reset it.
+- A blocked start does not create an execution; it increases the **Blocked** counter of the mark.
+- Without an `id` the restriction is not applied. In practice an `id` is always present: a stream event without `id`
+  goes to the dead-letter queue, a manual run without `id` is rejected, a child process uses the record of the parent
+  event. If the manual run response still says the check was not applied, the UI warns
+  **Run once not applied: the object has no id**.
+
+In the process list and in the card such processes have the badge **1×**.
+
+### Run-once marks
+
+The process card has the tab **Run-once records**. It appears when **Run once** is enabled or when marks exist (after
+the flag was switched off the tab shows **Run once is disabled — marks are kept but not checked**).
+
+![Run-once records tab: one lead, one blocked repeat](../../images/screenshots/en/15-process-run-once-marks.png)
+
+*Process #6: the lead already had a run; a repeated manual run was blocked (**Blocked** = 1).*
+
+| Column | Meaning |
+|---|---|
+| **Object type**, **Record ID** | The CRM record |
+| **Execution** | The first execution that took the mark |
+| **Trigger** | How the first run was started |
+| **First run** | When the mark was taken |
+| **Blocked** | How many starts were rejected since then |
+| **Last blocked** | When the last one was rejected |
+
+Use **Record ID** and **Search** to find one record.
+
+### Reset a mark
+
+1. On the **Run-once records** tab find the record.
+2. Click **Reset** (shown to **Administrator** and **Editor**) and confirm **Remove the mark for record … ?**.
+3. **Mark removed** — the next event (or manual run) for this record starts the process again.
+
+Through the API (role **Administrator** or **Editor**):
+
+```bash
+# list the marks of process 6, optionally for one record
+curl -s "http://localhost:9501/api/processes/6/runs?object_id=27285" -H "Authorization: Bearer $TOKEN"
+
+# remove the mark of the Leads record 27285
+curl -s -X DELETE http://localhost:9501/api/processes/6/runs/Leads/27285 -H "Authorization: Bearer $TOKEN"
+# → {"success":true,"data":{"deleted":true},"error":null}
+# no mark → 404 NOT_FOUND
+```
+
+Cloning a process copies the **Run once per record** flag but not the marks.
+
+See also: [Executions and audit](executions-and-audit.md), [Reliability](../04-operations/reliability.md),
+[API endpoints](../06-api-reference/endpoints.md).
+
+<!-- footer-nav -->
+---
+
+← Previous: [Executions and audit](executions-and-audit.md) | [Contents](../README.md) | [Users and roles](users-and-roles.md) Next →
+<!-- /footer-nav -->

@@ -1,0 +1,5 @@
+{"name":"New lead → schedule a call (once per lead)","object_type":"Leads","is_child":false,"is_active":true,"priority":0,"run_once":true,
+ "definition":{"conditions":[{"field":"object.status","operator":"equals","value_type":"static","value":"New"},
+                             {"field":"object.email","operator":"contains","value_type":"static","value":"@"}],
+  "preload":[],
+  "actions":[{"type":"start_process","process_id":4}]}}

@@ -5,6 +5,11 @@ WPS подбирает для события активные процессы �
 Затем выполняет цепочку действий: предзагрузку объектов из CRM, изменение полей, сохранение в CRM
 и асинхронный запуск ведомых процессов. Каждый запуск и каждый шаг пишутся в аудит.
 
+## Documentation / Документация
+
+- 🇬🇧 [English documentation](doc/en/README.md)
+- 🇷🇺 [Документация на русском](doc/ru/README.md)
+
 Требования: `md/doc/*` (ТЗ — `technical_specification.md`, ответы заказчика — `maiInfo.md`),
 `md/back_stap_1.md`, `md/back_stap_2.md`, `md/front_stap_1.md`, `md/moc_eventService.md`.
 

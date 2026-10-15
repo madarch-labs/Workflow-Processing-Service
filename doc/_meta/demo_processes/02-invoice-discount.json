@@ -1,0 +1,6 @@
+{"name":"Invoice discount 10%","object_type":"Invoices","is_child":false,"is_active":true,"priority":10,"run_once":false,
+ "definition":{"conditions":[{"field":"object.status","operator":"equals","value_type":"static","value":"Active"}],
+  "preload":[],
+  "actions":[{"type":"modify","target":"object.amount","change_type":"calculate","value":"round(object.amount * 0.9, 2)","save_to_crm":false},
+             {"type":"modify","target":"object.description","change_type":"calculate","value":"concat('Discount applied, new amount: ', object.amount)","save_to_crm":false},
+             {"type":"save_object","target":"object"}]}}

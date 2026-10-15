@@ -1,0 +1,4 @@
+{"name":"Active deal → mark account as VIP","object_type":"Deals","is_child":false,"is_active":true,"priority":0,"run_once":false,
+ "definition":{"conditions":[{"field":"object.status","operator":"equals","value_type":"static","value":"Active"}],
+  "preload":[{"var":"v1","source":"object_field","module":"Accounts","by_field":"id","value":"object.account_id"}],
+  "actions":[{"type":"modify","target":"v1.rating","change_type":"set_value","value":"VIP","save_to_crm":true}]}}
