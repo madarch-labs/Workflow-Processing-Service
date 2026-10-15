@@ -1,0 +1,37 @@
+{
+    "name": "wps/backend",
+    "description": "Workflow Processing Service — backend on SwooleApp",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.2",
+        "ext-json": "*",
+        "ext-pdo": "*",
+        "ext-redis": "*",
+        "ext-swoole": ">=5.1",
+        "sidalex/swoole-app": "@dev"
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../doc/SwooleApp",
+            "options": {
+                "symlink": true
+            }
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Wps\\": "src/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "yurunsoft/composer-include-files": true,
+            "yurunsoft/guzzle-swoole": true
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

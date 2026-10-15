@@ -1,0 +1,99 @@
+# Full WPS stack: PostgreSQL + two Redis instances (event bus / data) + backend + mock CRM + frontend.
+#   docker compose up -d --build
+#   UI:  http://localhost:${WPS_UI_PORT:-3000}   (admin@wps.local / admin)
+#   Host ports are configurable in ./.env (WPS_*_PORT)
+#   API: http://localhost:9501/api/health
+#   Mock CRM / events: http://localhost:9502/test-event?module=Deals
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: wps
+      POSTGRES_USER: wps
+      POSTGRES_PASSWORD: secret
+    ports:
+      - "${WPS_PG_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wps -d wps"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # event bus: CRM → Redis Stream "crm_events"
+  redis-stream:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${WPS_REDIS_STREAM_PORT:-6379}:6379"
+    volumes:
+      - redis-stream:/data
+
+  # separate instance for cache + execution state (customer answer #4)
+  redis-data:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${WPS_REDIS_DATA_PORT:-6380}:6379"
+    volumes:
+      - redis-data:/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: back/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-stream:
+        condition: service_started
+      redis-data:
+        condition: service_started
+    environment:
+      DB_POSTGRES_HOST: postgres
+      DB_POSTGRES_PORT: "5432"
+      DB_POSTGRES_DB: wps
+      DB_POSTGRES_USER: wps
+      DB_POSTGRES_PASSWORD: secret
+      REDIS_STREAM_HOST: redis-stream
+      REDIS_STREAM_PORT: "6379"
+      REDIS_DATA_HOST: redis-data
+      REDIS_DATA_PORT: "6379"
+      # CRM the backend talks to: the mock by default, SuiteCRM 7/8 via ./.env (see .tehnical/suiteCRM*/README.md)
+      CRM_API_BASE_URL: ${CRM_API_BASE_URL:-http://mock:9502}
+      CRM_API_STATIC_KEY: ${CRM_API_STATIC_KEY:-mySecretKey}
+      # modules dictionary source; an empty value means "take it from the CRM API"
+      MOCK_SERVICE_URL: ${MOCK_SERVICE_URL-http://mock:9502}
+      JWT_SECRET: change-me-in-production-0123456789abcdef
+      API_BASE_URL: http://localhost:9501
+    ports:
+      - "${WPS_API_PORT:-9501}:9501"
+
+  mock:
+    build:
+      context: .
+      dockerfile: mock/Dockerfile
+    depends_on:
+      - redis-stream
+    environment:
+      MOCK_REDIS_HOST: redis-stream
+      MOCK_REDIS_PORT: "6379"
+      MOCK_REDIS_STREAM: crm_events
+      MOCK_CRM_STATIC_KEY: mySecretKey
+    ports:
+      - "${WPS_MOCK_PORT:-9502}:9502"
+
+  frontend:
+    build:
+      context: front
+    depends_on:
+      - backend
+    ports:
+      - "${WPS_UI_PORT:-3000}:80"
+
+volumes:
+  pgdata:
+  redis-stream:
+  redis-data:

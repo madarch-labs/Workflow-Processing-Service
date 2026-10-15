@@ -1,0 +1,34 @@
+{
+    "APP_DEBUG": false,
+    "server": {
+        "host": "0.0.0.0",
+        "port": 9501,
+        "mode": "PROCESS"
+    },
+    "SWOOLE": {
+        "worker_num": 2,
+        "task_worker_num": 1,
+        "enable_coroutine": true,
+        "max_coroutine": 3000,
+        "package_max_length": 4194304,
+        "http_parse_post": false
+    },
+    "controllers": [
+        "Wps\\Controllers"
+    ],
+    "globalMiddlewares": [
+        "Wps\\Middleware\\AuthMiddleware"
+    ],
+    "CyclicJobs": [
+        "Wps\\CyclicJobs\\StreamConsumerJob",
+        "Wps\\CyclicJobs\\RecoveryJob"
+    ],
+    "cyclic_jobs": {
+        "strategy": "ALL_WORKERS",
+        "monitoring_interval": 60
+    },
+    "StateContainerInitiation": [
+        "Wps\\State\\StateInitiation"
+    ],
+    "events": []
+}

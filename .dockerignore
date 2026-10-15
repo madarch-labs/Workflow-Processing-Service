@@ -1,0 +1,5 @@
+**/node_modules
+**/.git
+back/vendor
+back/.env
+front/dist

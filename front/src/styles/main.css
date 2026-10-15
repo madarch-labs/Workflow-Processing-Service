@@ -1,0 +1,144 @@
+:root {
+  --wps-bg: #f4f6f9;
+  --wps-header-h: 56px;
+  --wps-sidebar-w: 220px;
+  --wps-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  min-width: 1024px;
+  background: var(--wps-bg);
+  color: var(--el-text-color-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+}
+
+a {
+  color: var(--el-color-primary);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.page-header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+.page-header .actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filters {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.mono {
+  font-family: var(--wps-mono);
+}
+
+.json-block {
+  font-family: var(--wps-mono);
+  font-size: 12px;
+  background: #f7f8fa;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.panel-card {
+  margin-bottom: 16px;
+}
+.panel-card .el-card__header {
+  padding: 10px 16px;
+}
+.panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+}
+.panel-title small {
+  font-weight: normal;
+  color: var(--el-text-color-secondary);
+  margin-left: 8px;
+}
+
+.muted {
+  color: var(--el-text-color-secondary);
+}
+
+.clickable-rows .el-table__row {
+  cursor: pointer;
+}
+
+.api-error-message .el-message__content {
+  white-space: pre-line;
+  line-height: 1.5;
+}
+
+/* строки редактора */
+.row-grid {
+  display: grid;
+  gap: 8px;
+  align-items: center;
+}
+.row-grid.head {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  font-weight: 600;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  margin-bottom: 8px;
+}
+.row-actions {
+  display: flex;
+  gap: 2px;
+  justify-content: flex-end;
+}
+.empty-row {
+  color: var(--el-text-color-placeholder);
+  padding: 8px 0;
+  font-size: 13px;
+}
+.add-buttons {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
