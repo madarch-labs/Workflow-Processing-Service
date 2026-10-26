@@ -61,8 +61,46 @@ process: they are common for all workers of that process, **reset on restart**, 
 | `wps_execution_duration_seconds` | summary (`_sum`, `_count`) | Execution duration |
 | `wps_action_duration_seconds` | summary (`_sum`, `_count`) | Step duration (every audited step, including skipped) |
 | `wps_retry_count_total` | counter | Step retries after recoverable errors |
+| `wps_step_errors_handled_total` | counter | Step errors handled by `on_error` (`continue` / `goto`): the execution went on. Growth means processes "succeed" while external systems answer with errors |
 | `wps_run_once_skipped_total` | counter | Starts blocked by a run-once mark |
 | `wps_run_once_no_id_total` | counter | Run once not applied because the object had no `id` |
+| `wps_condition_cast_errors_total` | counter | Cast errors in conditions (`cast`): a value cannot be cast to the type of the condition row |
+| `wps_condition_change_info_missing_total` | counter | Change operators (`changed`, `changed_to` …) on an event without change info: old format, mock, a manual run without `changed_fields`. Growth means the CRM plugin should be upgraded to 1.2.0 |
+| `wps_program_compile_total` | counter | Compilations of process definitions into a program that missed the cache (grows on the first run of a process in a worker and after edits) |
+| `wps_program_resume_mismatch_total` | counter | Recoveries refused because the program hash changed after an upgrade; the execution is marked `failed` |
+| `wps_instructions_executed_total` | counter | Executed program instructions (actions, branches, jumps) |
+| `wps_secret_resolve_total` | counter | Resolved `secret://` references in steps |
+| `wps_secret_resolve_errors_total` | counter | Failed references: no such secret or field, the key is missing or does not match |
+| `wps_side_effects_done_total` | counter | External calls made and recorded in the side-effect journal |
+| `wps_side_effects_failed_total` | counter | External calls with a final error |
+| `wps_side_effects_replayed_total` | counter | Step repeated after a crash: the response came from the journal without calling again |
+| `wps_side_effects_unknown_total` | counter | Unknown outcome of an external call (`UNKNOWN_OUTCOME`) — needs an operator |
+| `wps_template_render_errors_total` | counter | Template substitution errors at run time (missing value with `missing: error`, a failing filter, a too long result) |
+| `wps_emails_sent_total` | counter | Letters sent by `send_email` (a step replayed from the journal is not counted) |
+| `wps_emails_failed_total` | counter | Transport errors while sending letters (every attempt) |
+| `wps_emails_rate_limited_total` | counter | Recipients skipped by the limit `MAILER_RATE_PER_RECIPIENT_HOUR` |
+| `wps_http_requests_total` | counter | Successfully finished `http_request` steps (including responses from the journal) |
+| `wps_crm_link_total` | counter | Executed `link_records` / `unlink_records` steps (the CRM requests are counted by the CRM metrics) |
+| `wps_condition_branch_total` | counter | Executed `condition` blocks (branch choice); the chosen branch is in the `debug` log `Branch selected` and in the audit |
+| `wps_process_stopped_total` | counter | Executions ended by a `stop_process` step (`completed` and `failed`); the status and the code are in the `info` log `Process stopped` and in `context.stop` |
+| `wps_loop_items_total` | counter | Items processed by `foreach` loops (loop totals are in the `info` log `Loop finished`) |
+| `wps_loop_item_failures_total` | counter | `foreach` items that failed with `on_item_error: continue` (the `warning` log `Loop item failed, the loop continues`) |
+| `wps_loop_overflow_total` | counter | `foreach` loops with more items than `max_items` (and `on_overflow: fail`) |
+| `wps_update_records_items_total` | counter | CRM records updated by `update_records` steps (unchanged and failed ones are not counted; the step summary is in `result_data`) |
+| `wps_aggregate_records_scanned` | summary | CRM records read by one aggregate (`aggregate`); `0` — `count` via `meta.total`. Growth means wide filters (see [Load on the CRM](crm-integration.md#load-on-the-crm-search-aggregates-bulk-updates)) |
+| `wps_notifications_sent_total` | counter | Delivered `notify` notifications — per delivery (a bell recipient, a chat, a webhook), including those taken from the journal on a repeat |
+| `wps_notifications_failed_total` | counter | `notify` channels that failed (the `info` log `Notification sent` — `delivered`, `failed`) |
+| `wps_assign_total` | counter | Executed `assign` steps (including `skipped` by `fallback` and repeats with `reused_decision`); the choice and the reason are in `result_data.reason` of the step |
+| `wps_condition_expression_errors_total` | counter | Evaluation errors of expressions in conditions (`value_type: expression`): division by zero, a wrong argument; the condition row is then false, details are in the `warning` log `Condition expression failed` (`process_id`, `field`, `error`) and in the trace (`expression_error`) |
+| `wps_events_legacy_format_total` | counter | Old-format events (no `event_type`, a contract 1.0 publisher): `object_before` is unknown for them |
+| `wps_events_malformed_fields_total` | counter | Dropped event service fields of a wrong type (`before`, `changed_fields`, `wps_origin`); the event is processed, the log gets `Invalid service fields in event` |
+| `wps_events_skipped_by_type_total` | counter | Events whose module has processes, but none subscribes to the event type (`trigger_on`) |
+| `wps_events_unsupported_type_total` | counter | Events with an unsupported `event_type` (`link`, `unlink`, a typo): acknowledged without starting processes, `info` log `Unsupported event_type, no process is started` |
+| `wps_executions_parked_total` | counter | Executions put into waiting (`waiting`): a `delay` pause or a long retry delay |
+| `wps_executions_woken_total` | counter | Waiting executions resumed after their due time |
+| `wps_wait_resume_failed_total` | counter | Failed attempts to resume a waiting execution (log `Resume attempt failed`) |
+| `wps_wait_lateness_seconds` | summary | How late a wake-up was relative to the due time, s (`_sum` / `_count`) |
+| `wps_executions_waiting` | gauge | Executions waiting right now (`COUNT(*)` from `execution_waits`) |
 | `wps_redis_stream_lag` | gauge | Same as `stream.lag` of the health check |
 | `wps_redis_stream_pending` | gauge | Same as `stream.pending` |
 
@@ -85,6 +123,8 @@ Useful expressions:
 | CRM instability | `rate(wps_retry_count_total[5m]) > 0` |
 | Backlog | `wps_redis_stream_lag > 100` |
 | Bad events | `increase(wps_events_invalid_total[1h]) > 0` |
+| Waits resume late | `rate(wps_wait_lateness_seconds_sum[5m]) / rate(wps_wait_lateness_seconds_count[5m]) > 30` |
+| Waits cannot be resumed | `increase(wps_wait_resume_failed_total[15m]) > 0` |
 
 ## Logs
 

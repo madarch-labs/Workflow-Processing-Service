@@ -17,7 +17,7 @@ WPS подбирает для события активные процессы �
 back/    PHP 8.3 + Swoole 6 + SwooleApp (пакет sidalex/swoole-app из Packagist, версия зафиксирована в composer.lock)
 front/   Vue 3 + TypeScript + Vite 5 + Element Plus + Pinia + Vue Router + Axios
 mock/    Mock Event Service: генератор событий в стрим + эмуляция CRM API v8
-docker-compose.yml   postgres, redis-stream (шина), redis-data (кэш/состояния), backend, mock, frontend
+docker-compose.yml   postgres, redis-stream (шина), redis-data (кэш/состояния), backend, mock, mailpit (тестовый SMTP), frontend
 ```
 
 ## Запуск
@@ -31,12 +31,15 @@ docker compose up -d --build
 | UI | http://localhost:3080 (порт задаётся `WPS_UI_PORT` в `./.env`; 3000 на этой машине занят) |
 | API | http://localhost:9501/api/health, метрики — http://localhost:9501/metrics |
 | Mock CRM / события | http://localhost:9502/test-event?module=Deals&set[status]=Active |
+| Mailpit (письма `send_email`) | http://localhost:8025 |
 
 Вход: `admin@wps.local` / `admin`. Пользователь создаётся миграцией `002_seed_admin.sql`.
 
 CRM для backend задаётся в `./.env`: `CRM_API_BASE_URL`, `CRM_API_STATIC_KEY`, `MOCK_SERVICE_URL`.
 По умолчанию используется мок. Настоящие SuiteCRM 7 и 8 с плагином интеграции разворачиваются из
 `.tehnical/suiteCRM7` и `.tehnical/suiteCRM8`, порядок описан в их README.
+
+Юнит-тесты (PHPUnit, без стека): `docker build -f back/Dockerfile --target test -t wps-backend-test . && docker run --rm wps-backend-test --testsuite unit`.
 
 Тесты API: 67 проверок, чистый PHP по `md/doc/concept_apitest_back.md`. Код вшит в образ,
 поэтому после правок пересоберите backend:

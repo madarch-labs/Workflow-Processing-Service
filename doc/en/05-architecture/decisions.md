@@ -151,6 +151,24 @@ yet; `AppConfig::fromEnv()` reads everything once in the master process.
 **Consequences.** Docker Compose and Kubernetes can override any value without editing files. A change of configuration
 requires a restart. The full list is in [Configuration](../04-operations/configuration.md).
 
+## ADR-12. Waiting executions are stored in PostgreSQL
+
+**Context.** A `delay` pause can last up to 400 days, long retry delays take minutes or hours. Keeping such an
+execution in a worker coroutine is not possible (a restart loses it), and Redis is unreliable for it: the
+`exec:{uuid}` key has a TTL, Redis can lose data, and `RecoveryJob` would mark the execution failed. Options: A — a
+delayed queue in Redis (sorted set), B — a PostgreSQL table, C — an external scheduler.
+
+**Decision.** Option B. The execution is parked: the state snapshot and the due time are written to `execution_waits`
+in the same transaction that sets the status to `waiting`, then the Redis key is deleted. `WaitResumeJob` in every
+worker claims due rows with `FOR UPDATE SKIP LOCKED` and a lease and resumes the execution after a CAS
+`waiting → running`. Deleting a process with waiting executions requires `force=true` and cancels them (`cancelled`);
+deactivating a process does not stop them.
+
+**Consequences.** A wait survives a backend restart and a Redis loss (verified with `SIGKILL` during a pause), each
+execution wakes up exactly once, waiting executions are visible via `GET /api/executions?status=waiting`. Wake-up
+precision is limited by `WAIT_POLL_INTERVAL_MS`; the snapshot size by `WAIT_STATE_MAX_BYTES`. See
+[Reliability → Waiting executions](../04-operations/reliability.md#waiting-executions).
+
 <!-- footer-nav -->
 ---
 

@@ -33,7 +33,20 @@ final class GetExecutionController extends BaseController
                     'conditions' => $live['conditions'] ?? [],
                 ];
                 $execution['current_step'] = $live['current_step'] ?? null;
+                $execution['seq'] = $live['seq'] ?? $execution['current_step'];
+                $execution['frames'] = $live['frames'] ?? [];
             }
+        }
+        if ($execution['status'] === 'waiting' && ($wait = $c->executionWaits()->find($id)) !== null) {
+            // a parked execution has no Redis state: its context is in execution_waits (7.2)
+            $snapshot = [
+                'event' => $wait->state['event'] ?? null,
+                'variables' => $wait->state['variables'] ?? null,
+                'meta' => $wait->state['meta'] ?? null,
+                'conditions' => $wait->state['conditions'] ?? [],
+            ];
+            $execution['current_step'] = $wait->state['current_step'] ?? null;
+            $execution['wait'] = ['due_at' => $wait->dueAt->format(\DATE_ATOM), 'reason' => $wait->reason, 'attempts' => $wait->attempts, 'info' => $wait->info];
         }
         $execution['context'] = $snapshot;
         $execution['actions'] = $c->audit()->steps($id);

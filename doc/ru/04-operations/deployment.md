@@ -16,8 +16,9 @@
 | `postgres` | `postgres:15-alpine` | 5432 | `WPS_PG_PORT` (5432) | `pgdata` | Процессы, выполнения, аудит шагов, пользователи, отметки однократного запуска |
 | `redis-stream` | `redis:7-alpine`, `--appendonly yes` | 6379 | `WPS_REDIS_STREAM_PORT` (6379) | `redis-stream` | Шина событий: стрим `crm_events`, группа `wps_workers`, стрим недоставленных сообщений `crm_events:dlq` |
 | `redis-data` | `redis:7-alpine`, `--appendonly yes` | 6379 | `WPS_REDIS_DATA_PORT` (6380) | `redis-data` | Кэши, живое состояние выполнений, блокировки, ключи идемпотентности |
-| `backend` | `back/Dockerfile` (`phpswoole/swoole:6.0-php8.3`) | 9501 | `WPS_API_PORT` (9501) | — | REST API, чтение стрима, восстановление выполнений |
+| `backend` | `back/Dockerfile` (`phpswoole/swoole:6.0-php8.3` + расширения `bcmath`, `intl`) | 9501 | `WPS_API_PORT` (9501) | — | REST API, чтение стрима, восстановление выполнений |
 | `mock` | `mock/Dockerfile` | 9502 | `WPS_MOCK_PORT` (9502) | — | Генератор событий и эмуляция API CRM (разработка и демо) |
+| `mailpit` | `axllent/mailpit:v1.21` | 1025 (SMTP), 8025 (веб и API) | `WPS_MAILPIT_PORT` (8025) | — | Тестовый SMTP-сервер: письма `send_email` не доставляются, а показываются в веб-интерфейсе и API `/api/v1/messages`. Backend использует его через `MAILER_DSN=smtp://mailpit:1025`. В продакшене замените `MAILER_DSN` на настоящий SMTP и уберите сервис |
 | `frontend` | `front/Dockerfile` (сборка на Node, раздача через nginx) | 80 | `WPS_UI_PORT` (3000) | — | Одностраничный UI; nginx проксирует `/api/` на `backend:9501` |
 
 ```mermaid
@@ -29,6 +30,7 @@ flowchart LR
     be --> rd[(redis-data)]
     be --> pg[(postgres)]
     be -->|"HTTP, X-Auth-Key"| crm
+    be -->|"SMTP :1025"| mp[mailpit]
 ```
 
 Backend стартует, когда PostgreSQL прошёл healthcheck (`depends_on: condition: service_healthy`) и оба Redis запущены.
@@ -67,6 +69,7 @@ curl -s http://localhost:9501/api/health
 | UI (`WPS_UI_PORT`) | Пользователям |
 | API (`WPS_API_PORT`) | Скриптам и интеграциям, которые вызывают REST API напрямую; Prometheus для `/metrics` |
 | `redis-stream` | CRM (она публикует события). Если CRM в той же docker-сети, порт публиковать не нужно |
+| Mailpit (`WPS_MAILPIT_PORT`) | Разработчикам и тестировщикам: просмотр писем стенда. В продакшене сервиса нет |
 | `postgres`, `redis-data`, `mock` | В продакшене никому; публикуйте только для отладки |
 
 Порты на хосте меняются в `./.env` (переменные `WPS_*_PORT`). В `.env` этого репозитория UI уже перенесён на 3080, а
@@ -128,6 +131,7 @@ docker compose up -d --scale backend=2   # сначала уберите фик�
 - [ ] Смените `POSTGRES_PASSWORD` / `DB_POSTGRES_PASSWORD` (по умолчанию `secret`).
 - [ ] Укажите в `CORS_ALLOW_ORIGIN` адрес UI вместо `*`, если API доступен с других адресов.
 - [ ] Направьте `CRM_API_BASE_URL` / `CRM_API_STATIC_KEY` на настоящую CRM, очистите `MOCK_SERVICE_URL` и не запускайте сервис `mock`.
+- [ ] Укажите в `MAILER_DSN` настоящий SMTP-сервер (или секрет вида `smtp_dsn` в действиях), задайте `MAILER_FROM` и `MAILER_ALLOWED_FROM`, не запускайте сервис `mailpit`.
 - [ ] Публикуйте только порт UI (и порт API, если он нужен интеграциям); PostgreSQL и Redis держите внутри сети или закройте паролями (`REDIS_*_PASSWORD`).
 - [ ] Оставьте `APP_DEBUG=false`: при `true` клиентам возвращаются тексты внутренних ошибок.
 - [ ] Настройте резервное копирование тома `pgdata`. В томах Redis только кратковременное состояние и кэши, но в `redis-stream` лежат ещё не обработанные события.

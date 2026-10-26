@@ -7,14 +7,27 @@ namespace Wps\Services;
 use Psr\Log\LoggerInterface;
 use Swoole\Coroutine;
 use Wps\Actions\ActionHandlerRegistry;
+use Wps\Actions\ActionResult;
+use Wps\Actions\ResumableActionInterface;
 use Wps\Config\AppConfig;
 use Wps\Context\ExecutionContext;
+use Wps\Crm\CrmCallOrigin;
+use Wps\Exceptions\ConditionCastException;
 use Wps\Exceptions\ExecutionException;
-use Wps\Infrastructure\Database;
+use Wps\Exceptions\NonRecoverableException;
 use Wps\Persistence\ExecutionRepository;
 use Wps\Persistence\Process;
 use Wps\Persistence\ProcessObjectRunRepository;
+use Wps\Program\Instruction;
+use Wps\Program\Interpreter;
+use Wps\Program\LoopRunner;
+use Wps\Program\ProgramCompiler;
+use Wps\Secrets\SecretMasker;
+use Wps\Services\Errors\ErrorClassifier;
+use Wps\Services\Errors\ErrorPolicy;
+use Wps\Services\Errors\RetryPolicy;
 use Wps\Support\Uuid;
+use Wps\Template\TemplateEngine;
 
 /**
  * Orchestrates one process run for one event (TS §5.4):
@@ -24,17 +37,25 @@ use Wps\Support\Uuid;
  *     run_once     process flag: one start per CRM record — atomic mark in process_object_runs
  *                  (md/idempotentie_plan.md), taken only when the conditions are met;
  *  3. execution    row in PostgreSQL + context Hash exec:{uuid} in Redis;
- *  4. steps        preload rows, then actions, strictly sequentially; after every step the context and
- *                  current_step are written to Redis and the step to the audit table;
+ *  4. program      the definition is compiled into a flat program (preload rows, then actions; blocks become
+ *                  jumps — md/tasks_list/done/0.1-program-compiler.md); instructions run one by one, after every one
+ *                  the context, pc (current_step), seq and loop frames are written to Redis and the step to the audit;
  *  5. retry        recoverable errors (CRM timeout/5xx, network, Redis) — ACTION_RETRY_MAX retries with
  *                  exponential backoff; other errors fail the execution and stop the remaining steps;
  *  6. finish       status completed/failed + context snapshot in PostgreSQL, Redis state kept for 1h.
  *
  * Child processes (start_process) run in their own coroutines and are not awaited.
- * An interrupted execution (worker crash) is resumed from current_step by resume().
+ * An interrupted execution (worker crash) is resumed from current_step (pc) by resume().
  */
 final class ExecutionEngineService
 {
+    /** retry delays above this are logged: they should be parked (7.2) */
+    private const INLINE_RETRY_WARN_MS = 5000;
+    /** the execution lock is refreshed at least this often while a retry delay runs */
+    private const LOCK_REFRESH_MS = 5000;
+
+    private readonly Interpreter $interpreter;
+
     public function __construct(
         private readonly AppConfig $config,
         private readonly ActionHandlerRegistry $actions,
@@ -45,14 +66,27 @@ final class ExecutionEngineService
         private readonly ExecutionStateStore $state,
         private readonly MetricsService $metrics,
         private readonly LoggerInterface $logger,
+        private readonly ProgramCompiler $compiler,
+        ?TemplateEngine $templates = null,
+        /** @var (\Closure(): WaitService)|null lazy: parking of waiting executions (7.2) */
+        private readonly ?\Closure $waits = null,
+        private readonly ?LoopRunner $loops = null,
     ) {
+        $this->interpreter = new Interpreter(
+            $conditions,
+            fn (Instruction $instruction, int $pc, int $seq, ExecutionContext $context, mixed $handle): StepRecord
+                => $this->executeAction($instruction, $pc, $seq, $context, $handle, $handle->process),
+            $templates,
+            $loops,
+        );
     }
 
     /**
      * Entry point for stream events and child processes.
      *
      * @return string "started" | "skipped" (conditions not met) | "skipped_run_once" (run_once: the record
-     *                already has a mark) | "duplicate" (already handled / resumed)
+     *                already has a mark) | "duplicate" (already handled / resumed) | "cast_error" (a strict
+     *                condition could not cast its value — recorded as a failed execution)
      */
     public function handle(Process $process, ExecutionContext $context, string $trigger, ?string $parentId = null, ?string $idempotencyKey = null): string
     {
@@ -66,6 +100,10 @@ final class ExecutionEngineService
         }
 
         $prepared = $this->prepare($process, $context, false);
+        if ($prepared->castError !== null) {
+            $this->recordConditionFailure($process, $context, $prepared, $trigger, $parentId, $executionId);
+            return 'cast_error';
+        }
         if (!$prepared->shouldStart()) {
             if ($idempotencyKey !== null) {
                 $this->state->setIdempotency($idempotencyKey, ExecutionStateStore::SKIPPED);
@@ -104,6 +142,9 @@ final class ExecutionEngineService
 
         $prepared = $this->prepare($process, $context, $force);
         $result['conditions'] = $prepared->trace;
+        if ($prepared->castError !== null) {
+            return $result + ['error' => 'CAST_ERROR', 'error_message' => $prepared->castError->getMessage()];
+        }
         if (!$prepared->shouldStart()) {
             return $result;
         }
@@ -231,22 +272,12 @@ final class ExecutionEngineService
             return false; // somebody is still working on it
         }
 
-        $processData = (array)($state['process'] ?? []);
-        $process = Process::fromArray($processData + ['definition' => $state['definition'] ?? []]);
-        $context = ExecutionContext::fromArray($state);
-        $handle = new ExecutionHandle(
-            id: $executionId,
-            process: $process,
-            steps: $process->steps(),
-            context: $context,
-            trigger: (string)($state['trigger'] ?? 'stream'),
-            parentId: ($state['parent_execution_id'] ?? '') !== '' ? (string)$state['parent_execution_id'] : null,
-            lockToken: $token,
-            currentStep: (int)($state['current_step'] ?? 0),
-            retryCount: (int)($state['retry_count'] ?? 0),
-            conditionTrace: (array)($state['conditions'] ?? []),
-            startedAt: (float)($state['started_ts'] ?? microtime(true)),
-        );
+        // the program is compiled from the definition snapshot of this execution, not from the current process;
+        // executions started before the flat program have no seq / frames: their programs are linear (seq == pc)
+        $handle = $this->handleFromState($executionId, $state, $token);
+        $process = $handle->process;
+        $context = $handle->context;
+        $program = $handle->program;
         $this->executions->create([
             'id' => $executionId,
             'process_id' => $process->id,
@@ -257,7 +288,14 @@ final class ExecutionEngineService
             'object_type' => (string)($context->getModule(ExecutionContext::OBJECT) ?? $process->objectType),
             'object_id' => (string)($context->event['id'] ?? ''),
         ]);
-        $this->logger->info('Resuming interrupted execution', ['execution_id' => $executionId, 'step' => $handle->currentStep]);
+        if (isset($state['program_hash']) && $state['program_hash'] !== '' && $state['program_hash'] !== $program->hash) {
+            // the compiler changed between releases: continuing could run the wrong instruction
+            $this->metrics->inc(MetricsService::PROGRAM_RESUME_MISMATCH);
+            $this->logger->error('Program changed after an upgrade', ['execution_id' => $executionId, 'pc' => $handle->pc]);
+            $this->finish($handle, 'failed', 'Program changed after an upgrade; the execution cannot be resumed safely');
+            return true;
+        }
+        $this->logger->info('Resuming interrupted execution', ['execution_id' => $executionId, 'pc' => $handle->pc, 'seq' => $handle->seq]);
         $this->run($handle);
         return true;
     }
@@ -278,22 +316,79 @@ final class ExecutionEngineService
             return new PreparedRun(true, []);
         }
         $conditions = $process->definition['conditions'];
-        $first = $this->conditions->evaluate($conditions, $context, allowUnknown: true);
+        // one "now" for both passes of the lazy preload (relative dates, 3.7)
+        $now = $this->conditions->now();
+        try {
+            $first = $this->conditions->evaluate($conditions, $context, allowUnknown: true, now: $now);
+        } catch (ConditionCastException $e) {
+            return new PreparedRun(false, [$e->getDetails()], castError: $e);
+        }
         if (!$first->isUnknown()) {
             return new PreparedRun($first->isMet(), $first->trace);
         }
 
-        // some rows use variables: run the preload block now and evaluate the rest
+        // some rows use variables: run the preload block now (the first instructions of the program) and evaluate the rest
         $records = [];
-        foreach ($process->definition['preload'] as $index => $row) {
-            $record = $this->executeStep($index, ['type' => 'preload'] + (array)$row, $context, null, $process);
+        $program = $this->compiler->compile($process->definition);
+        foreach (array_keys($process->definition['preload']) as $index) {
+            $record = $this->executeAction($program->at($index), $index, $index, $context, null, $process);
             $records[] = $record;
             if ($record->failed()) {
                 return new PreparedRun(false, $first->trace, $records, $record);
             }
         }
-        $second = $this->conditions->evaluate($conditions, $context);
+        try {
+            $second = $this->conditions->evaluate($conditions, $context, now: $now);
+        } catch (ConditionCastException $e) {
+            return new PreparedRun(false, [$e->getDetails()], $records, castError: $e);
+        }
         return new PreparedRun($second->isMet(), $second->trace, $records);
+    }
+
+    /**
+     * Strict condition ("on_cast_error": "error") could not cast a value: the run is recorded as a failed execution
+     * with a "conditions" step, so the author sees it in the journal; the event itself is acknowledged.
+     */
+    private function recordConditionFailure(Process $process, ExecutionContext $context, PreparedRun $prepared, string $trigger, ?string $parentId, string $executionId): void
+    {
+        $error = (string)$prepared->castError?->getMessage();
+        $this->executions->create([
+            'id' => $executionId,
+            'process_id' => $process->id,
+            'process_version' => $process->version,
+            'parent_execution_id' => $parentId,
+            'trigger' => $trigger,
+            'event_id' => $context->eventId,
+            'object_type' => (string)($context->getModule(ExecutionContext::OBJECT) ?? $process->objectType),
+            'object_id' => (string)($context->event['id'] ?? ''),
+        ]);
+        $index = 0;
+        foreach ($prepared->preloadSteps as $record) {
+            $this->audit->recordStep($executionId, $record);
+            $index = $record->stepIndex + 1;
+        }
+        $this->audit->recordStep($executionId, new StepRecord(
+            stepIndex: $index,
+            actionType: 'conditions',
+            status: 'failed',
+            attempts: 1,
+            startedAt: microtime(true),
+            durationMs: 0,
+            request: ['conditions' => $process->definition['conditions']],
+            result: ['trace' => $prepared->trace, 'error_class' => 'ConditionCastException', 'recoverable' => false],
+            error: $error,
+        ));
+        $this->executions->finish($executionId, 'failed', 0, [
+            'event' => $context->event,
+            'variables' => $context->variables(),
+            'meta' => $context->meta(),
+            'event_info' => $context->eventInfo->toArray(),
+            'conditions' => $prepared->trace,
+        ], $error);
+        $this->metrics->inc(MetricsService::EXECUTIONS_FAILED);
+        $this->logger->error('Process failed on conditions', [
+            'execution_id' => $executionId, 'process_id' => $process->id, 'event_id' => $context->eventId, 'error' => $error,
+        ]);
     }
 
     private function begin(Process $process, ExecutionContext $context, PreparedRun $prepared, string $trigger, ?string $parentId, string $executionId): ExecutionHandle
@@ -301,12 +396,14 @@ final class ExecutionEngineService
         $handle = new ExecutionHandle(
             id: $executionId,
             process: $process,
-            steps: $process->steps(),
+            program: $this->compiler->compile($process->definition),
             context: $context,
             trigger: $trigger,
             parentId: $parentId,
             lockToken: Uuid::v4(),
-            currentStep: 0,
+            pc: 0,
+            seq: 0,
+            frames: [],
             retryCount: 0,
             conditionTrace: $prepared->trace,
             startedAt: microtime(true),
@@ -328,6 +425,10 @@ final class ExecutionEngineService
         $this->state->create($executionId, [
             'status' => 'running',
             'current_step' => 0,
+            'seq' => 0,
+            'frames' => [],
+            'instructions_executed' => 0,
+            'program_hash' => $handle->program->hash,
             'retry_count' => 0,
             'trigger' => $trigger,
             'parent_execution_id' => $parentId ?? '',
@@ -343,18 +444,20 @@ final class ExecutionEngineService
         $this->metrics->inc(MetricsService::PROCESSES_STARTED);
         $this->logger->info('Process started', [
             'execution_id' => $executionId, 'process_id' => $process->id, 'event_id' => $context->eventId,
-            'object_type' => $process->objectType, 'trigger' => $trigger, 'step' => 0,
+            'object_type' => $process->objectType, 'trigger' => $trigger, 'pc' => 0,
         ]);
 
+        // preload steps already executed for the lazy condition check are the first instructions: pc == seq == index
         foreach ($prepared->preloadSteps as $record) {
             $this->audit->recordStep($executionId, $record);
-            $handle->currentStep = $record->stepIndex + 1;
+            $handle->pc = $handle->seq = $record->stepIndex + 1;
+            $handle->instructionsExecuted++;
         }
         if ($prepared->preloadSteps !== []) {
             $this->saveProgress($handle);
         }
         if ($prepared->failedStep !== null) {
-            $this->skipRemaining($handle, $handle->currentStep);
+            $this->failFrom($handle, $prepared->failedStep->stepIndex, 'Not executed: a previous step failed');
             $this->finish($handle, 'failed', $prepared->failedStep->error);
         }
         return $handle;
@@ -369,20 +472,239 @@ final class ExecutionEngineService
         $context->executionId = $handle->id;
         $context->processId = $handle->process->id;
 
-        $count = count($handle->steps);
-        for ($index = $handle->currentStep; $index < $count; $index++) {
-            $record = $this->executeStep($index, $handle->steps[$index], $context, $handle, $handle->process);
-            $this->audit->recordStep($handle->id, $record);
-            $handle->currentStep = $index + 1;
+        $program = $handle->program;
+        while ($handle->pc < $program->count()) {
+            if ($handle->instructionsExecuted >= $this->config->maxInstructionsPerExecution) {
+                // e.g. an endless goto loop (md/tasks_list/7.5-limits.md)
+                $this->closeLoops($handle, 'failed');
+                $this->failFrom($handle, max(0, $handle->pc - 1), 'Not executed: the execution limit was exceeded');
+                $this->finish($handle, 'failed', "LIMIT_EXCEEDED: more than {$this->config->maxInstructionsPerExecution} instructions in one execution");
+                return;
+            }
+            $pc = $handle->pc;
+            $instruction = $program->at($pc);
+            $outcome = $this->interpreter->step($instruction, $pc, $handle->seq, $context, $handle);
+            $record = $outcome->record;
+            $nextPc = $outcome->nextPc;
+            $handledBy = null;
+            if ($outcome->failed && $record !== null) {
+                [$handledBy, $nextPc, $record] = $this->handleFailure($handle, $instruction, $pc, $record, $nextPc);
+            }
+            if ($record !== null) {
+                $this->audit->recordStep($handle->id, $record);
+                if (!$outcome->overwrite) {
+                    $handle->seq++;
+                }
+                if ($instruction->op === Instruction::BRANCH && !$record->failed()) {
+                    $this->metrics->inc(MetricsService::CONDITION_BRANCHES);
+                    $this->logger->debug('Branch selected', ['execution_id' => $handle->id, 'pc' => $pc, 'step_id' => $instruction->stepId,
+                        'selected' => $record->result['selected'] ?? null]);
+                }
+            }
+            $handle->pc = $nextPc;
+            $handle->instructionsExecuted++;
+            $this->metrics->inc(MetricsService::INSTRUCTIONS_EXECUTED);
+            if ($record !== null && $record->isWaiting()) {
+                // the step parks the execution: it continues at the same pc after waking (7.2)
+                $handle->pc = $pc;
+                $this->saveProgress($handle);
+                $waits = $this->waits !== null ? ($this->waits)() : throw new \LogicException('Waiting executions are not available');
+                $wait = (array)$record->wait;
+                try {
+                    $waits->park($handle, new \DateTimeImmutable((string)$wait['due_at']), (string)$wait['reason'],
+                        ['pc' => $pc, 'seq' => $record->stepIndex, 'mode' => $wait['reason'] === 'retry' ? 'retry' : 'after_wait',
+                            'parked_at' => gmdate(\DATE_ATOM)] + (array)($wait['info'] ?? []));
+                } catch (NonRecoverableException $e) {
+                    $this->audit->recordStep($handle->id, new StepRecord($record->stepIndex, $record->actionType, 'failed', $record->attempts,
+                        $record->startedAt, $record->durationMs, $record->request, $record->result, $e->getMessage(), pc: $pc,
+                        path: $record->path, iteration: $record->iteration, stepId: $record->stepId));
+                    $this->failFrom($handle, $pc, 'Not executed: a previous step failed');
+                    $this->finish($handle, 'failed', $e->getMessage());
+                }
+                return;
+            }
             $this->saveProgress($handle);
 
-            if ($record->failed()) {
-                $this->skipRemaining($handle, $index + 1);
-                $this->finish($handle, 'failed', $record->error);
+            if ($outcome->halt !== null) {
+                $this->failFrom($handle, $pc, 'Not executed: the process was stopped by stop_process');
+                $failed = $outcome->halt['status'] === 'failed';
+                $code = $outcome->halt['code'] ?? null;
+                $message = (string)($outcome->halt['message'] ?? '');
+                $this->closeLoops($handle, 'success', ['stopped' => true]);
+                $handle->stop = ['status' => $outcome->halt['status'], 'code' => $code, 'message' => $message];
+                $this->metrics->inc(MetricsService::PROCESS_STOPPED);
+                $this->logger->info('Process stopped', ['execution_id' => $handle->id, 'status' => $outcome->halt['status'], 'code' => $code]);
+                $this->finish($handle, $failed ? 'failed' : 'completed', $failed
+                    ? ($code !== null ? "[{$code}] " : '') . ($message !== '' ? $message : 'Stopped by stop_process')
+                    : null);
+                return;
+            }
+            if ($outcome->failed && $handledBy === null) {
+                $this->closeLoops($handle, 'failed');
+                $this->failFrom($handle, $pc, 'Not executed: a previous step failed');
+                $this->finish($handle, 'failed', $outcome->record?->error);
                 return;
             }
         }
         $this->finish($handle, 'completed', null);
+    }
+
+    /**
+     * on_error of the failed step (md/tasks_list/done/7.1-on-error.md §4.1): "stop" keeps the former behaviour,
+     * "continue" goes to the next instruction (after the whole block for a failed condition), {"goto": id} jumps
+     * forward to a top-level step and leaves loops and branches. A handled error is kept in sys.last_error.
+     *
+     * @return array{0: string|null, 1: int, 2: StepRecord} [handled by, next pc, audit record]
+     */
+    private function handleFailure(ExecutionHandle $handle, Instruction $instruction, int $pc, StepRecord $record, int $nextPc): array
+    {
+        $config = $instruction->op === Instruction::ACTION ? $instruction->config : ['on_error' => $instruction->config['on_error'] ?? null];
+        $policy = ErrorPolicy::fromStep($config);
+        if ($policy->mode() === ErrorPolicy::STOP) {
+            // inside foreach with on_item_error = continue the loop goes on with its next item (4.11)
+            $continued = $this->loops !== null && $handle->frames !== [] ? $this->loops->itemError($handle, $instruction) : null;
+            if ($continued === null) {
+                return [null, $nextPc, $record];
+            }
+            [$nextPc, $closed] = $continued;
+            foreach ($closed as $loopRecord) {
+                $this->audit->recordStep($handle->id, $loopRecord);
+            }
+            $handle->context->recordHandledError(self::handledError($instruction, $record));
+            $this->logger->warning('Loop item failed, the loop continues', [
+                'execution_id' => $handle->id, 'process_id' => $handle->process->id, 'pc' => $pc, 'iteration' => $record->iteration,
+                'code' => $record->errorCode,
+            ]);
+            return ['item_continue', $nextPc, $record->withHandled('item_continue', [])];
+        }
+        if ($policy->mode() === ErrorPolicy::GOTO) {
+            $target = $handle->program->pcOf((string)$policy->target());
+            if ($target === null || $target <= $pc) {
+                // the validator forbids it; a definition saved before may still carry it
+                return [null, $nextPc, $record];
+            }
+            $nextPc = $target;
+            $this->closeLoops($handle, 'failed', ['left_by' => 'goto']);
+            $handle->context->iteration = '';
+        } elseif ($instruction->op === Instruction::BRANCH) {
+            $nextPc = (int)($instruction->config['end_target'] ?? $nextPc);
+        }
+        $error = self::handledError($instruction, $record);
+        $handle->context->recordHandledError($error);
+        $this->metrics->inc(MetricsService::STEP_ERRORS_HANDLED);
+        $this->logger->warning('Step error handled', [
+            'execution_id' => $handle->id, 'process_id' => $handle->process->id, 'pc' => $pc, 'policy' => $policy->mode(),
+            'target' => $policy->target(), 'code' => $error['code'],
+        ]);
+        return [$policy->mode(), $nextPc, $record->withHandled($policy->mode(), $policy->target() !== null ? ['goto' => $policy->target()] : [])];
+    }
+
+    /**
+     * sys.last_error of a handled step error (7.1).
+     *
+     * @return array<string, mixed>
+     */
+    private static function handledError(Instruction $instruction, StepRecord $record): array
+    {
+        return [
+            'step_id' => $instruction->stepId, 'step_path' => $instruction->path, 'action_type' => $record->actionType,
+            'code' => $record->errorCode ?? (string)($record->result['error_class'] ?? 'ERROR'),
+            'message' => $record->error, 'http_status' => $record->result['error']['http_status'] ?? null,
+            'attempts' => $record->attempts, 'at' => gmdate(\DATE_ATOM),
+        ] + ($record->iteration !== '' ? ['iteration' => $record->iteration] : []);
+    }
+
+    /**
+     * Closes the open foreach loops (the execution fails, stops or leaves them with goto): their records get the totals.
+     *
+     * @param array<string, mixed> $extra
+     */
+    private function closeLoops(ExecutionHandle $handle, string $status, array $extra = []): void
+    {
+        if ($handle->frames === []) {
+            return;
+        }
+        if ($this->loops === null) {
+            $handle->frames = [];
+            return;
+        }
+        foreach ($this->loops->closeAll($handle, $status, $extra) as $record) {
+            $this->audit->recordStep($handle->id, $record);
+        }
+    }
+
+    /**
+     * Continues an execution woken by WaitService (the state is back in Redis, the lock is held): the waiting step is
+     * finished by its handler (ResumableActionInterface) or marked successful; a parked retry runs the step again.
+     *
+     * @param array<string, mixed> $info pc, seq, mode (after_wait | retry), attempts, due_at, reason, parked_at …
+     */
+    public function resumeAfterWait(string $executionId, string $lockToken, array $info): void
+    {
+        $state = $this->state->load($executionId) ?? throw new \RuntimeException("State of {$executionId} is missing after waking");
+        $handle = $this->handleFromState($executionId, $state, $lockToken);
+        $pc = (int)($info['pc'] ?? $handle->pc);
+        $seq = (int)($info['seq'] ?? $handle->seq);
+        if (($info['mode'] ?? 'after_wait') === 'retry') {
+            $handle->pc = $pc;
+            $handle->seq = $seq; // the repeated attempt overwrites the "waiting" record
+            $handle->retryAttemptsDone = (int)($info['attempts'] ?? 0);
+            $this->run($handle);
+            return;
+        }
+        $instruction = $handle->program->at($pc);
+        $type = (string)($instruction->config['type'] ?? '');
+        $startedAt = microtime(true);
+        $waited = max(0, (int)round(microtime(true) - strtotime((string)($info['parked_at'] ?? 'now'))));
+        try {
+            $handler = $this->actions->has($type) ? $this->actions->get($type) : null;
+            $result = $handler instanceof ResumableActionInterface
+                ? $handler->resume($handle->context, $instruction->config, $info)
+                : ActionResult::success([], []);
+            $record = new StepRecord($seq, $type, $result->status, 1, $startedAt, self::elapsedMs($startedAt), $result->request,
+                $result->result + ['waited_seconds' => $waited], pc: $pc, path: $instruction->path, iteration: $handle->context->iteration,
+                stepId: $instruction->stepId);
+        } catch (\Throwable $e) {
+            $record = new StepRecord($seq, $type, 'failed', 1, $startedAt, self::elapsedMs($startedAt), [], ['waited_seconds' => $waited],
+                $e->getMessage(), pc: $pc, path: $instruction->path, stepId: $instruction->stepId);
+        }
+        $this->audit->recordStep($executionId, $record);
+        if ($record->failed()) {
+            $this->failFrom($handle, $pc, 'Not executed: a previous step failed');
+            $this->finish($handle, 'failed', $record->error);
+            return;
+        }
+        $handle->pc = $pc + 1;
+        $this->saveProgress($handle);
+        $this->run($handle);
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     */
+    private function handleFromState(string $executionId, array $state, string $token): ExecutionHandle
+    {
+        $processData = (array)($state['process'] ?? []);
+        $process = Process::fromArray($processData + ['definition' => $state['definition'] ?? []]);
+        $context = ExecutionContext::fromArray($state);
+        $context->iteration = LoopRunner::iteration(array_values((array)($state['frames'] ?? [])));
+        $currentStep = (int)($state['current_step'] ?? 0);
+        return new ExecutionHandle(
+            id: $executionId,
+            process: $process,
+            program: $this->compiler->compile($process->definition),
+            context: $context,
+            trigger: (string)($state['trigger'] ?? 'stream'),
+            parentId: ($state['parent_execution_id'] ?? '') !== '' ? (string)$state['parent_execution_id'] : null,
+            lockToken: $token,
+            pc: $currentStep,
+            seq: isset($state['seq']) ? (int)$state['seq'] : $currentStep,
+            frames: array_values((array)($state['frames'] ?? [])),
+            retryCount: (int)($state['retry_count'] ?? 0),
+            conditionTrace: (array)($state['conditions'] ?? []),
+            startedAt: (float)($state['started_ts'] ?? microtime(true)),
+            instructionsExecuted: (int)($state['instructions_executed'] ?? 0),
+        );
     }
 
     private function runInBackground(ExecutionHandle $handle): void
@@ -398,24 +720,58 @@ final class ExecutionEngineService
     }
 
     /**
-     * @param array<string, mixed> $step
+     * Runs one "action" instruction with retries of recoverable errors.
      */
-    private function executeStep(int $index, array $step, ExecutionContext $context, ?ExecutionHandle $handle, Process $process): StepRecord
+    private function executeAction(Instruction $instruction, int $pc, int $seq, ExecutionContext $context, ?ExecutionHandle $handle, Process $process): StepRecord
     {
+        $step = $instruction->config;
+        $index = $seq;
         $type = (string)($step['type'] ?? '');
         $startedAt = microtime(true);
-        $attempts = 0;
+        // a step woken after a long retry delay continues counting its attempts (7.1 + 7.2)
+        $attempts = $handle !== null ? $handle->retryAttemptsDone : 0;
+        if ($handle !== null) {
+            $handle->retryAttemptsDone = 0;
+        }
+        // the same token for all retries of this step; a repeated step after a crash gets a new one (0.4)
+        $context->attemptToken = Uuid::v4();
+        $policy = null;
 
         while (true) {
             $attempts++;
             if ($handle !== null) {
                 $this->state->refreshLock($handle->id, $handle->lockToken);
             }
-            $context->stepIndex = $index;
+            $context->stepIndex = $seq;
+            $context->pc = $pc;
+            // secrets resolved by the step register here; nothing of them may reach the audit (7.4)
+            $masker = $context->secretMasker = new SecretMasker();
+            // CRM saves of this step carry X-WPS-* headers → "wps_origin" of the events they cause (0.2, 7.5)
+            CrmCallOrigin::set($context->executionId, $context->processId, $context->depth);
             $snapshot = $context->snapshotState();
 
             try {
                 $result = $this->actions->get($type)->execute($context, $step);
+                if ($result->status === ActionResult::WAITING) {
+                    if ($handle === null || $result->dueAt === null) {
+                        throw new NonRecoverableException('This step cannot wait here (condition evaluation or a test run)');
+                    }
+                    return new StepRecord(
+                        stepIndex: $index,
+                        actionType: $type,
+                        status: ActionResult::WAITING,
+                        attempts: $attempts,
+                        startedAt: $startedAt,
+                        durationMs: self::elapsedMs($startedAt),
+                        request: $masker->mask($result->request),
+                        result: $masker->mask($result->result) + ['wait' => ['due_at' => $result->dueAt->format(\DATE_ATOM), 'reason' => (string)$result->waitReason]],
+                        pc: $pc,
+                        path: $instruction->path,
+                        iteration: $context->iteration,
+                        stepId: $instruction->stepId,
+                        wait: ['due_at' => $result->dueAt->format(\DATE_ATOM), 'reason' => (string)$result->waitReason, 'info' => $result->waitInfo],
+                    );
+                }
                 return new StepRecord(
                     stepIndex: $index,
                     actionType: $type,
@@ -423,25 +779,58 @@ final class ExecutionEngineService
                     attempts: $attempts,
                     startedAt: $startedAt,
                     durationMs: self::elapsedMs($startedAt),
-                    request: $result->request,
-                    result: $result->result,
+                    request: $masker->mask($result->request),
+                    result: $masker->mask($result->result),
+                    pc: $pc,
+                    path: $instruction->path,
+                    iteration: $context->iteration,
+                    stepId: $instruction->stepId,
                 );
             } catch (\Throwable $e) {
                 $context->restoreState($snapshot);
-                $recoverable = self::isRecoverable($e);
+                $error = ErrorClassifier::classify($e);
+                $policy ??= RetryPolicy::fromStep($step, $this->config);
 
-                if ($recoverable && $attempts <= $this->config->retryMax) {
-                    $delayMs = (int)round($this->config->retryBaseDelayMs * ($this->config->retryBackoff ** ($attempts - 1)));
+                if ($policy->shouldRetry($error, $attempts)) {
+                    $delayMs = $policy->delayMs($attempts, $error->retryAfterSeconds);
+                    $waits = $this->waits !== null ? ($this->waits)() : null;
+                    if ($handle !== null && $waits !== null && $delayMs > $this->config->waitInlineMaxSeconds * 1000) {
+                        // a long retry delay parks the execution instead of holding the worker (7.1 §4.3)
+                        $dueAt = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->modify(sprintf('+%d milliseconds', $delayMs));
+                        $handle->retryCount++;
+                        $this->metrics->inc(MetricsService::RETRY_COUNT);
+                        $this->logger->warning('Step failed, retry parked', [
+                            'execution_id' => $handle->id, 'pc' => $pc, 'action' => $type, 'attempt' => $attempts, 'delay_ms' => $delayMs,
+                            'code' => $error->code, 'error' => $masker->mask($e->getMessage()),
+                        ]);
+                        return new StepRecord(
+                            stepIndex: $index,
+                            actionType: $type,
+                            status: ActionResult::WAITING,
+                            attempts: $attempts,
+                            startedAt: $startedAt,
+                            durationMs: self::elapsedMs($startedAt),
+                            request: $masker->mask($step),
+                            result: ['retry' => ['attempt' => $attempts, 'next_at' => $dueAt->format(\DATE_ATOM), 'error' => $masker->mask($error->toArray())],
+                                'wait' => ['due_at' => $dueAt->format(\DATE_ATOM), 'reason' => 'retry']],
+                            pc: $pc,
+                            path: $instruction->path,
+                            iteration: $context->iteration,
+                            stepId: $instruction->stepId,
+                            wait: ['due_at' => $dueAt->format(\DATE_ATOM), 'reason' => 'retry', 'info' => ['attempts' => $attempts]],
+                        );
+                    }
                     $this->logger->warning('Step failed, retrying', [
-                        'execution_id' => $handle?->id, 'process_id' => $process->id, 'step' => $index,
-                        'action' => $type, 'attempt' => $attempts, 'delay_ms' => $delayMs, 'error' => $e->getMessage(),
+                        'execution_id' => $handle?->id, 'process_id' => $process->id, 'pc' => $pc, 'seq' => $index,
+                        'action' => $type, 'attempt' => $attempts, 'delay_ms' => $delayMs, 'code' => $error->code,
+                        'retry_after' => $error->retryAfterSeconds, 'error' => $masker->mask($e->getMessage()),
                     ]);
                     $this->metrics->inc(MetricsService::RETRY_COUNT);
                     if ($handle !== null) {
                         $handle->retryCount++;
                         $this->setStatus($handle, 'retrying');
                     }
-                    Coroutine::sleep($delayMs / 1000);
+                    $this->sleepKeepingLock($delayMs, $handle);
                     if ($handle !== null) {
                         $this->setStatus($handle, 'running');
                     }
@@ -449,10 +838,11 @@ final class ExecutionEngineService
                 }
 
                 $this->logger->warning('Step failed', [
-                    'execution_id' => $handle?->id, 'process_id' => $process->id, 'step' => $index,
-                    'action' => $type, 'attempts' => $attempts, 'recoverable' => $recoverable, 'error' => $e->getMessage(),
+                    'execution_id' => $handle?->id, 'process_id' => $process->id, 'pc' => $pc, 'seq' => $index,
+                    'action' => $type, 'attempts' => $attempts, 'code' => $error->code, 'recoverable' => $error->transient,
+                    'error' => $masker->mask($e->getMessage()),
                 ]);
-                $details = $e instanceof ExecutionException ? $e->getDetails() : [];
+                $details = $masker->mask($e instanceof ExecutionException ? $e->getDetails() : []);
                 return new StepRecord(
                     stepIndex: $index,
                     actionType: $type !== '' ? $type : 'unknown',
@@ -460,41 +850,83 @@ final class ExecutionEngineService
                     attempts: $attempts,
                     startedAt: $startedAt,
                     durationMs: self::elapsedMs($startedAt),
-                    request: $step,
-                    result: ['error_class' => (new \ReflectionClass($e))->getShortName(), 'recoverable' => $recoverable] + ($details !== [] ? ['details' => $details] : []),
-                    error: $e->getMessage(),
-                    recoverable: $recoverable,
+                    request: $masker->mask($step),
+                    result: ['error_class' => (new \ReflectionClass($e))->getShortName(), 'recoverable' => $error->transient,
+                        'error_code' => $error->code, 'error' => $masker->mask($error->toArray())]
+                        + ($details !== [] ? ['details' => $details] : []),
+                    error: (string)$masker->mask($e->getMessage()),
+                    recoverable: $error->transient,
+                    pc: $pc,
+                    path: $instruction->path,
+                    iteration: $context->iteration,
+                    stepId: $instruction->stepId,
+                    errorCode: $error->code,
                 );
             }
         }
     }
 
-    private function skipRemaining(ExecutionHandle $handle, int $from): void
+    /**
+     * Retry delay inside the coroutine; the lock is refreshed so that RecoveryJob does not take the execution over.
+     * Long delays should park the execution (waits, md/tasks_list/7.2-waiting-executions.md) — until then they run
+     * here as well.
+     */
+    private function sleepKeepingLock(int $delayMs, ?ExecutionHandle $handle): void
     {
-        $count = count($handle->steps);
-        for ($i = $from; $i < $count; $i++) {
+        if ($delayMs > self::INLINE_RETRY_WARN_MS) {
+            $this->logger->warning('Long retry delay runs inside the worker until waiting executions are available', [
+                'execution_id' => $handle?->id, 'delay_ms' => $delayMs,
+            ]);
+        }
+        $left = $delayMs;
+        while ($left > 0) {
+            $chunk = min($left, self::LOCK_REFRESH_MS);
+            Coroutine::sleep($chunk / 1000);
+            $left -= $chunk;
+            if ($handle !== null && $left > 0) {
+                $this->state->refreshLock($handle->id, $handle->lockToken);
+            }
+        }
+    }
+
+    /**
+     * Writes "skipped" for the audited instructions that will not run after the instruction at $pc failed or
+     * stopped the process: the following elements of its list and of every enclosing list up to the top level.
+     */
+    private function failFrom(ExecutionHandle $handle, int $pc, string $reason): void
+    {
+        if ($handle->program->count() === 0) {
+            return;
+        }
+        foreach ($handle->program->remainingAfter(min($pc, $handle->program->count() - 1)) as $skippedPc) {
+            $instruction = $handle->program->at($skippedPc);
             $this->audit->recordStep($handle->id, new StepRecord(
-                stepIndex: $i,
-                actionType: (string)($handle->steps[$i]['type'] ?? 'unknown'),
+                stepIndex: $handle->seq++,
+                actionType: $instruction->auditType(),
                 status: 'skipped',
                 attempts: 0,
                 startedAt: microtime(true),
                 durationMs: 0,
-                request: $handle->steps[$i],
-                result: ['reason' => 'Not executed: a previous step failed'],
+                request: $instruction->config,
+                result: ['reason' => $reason],
+                pc: $skippedPc,
+                path: $instruction->path,
+                stepId: $instruction->stepId,
             ));
         }
     }
 
     private function finish(ExecutionHandle $handle, string $status, ?string $error): void
     {
+        $this->closeLoops($handle, $status === 'completed' ? 'success' : 'failed');
         $snapshot = [
             'event' => $handle->context->event,
             'variables' => $handle->context->variables(),
             'meta' => $handle->context->meta(),
+            'event_info' => $handle->context->eventInfo->toArray(),
             'conditions' => $handle->conditionTrace,
-        ];
-        $this->executions->finish($handle->id, $status, $handle->retryCount, $snapshot, $error);
+        ] + ($handle->frames !== [] ? ['frames' => $handle->frames] : []) + ($handle->stop !== null ? ['stop' => $handle->stop] : []);
+        $this->executions->finish($handle->id, $status, $handle->retryCount, $snapshot, $error, $handle->context->handledErrors());
         $this->state->finish($handle->id, $status);
         $this->state->releaseLock($handle->id, $handle->lockToken);
         $handle->finished = true;
@@ -504,14 +936,19 @@ final class ExecutionEngineService
         $this->metrics->observe(MetricsService::EXECUTION_DURATION, $duration);
         $this->logger->info($status === 'completed' ? 'Process completed' : 'Process failed', [
             'execution_id' => $handle->id, 'process_id' => $handle->process->id, 'event_id' => $handle->context->eventId,
-            'object_type' => $handle->process->objectType, 'step' => $handle->currentStep,
+            'object_type' => $handle->process->objectType, 'pc' => $handle->pc, 'seq' => $handle->seq,
             'duration_ms' => (int)round($duration * 1000), 'error' => $error,
         ]);
     }
 
     private function saveProgress(ExecutionHandle $handle): void
     {
-        $this->state->update($handle->id, ['current_step' => $handle->currentStep] + $this->contextFields($handle->context));
+        $this->state->update($handle->id, [
+            'current_step' => $handle->pc,
+            'seq' => $handle->seq,
+            'frames' => $handle->frames,
+            'instructions_executed' => $handle->instructionsExecuted,
+        ] + $this->contextFields($handle->context));
     }
 
     private function setStatus(ExecutionHandle $handle, string $status): void
@@ -533,6 +970,7 @@ final class ExecutionEngineService
             'meta' => $data['meta'],
             'dirty' => $data['dirty'],
             'depth' => $data['depth'],
+            'event_info' => $data['event_info'],
         ];
     }
 
@@ -554,23 +992,16 @@ final class ExecutionEngineService
         $newId = Uuid::v4();
         $this->state->setIdempotency($key, $newId);
         $prepared = $this->prepare($process, $context, false);
+        if ($prepared->castError !== null) {
+            $this->recordConditionFailure($process, $context, $prepared, $trigger, $parentId, $newId);
+            return 'cast_error';
+        }
         if (!$prepared->shouldStart()) {
             $this->state->setIdempotency($key, ExecutionStateStore::SKIPPED);
             return 'skipped';
         }
         $this->run($this->begin($process, $context, $prepared, $trigger, $parentId, $newId));
         return 'started';
-    }
-
-    private static function isRecoverable(\Throwable $e): bool
-    {
-        if ($e instanceof ExecutionException) {
-            return $e->isRecoverable();
-        }
-        if ($e instanceof \RedisException) {
-            return true;
-        }
-        return Database::isConnectionError($e);
     }
 
     private static function elapsedMs(float $since): int

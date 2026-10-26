@@ -8,16 +8,36 @@ use Wps\Exceptions\ConfigurationException;
 
 /**
  * Recursive-descent parser producing a small array-based AST (see ExpressionEngine).
+ *
+ *   expression  = or_expr
+ *   or_expr     = and_expr { ("or" | "||") and_expr }
+ *   and_expr    = not_expr { ("and" | "&&") not_expr }
+ *   not_expr    = ("not" | "!") not_expr | comparison
+ *   comparison  = additive [ comp_op additive ]            (not chainable: a < b < c is an error)
+ *   comp_op     = "==" | "=" | "!=" | "<>" | "<" | "<=" | ">" | ">="
+ *   additive    = term { ("+" | "-") term }
+ *   term        = unary { ("*" | "/" | "%") unary }
+ *   unary       = ("-" | "+") unary | primary
+ *   primary     = NUMBER | STRING | PATH | "true" | "false" | "null" | "[" [ expression { "," expression } ] "]"
+ *               | IDENT "(" [ expression { "," expression } ] ")" | "(" expression ")"
  */
 final class ExpressionParser
 {
+    private const COMPARISON_OPS = ['==' => '==', '=' => '==', '!=' => '!=', '<>' => '!=', '<' => '<', '<=' => '<=', '>' => '>', '>=' => '>='];
+
     private int $pos = 0;
+    private int $nodes = 0;
+    private int $depth = 0;
 
     /**
      * @param list<array{0: string, 1: mixed, 2: int}> $tokens
      */
-    public function __construct(private readonly array $tokens, private readonly string $source)
-    {
+    public function __construct(
+        private readonly array $tokens,
+        private readonly string $source,
+        private readonly int $maxNodes = ExpressionEngine::MAX_NODES,
+        private readonly int $maxDepth = ExpressionEngine::MAX_DEPTH,
+    ) {
     }
 
     /**
@@ -28,7 +48,7 @@ final class ExpressionParser
         if ($this->peek()[0] === 'eof') {
             throw new ConfigurationException('Expression is empty');
         }
-        $node = $this->expr();
+        $node = $this->orExpr();
         $token = $this->peek();
         if ($token[0] !== 'eof') {
             throw $this->error($token, 'Unexpected "' . $token[1] . '"');
@@ -39,12 +59,77 @@ final class ExpressionParser
     /**
      * @return array<int, mixed>
      */
-    private function expr(): array
+    private function orExpr(): array
+    {
+        $node = $this->andExpr();
+        while ($this->isKeyword('or') || $this->isOp('||')) {
+            $this->next();
+            $node = $this->node(['or', $node, $this->andExpr()]);
+        }
+        return $node;
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function andExpr(): array
+    {
+        $node = $this->notExpr();
+        while ($this->isKeyword('and') || $this->isOp('&&')) {
+            $this->next();
+            $node = $this->node(['and', $node, $this->notExpr()]);
+        }
+        return $node;
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function notExpr(): array
+    {
+        if ($this->isKeyword('not') || $this->isOp('!')) {
+            $this->next();
+            $this->enter();
+            $node = $this->node(['not', $this->notExpr()]);
+            $this->depth--;
+            return $node;
+        }
+        return $this->comparison();
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function comparison(): array
+    {
+        $node = $this->additive();
+        $op = $this->comparisonOp();
+        if ($op === null) {
+            return $node;
+        }
+        $this->next();
+        $node = $this->node(['cmp', $op, $node, $this->additive()]);
+        if ($this->comparisonOp() !== null) {
+            throw $this->error($this->peek(), 'Comparison operators cannot be chained');
+        }
+        return $node;
+    }
+
+    private function comparisonOp(): ?string
+    {
+        $token = $this->peek();
+        return $token[0] === 'op' && is_string($token[1]) ? (self::COMPARISON_OPS[$token[1]] ?? null) : null;
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function additive(): array
     {
         $node = $this->term();
         while ($this->isOp('+') || $this->isOp('-')) {
             $op = $this->next()[1];
-            $node = ['bin', $op, $node, $this->term()];
+            $node = $this->node(['bin', $op, $node, $this->term()]);
         }
         return $node;
     }
@@ -57,7 +142,7 @@ final class ExpressionParser
         $node = $this->unary();
         while ($this->isOp('*') || $this->isOp('/') || $this->isOp('%')) {
             $op = $this->next()[1];
-            $node = ['bin', $op, $node, $this->unary()];
+            $node = $this->node(['bin', $op, $node, $this->unary()]);
         }
         return $node;
     }
@@ -69,7 +154,10 @@ final class ExpressionParser
     {
         if ($this->isOp('-')) {
             $this->next();
-            return ['neg', $this->unary()];
+            $this->enter();
+            $node = $this->node(['neg', $this->unary()]);
+            $this->depth--;
+            return $node;
         }
         if ($this->isOp('+')) {
             $this->next();
@@ -86,35 +174,80 @@ final class ExpressionParser
         $token = $this->next();
         switch ($token[0]) {
             case 'num':
-                return ['num', $token[1]];
+                return $this->node(['num', $token[1]]);
             case 'str':
-                return ['str', $token[1]];
+                return $this->node(['str', $token[1]]);
             case 'path':
-                return ['path', $token[1]];
+                return $this->node(['path', $token[1]]);
+            case 'kw':
+                return match ($token[1]) {
+                    'true' => $this->node(['bool', true]),
+                    'false' => $this->node(['bool', false]),
+                    'null' => $this->node(['null']),
+                    default => throw $this->error($token, 'Unexpected "' . $token[1] . '"'),
+                };
             case 'ident':
                 if (!$this->isOp('(')) {
                     throw $this->error($token, "Unknown identifier \"{$token[1]}\" (use object.<field> or <variable>.<field>)");
                 }
                 $this->next();
-                $args = [];
-                if (!$this->isOp(')')) {
-                    $args[] = $this->expr();
-                    while ($this->isOp(',')) {
-                        $this->next();
-                        $args[] = $this->expr();
-                    }
-                }
-                $this->expect(')');
-                return ['call', strtolower((string)$token[1]), $args];
+                $this->enter();
+                $args = $this->arguments(')');
+                $this->depth--;
+                return $this->node(['call', strtolower((string)$token[1]), $args]);
             case 'op':
                 if ($token[1] === '(') {
-                    $node = $this->expr();
+                    $this->enter();
+                    $node = $this->orExpr();
                     $this->expect(')');
+                    $this->depth--;
                     return $node;
+                }
+                if ($token[1] === '[') {
+                    $this->enter();
+                    $items = $this->arguments(']');
+                    $this->depth--;
+                    return $this->node(['list', $items]);
                 }
                 throw $this->error($token, 'Unexpected "' . $token[1] . '"');
         }
         throw $this->error($token, 'Unexpected end of expression');
+    }
+
+    /**
+     * @return list<array<int, mixed>>
+     */
+    private function arguments(string $close): array
+    {
+        $args = [];
+        if (!$this->isOp($close)) {
+            $args[] = $this->orExpr();
+            while ($this->isOp(',')) {
+                $this->next();
+                $args[] = $this->orExpr();
+            }
+        }
+        $this->expect($close);
+        return $args;
+    }
+
+    /**
+     * @param array<int, mixed> $node
+     * @return array<int, mixed>
+     */
+    private function node(array $node): array
+    {
+        if (++$this->nodes > $this->maxNodes) {
+            throw new ConfigurationException("Expression is too complex (max {$this->maxNodes} nodes)");
+        }
+        return $node;
+    }
+
+    private function enter(): void
+    {
+        if (++$this->depth > $this->maxDepth) {
+            throw new ConfigurationException("Expression is nested too deeply (max {$this->maxDepth} levels)");
+        }
     }
 
     /**
@@ -141,6 +274,12 @@ final class ExpressionParser
     {
         $token = $this->peek();
         return $token[0] === 'op' && $token[1] === $op;
+    }
+
+    private function isKeyword(string $keyword): bool
+    {
+        $token = $this->peek();
+        return $token[0] === 'kw' && $token[1] === $keyword;
     }
 
     private function expect(string $op): void

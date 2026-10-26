@@ -1,6 +1,6 @@
 # Новый тип изменения
 
-Как добавить способ вычисления нового значения в действии `modify` — на проверенном примере типа изменения `append` («Дописать к значению»).
+Как добавить способ вычисления нового значения в действии `modify` — на учебном примере типа изменения `append_note` («Дописать заметку»).
 
 <!-- lang-switch -->
 [🇬🇧 English](../../../en/07-developer-guide/extending/new-change-type.md) | 🇷🇺 Русский
@@ -8,10 +8,14 @@
 
 ## 1. Когда это нужно
 
-Действие `modify` записывает значение в `object.<field>` или `<variable>.<field>`. Встроенные типы изменения:
-`set_value` (введённое значение), `set_from_variable` (копия другого поля) и `calculate` (выражение). Новый тип
-изменения нужен, когда значение получается логикой, которую неудобно записывать выражением: дописывание в список,
-арифметика дат, таблица соответствий. Если в выражениях не хватает только функции, добавьте
+Действие `modify` записывает значение в `object.<field>` или `<variable>.<field>`. Встроенные типы изменения перечислены
+в [Типах изменений и выражениях](../../03-user-guide/change-types-and-expressions.md) и в справочнике
+`GET /api/dictionaries/change-types`. Новый тип изменения нужен, когда значение получается логикой, которую неудобно
+записывать выражением.
+
+> **Примечание**
+> Встроенный `append` («Дописать в конец», задача 5.1.5) умеет больше: шаблоны, `max_length`, режим списка. Учебный
+> пример ниже назван `append_note`, чтобы не конфликтовать с ним; для своего типа выберите своё имя. Если в выражениях не хватает только функции, добавьте
 [функцию выражений](expression-functions.md).
 
 ## 2. Как это устроено
@@ -28,7 +32,9 @@ classDiagram
     ChangeTypeInterface <|.. SetValueChangeType
     ChangeTypeInterface <|.. SetFromVariableChangeType
     ChangeTypeInterface <|.. CalculateChangeType
-    ChangeTypeInterface <|.. AppendChangeType
+    ChangeTypeInterface <|.. TemplateChangeType
+    ReportsDetails <|.. TemplateChangeType
+    ChangeTypeInterface <|.. AppendNoteChangeType
     ChangeTypeRegistry o-- ChangeTypeInterface
     ModifyHandler --> ChangeTypeRegistry
 ```
@@ -40,10 +46,19 @@ classDiagram
 - `ModifyHandler::validate()` проверяет, что `change_type` зарегистрирован, вызывает ваш `validate()` **до** объявления
   цели (значение вычисляется раньше, чем записывается), затем проверяет `target`.
 - Реестр заполняется в `Container::changeTypes()`; его список отдаёт `GET /api/dictionaries/change-types`.
+- Если типу есть что добавить в аудит шага (например, `template` сообщает отсутствующие пути), реализуйте
+  необязательный интерфейс `ReportsDetails::computeWithDetails($context, $config): [$value, $details]` —
+  `ModifyHandler` вызовет его вместо `compute()` и добавит `$details` в `result_data`. Не храните детали в свойствах
+  объекта: один экземпляр типа обслуживает конкурентные выполнения.
+- Тип, который собирает текст из подстановок, не пишет свой разбор: используйте `Container::templates()`
+  (`TemplateEngine::render()`) и `Container::templateValidator()` — как `TemplateChangeType`.
+- Тип, который читает записи CRM, получает в конструкторе `ExternalApiAdapterService`, а фильтр в формате
+  «Найти записи» переводит и проверяет общими `Crm\FilterTranslator` и `Crm\FilterRulesValidator` — как
+  `AggregateChangeType`. Учитывайте, что тип вычисляется при каждом выполнении: ограничивайте число читаемых записей.
 
 ## 3. Пошагово
 
-### 3.1 Класс — `back/src/Actions/ChangeTypes/AppendChangeType.php`
+### 3.1 Класс — `back/src/Actions/ChangeTypes/AppendNoteChangeType.php`
 
 ```php
 <?php
@@ -57,19 +72,19 @@ use Wps\Context\ExecutionContext;
 use Wps\Services\Validation\DefinitionScope;
 
 /**
- * "Дописать": appends the value to the current value of the target field,
+ * "Дописать заметку": appends the value to the current value of the target field,
  * separated by "separator" (default: a space). An empty field simply gets the value.
  */
-final class AppendChangeType implements ChangeTypeInterface
+final class AppendNoteChangeType implements ChangeTypeInterface
 {
     public function name(): string
     {
-        return 'append';
+        return 'append_note';
     }
 
     public function label(): string
     {
-        return 'Дописать к значению';
+        return 'Дописать заметку';
     }
 
     public function compute(ExecutionContext $context, array $config): mixed
@@ -99,7 +114,7 @@ final class AppendChangeType implements ChangeTypeInterface
 ### 3.2 Регистрация — `back/src/Kernel/Container.php`
 
 ```php
-use Wps\Actions\ChangeTypes\AppendChangeType;
+use Wps\Actions\ChangeTypes\AppendNoteChangeType;
 
 public function changeTypes(): ChangeTypeRegistry
 {
@@ -108,7 +123,7 @@ public function changeTypes(): ChangeTypeRegistry
         $registry->register(new SetValueChangeType());
         $registry->register(new SetFromVariableChangeType());
         $registry->register(new CalculateChangeType($this->expressions()));
-        $registry->register(new AppendChangeType());
+        $registry->register(new AppendNoteChangeType());
         return $registry;
     });
 }
@@ -117,10 +132,10 @@ public function changeTypes(): ChangeTypeRegistry
 ### 3.3 Использование
 
 ```json
-{ "type": "modify", "target": "object.note", "change_type": "append", "value": "checked", "separator": " | " }
+{ "type": "modify", "target": "object.note", "change_type": "append_note", "value": "checked", "separator": " | " }
 ```
 
-При `object.note = "start"` результат — `"start | checked"` (проверено, см. тест ниже).
+При `object.note = "start"` результат — `"start | checked"` (см. тест ниже).
 
 ## 4. Валидация и ошибки
 
@@ -139,22 +154,22 @@ public function changeTypes(): ChangeTypeRegistry
 
 ```json
 // en.json → dict.changeType
-"append": "Append to value"
+"append_note": "Append a note"
 // ru.json → dict.changeType
-"append": "Дописать к значению"
+"append_note": "Дописать заметку"
 ```
 
 2. Расширьте TypeScript-объединение в `front/src/types/index.ts`:
 
 ```ts
-export type ChangeType = 'set_value' | 'set_from_variable' | 'calculate' | 'append'
+export type ChangeType = 'set_value' | 'set_from_variable' | 'calculate' | 'append_note'
 ```
 
 Тип, которого нет в объединении, во время выполнения всё равно работает, но код редактора сравнивает `change_type`
 с литералами, и `vue-tsc` следит за полнотой объединения в новых ветках.
 
 3. Поле значения: `ModifyPanel.vue` показывает ввод пути переменной для `set_from_variable`, поле выражения со справкой
-для `calculate` и обычное текстовое поле для всего остального — для `append` ничего менять не нужно.
+для `calculate` и обычное текстовое поле для всего остального — для `append_note` ничего менять не нужно.
 
 > **Внимание**
 > Редактор сохраняет у строки изменения только `target`, `change_type`, `value` и `save_to_crm`
@@ -164,14 +179,14 @@ export type ChangeType = 'set_value' | 'set_from_variable' | 'calculate' | 'appe
 
 ## 6. Тест
 
-Из проверенной группы `testExtensions()` (полный текст — в [Новый тип действия → Тест](new-action-type.md#6-тест)):
+По образцу группы `testExtensions()` (полный текст — в [Новый тип действия → Тест](new-action-type.md#6-тест)):
 
 ```php
-$this->test('Change types contain append', function () {
+$this->test('Change types contain append_note', function () {
     $changeTypes = $this->request('GET', '/api/dictionaries/change-types', token: $this->adminToken)['data'];
-    $this->assertTrue(in_array('append', array_column($changeTypes, 'value'), true));
+    $this->assertTrue(in_array('append_note', array_column($changeTypes, 'value'), true));
 });
-// in a process: ['type' => 'modify', 'target' => 'object.note', 'change_type' => 'append', 'value' => 'checked', 'separator' => ' | ']
+// in a process: ['type' => 'modify', 'target' => 'object.note', 'change_type' => 'append_note', 'value' => 'checked', 'separator' => ' | ']
 // manual run with 'note' => 'start', then:
 $this->assertEquals('start | checked', $execution['context']['variables']['object']['note']);
 ```

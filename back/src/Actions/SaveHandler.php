@@ -48,7 +48,21 @@ final class SaveHandler implements ActionHandlerInterface
 
     public function validate(array $actionConfig, DefinitionScope $scope, string $path): void
     {
-        $scope->checkReadPath($actionConfig['target'] ?? null, "{$path}.target", allowWholeVariable: true);
+        $target = $actionConfig['target'] ?? null;
+        if (is_string($target) && $scope->kind(explode('.', $target)[0]) === ExecutionContext::SOURCE_LIST) {
+            $scope->error("{$path}.target", 'Variable "' . explode('.', $target)[0] . '" is a record list; use foreach to change its records');
+        }
+        if (is_string($target) && $scope->kind($target) === ExecutionContext::SOURCE_LOCAL) {
+            $scope->error("{$path}.target", "Variable \"{$target}\" is local (set_variable) and cannot be saved to the CRM");
+        }
+        if ($target === ExecutionContext::OBJECT && $scope->onlyOnDelete()) {
+            $scope->error($path, 'The process runs only on delete: the deleted record cannot be saved');
+        }
+        if (is_string($target) && (ExecutionContext::isReadOnly(explode('.', $target)[0]) || $scope->kind(explode('.', $target)[0]) === ExecutionContext::SOURCE_LOOP_INFO)) {
+            $scope->error("{$path}.target", "Variable \"{$target}\" is read-only");
+        } else {
+            $scope->checkReadPath($target, "{$path}.target", allowWholeVariable: true);
+        }
         if (isset($actionConfig['module']) && $actionConfig['module'] !== ''
             && (!is_string($actionConfig['module']) || !preg_match('/^[A-Za-z][A-Za-z0-9_]*$/', $actionConfig['module']))) {
             $scope->error("{$path}.module", 'Invalid CRM module');

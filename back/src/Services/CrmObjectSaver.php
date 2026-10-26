@@ -21,6 +21,18 @@ final class CrmObjectSaver
 
     public function save(ExecutionContext $context, string $var, ?string $module = null, bool $full = false): ActionResult
     {
+        if ($context->isList($var)) {
+            throw new NonRecoverableException("Variable \"{$var}\" is a record list; use foreach to change its records");
+        }
+        if (($context->meta()[$var]['source'] ?? null) === ExecutionContext::SOURCE_LOOP_INFO) {
+            throw new NonRecoverableException("Variable \"{$var}\" is read-only");
+        }
+        if ($context->isLocal($var)) {
+            throw new NonRecoverableException("Variable \"{$var}\" is local (set_variable) and cannot be saved to the CRM");
+        }
+        if ($var === ExecutionContext::OBJECT && $context->eventInfo->eventType === 'delete') {
+            return ActionResult::skipped('Record was deleted in the CRM — nothing to save', ['target' => $var]);
+        }
         $object = $context->getVariable($var);
         if ($object === null) {
             return ActionResult::skipped("Variable \"{$var}\" is empty (object was not loaded) — nothing to save", ['target' => $var]);

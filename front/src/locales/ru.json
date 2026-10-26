@@ -45,6 +45,8 @@
     "status": {
       "running": "Выполняется",
       "retrying": "Повтор",
+      "waiting": "Ожидает",
+      "cancelled": "Отменено",
       "completed": "Завершено",
       "failed": "Ошибка"
     }
@@ -53,7 +55,8 @@
     "status": {
       "success": "Успех",
       "failed": "Ошибка",
-      "skipped": "Пропущен"
+      "skipped": "Пропущен",
+      "waiting": "Ожидает"
     }
   },
   "trigger": {

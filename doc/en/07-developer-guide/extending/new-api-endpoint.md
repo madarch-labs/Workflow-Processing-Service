@@ -1,10 +1,14 @@
 # New API endpoint
 
-How to add a REST endpoint, using a verified `GET /api/dictionaries/expression-functions` as the example.
+How to add a REST endpoint, using a tutorial `GET /api/dictionaries/function-categories` as the example.
 
 <!-- lang-switch -->
 🇬🇧 English | [🇷🇺 Русский](../../../ru/07-developer-guide/extending/new-api-endpoint.md)
 <!-- /lang-switch -->
+
+> `function-categories` is a tutorial endpoint that WPS does not have. The real dictionary of expression functions is
+> [`GET /api/dictionaries/functions`](../../06-api-reference/endpoints.md#get-apidictionariesfunctions)
+> (`FunctionsController`); the example is built on the same data.
 
 ## 1. When you need it
 
@@ -22,7 +26,7 @@ sequenceDiagram
     participant P as AccessPolicy
     participant Ctl as YourController
     participant S as Service (Container)
-    C->>A: GET /api/dictionaries/expression-functions
+    C->>A: GET /api/dictionaries/function-categories
     A->>R: match method + exact number of segments
     R-->>A: controller class (from #[Route])
     A->>Ctl: executeWithMiddlewares()
@@ -46,7 +50,7 @@ sequenceDiagram
 
 ## 3. Step by step
 
-### 3.1 The controller — `back/src/Controllers/Dictionaries/ExpressionFunctionsController.php`
+### 3.1 The controller — `back/src/Controllers/Dictionaries/FunctionCategoriesController.php`
 
 ```php
 <?php
@@ -60,16 +64,23 @@ use Swoole\Http\Response;
 use Wps\Controllers\BaseController;
 
 /**
- * Names of the functions available in "calculate" expressions (for the UI help).
+ * Categories of the expression functions with the number of functions in each (for the UI help).
  */
-#[Route(uri: '/api/dictionaries/expression-functions', method: 'GET')]
-final class ExpressionFunctionsController extends BaseController
+#[Route(uri: '/api/dictionaries/function-categories', method: 'GET')]
+final class FunctionCategoriesController extends BaseController
 {
     protected function handle(): Response
     {
-        $names = $this->container()->expressions()->functionNames();
-        sort($names);
-        return $this->ok(array_map(static fn (string $name) => ['value' => $name, 'label' => $name], $names));
+        $counts = [];
+        foreach ($this->container()->expressions()->functionSpecs() as $spec) {
+            $counts[$spec->category] = ($counts[$spec->category] ?? 0) + 1;
+        }
+        ksort($counts);
+        $items = [];
+        foreach ($counts as $category => $count) {
+            $items[] = ['value' => $category, 'label' => $category, 'count' => $count];
+        }
+        return $this->ok($items);
     }
 }
 ```
@@ -80,13 +91,13 @@ final class ExpressionFunctionsController extends BaseController
 docker compose up -d --build backend
 TOKEN=$(curl -s -X POST http://localhost:9501/api/auth/login -H 'Content-Type: application/json' \
   -d '{"email":"admin@wps.local","password":"admin"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["access_token"])')
-curl -s http://localhost:9501/api/dictionaries/expression-functions -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:9501/api/dictionaries/function-categories -H "Authorization: Bearer $TOKEN"
 ```
 
-Verified response (with the `coalesce` function from [Expression functions](expression-functions.md)):
+Response with the built-in set of functions (a function from [Expression functions](expression-functions.md) increases the count of its category):
 
 ```json
-{"success":true,"data":[{"value":"abs","label":"abs"},{"value":"coalesce","label":"coalesce"},{"value":"concat","label":"concat"},{"value":"len","label":"len"},{"value":"lower","label":"lower"},{"value":"max","label":"max"},{"value":"min","label":"min"},{"value":"round","label":"round"},{"value":"substr","label":"substr"},{"value":"trim","label":"trim"},{"value":"upper","label":"upper"}],"error":null}
+{"success":true,"data":[{"value":"date","label":"date","count":32},{"value":"logic","label":"logic","count":5},{"value":"number","label":"number","count":4},{"value":"string","label":"string","count":6}],"error":null}
 ```
 
 ### 3.3 Toolbox of `BaseController`
@@ -144,9 +155,9 @@ import { apiGet } from './client'
 import type { DictionaryItem } from '@/types'
 
 export const referenceApi = {
-  /** Functions available in "calculate" expressions */
-  expressionFunctions(): Promise<DictionaryItem[]> {
-    return apiGet<DictionaryItem[]>('/dictionaries/expression-functions')
+  /** Categories of the expression functions */
+  functionCategories(): Promise<DictionaryItem[]> {
+    return apiGet<DictionaryItem[]>('/dictionaries/function-categories')
   },
 }
 ```
@@ -158,12 +169,12 @@ the endpoint is the example in [New UI screen](new-ui-screen.md).
 ## 6. Test
 
 ```php
-$this->test('Expression functions dictionary lists coalesce', function () {
-    $res = $this->request('GET', '/api/dictionaries/expression-functions', token: $this->viewerToken, expectedStatus: 200);
-    $this->assertTrue(in_array('coalesce', array_column($res['data'], 'value'), true));
+$this->test('Function categories dictionary lists date', function () {
+    $res = $this->request('GET', '/api/dictionaries/function-categories', token: $this->viewerToken, expectedStatus: 200);
+    $this->assertTrue(in_array('date', array_column($res['data'], 'value'), true));
 });
-$this->test('Expression functions dictionary requires a token', function () {
-    $this->request('GET', '/api/dictionaries/expression-functions', expectedStatus: 401);
+$this->test('Function categories dictionary requires a token', function () {
+    $this->request('GET', '/api/dictionaries/function-categories', expectedStatus: 401);
 });
 ```
 

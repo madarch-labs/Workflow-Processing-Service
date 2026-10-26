@@ -57,6 +57,7 @@ empty one. Values are read once at start: restart the backend after a change.
 | `SWOOLE_TASK_WORKER_NUM` | `1` | Task workers (cyclic jobs are skipped there) |
 | `SWOOLE_MAX_COROUTINE` | `3000` | Max coroutines per worker |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, `emergency` |
+| `WPS_TIMEZONE` | `UTC` | Business time zone (IANA name, e.g. `Europe/Moscow`): values with a time are moved into it before a `cast: date` comparison (see [Comparison type (cast)](../03-user-guide/triggers-and-conditions.md#comparison-type-cast)); the date functions of expressions work in it — `today()`, `date()`, calendar days in `add_days`/`add_months`, `date_diff(…, 'days')`, period boundaries `start_of_*`/`end_of_*`, date parts, `is_weekend`, `format_date` by default; the `date_shift` change type — base `today`, calendar shifts (days, weeks, months), `set_time` and `result: date` (see [Date shift](../03-user-guide/change-types-and-expressions.md#date-shift)); anchors of [relative dates](../03-user-guide/triggers-and-conditions.md#relative-dates) in conditions and filters (`today`, `start_of_month`, …); a date without a time where a moment is needed is midnight in this zone (see [Dates and time](../03-user-guide/change-types-and-expressions.md#dates-and-time)). CRM dates are treated as UTC and the functions return datetimes in UTC too. A wrong name stops the service (`WPS_TIMEZONE: unknown time zone …`); at startup the value is logged (`Business time zone`, level info). Working days and holidays are not taken into account. `docker-compose.yml` passes it as `${WPS_TIMEZONE:-UTC}` |
 
 ### Redis — event bus
 
@@ -110,12 +111,134 @@ empty one. Values are read once at start: restart the backend after a change.
 | `ACTION_RETRY_MAX` | `3` | Retries of a step after a recoverable error |
 | `ACTION_RETRY_BASE_DELAY_MS` | `1000` | First retry delay |
 | `ACTION_RETRY_BACKOFF` | `2` (min 1) | Delay multiplier: `delay = base × backoff^(attempt−1)` |
+| `ACTION_RETRY_MAX_DELAY` | `1h` | Upper bound of one retry delay (duration: `30s`, `10m`, `1h`, `PT5M`); the step's `retry.max_delay` overrides it |
+| `ACTION_RETRY_JITTER` | `full` | Random spread of delays: `none` (as before, no spread), `full` (in `[0, d]`), `equal` (`d/2 + [0, d/2]`); see [Reliability](reliability.md#retries-of-a-step) |
 | `EXECUTION_TTL_HOURS` | `24` | TTL of the live execution state `exec:<uuid>` in Redis |
 | `EXECUTION_FINISHED_TTL_SECONDS` | `3600` | TTL of the state after the execution finished |
 | `IDEMPOTENCY_TTL_HOURS` | `24` | TTL of `idem:<event_id>:<process_id>` keys |
 | `EXECUTION_LOCK_TTL` | `30` s (min 5) | Lock of a running execution; refreshed before every step attempt |
 | `MAX_CHILD_DEPTH` | `10` | Maximum nesting of child processes |
-| `RECOVERY_STALE_SECONDS` | `300` (min 30) | Unfinished executions older than this are resumed or marked failed by `RecoveryJob` |
+| `RECOVERY_STALE_SECONDS` | `300` (min 30; in compose — `${RECOVERY_STALE_SECONDS:-300}`) | Unfinished executions older than this are resumed or marked failed by `RecoveryJob`. In compose the value can be overridden at start (`RECOVERY_STALE_SECONDS=30 docker compose up -d backend`) — this is how case 4.2 checks recovery after a worker crash |
+| `PROGRAM_MAX_DEPTH` | `5` (min 1) | Maximum nesting depth of blocks (`condition` etc.) in a process definition; deeper — save error `Nesting is too deep` |
+| `EXECUTION_MAX_INSTRUCTIONS` | `5000` (min 10) | Maximum number of program instructions in one execution; more — the execution fails with `LIMIT_EXCEEDED` (guard against endless jumps) |
+
+### Secrets
+
+| Variable | Default | Description |
+|---|---|---|
+| `WPS_SECRETS_KEY` | empty (a test key in `docker-compose.yml`) | Key of the secrets store: base64 of 32 bytes (`php bin/secrets-key.php`). Empty — secrets are unavailable, the service runs; wrong format — the service does not start. See [Security → Process secrets](security.md#process-secrets) |
+| `WPS_SECRETS_KEY_PREVIOUS` | empty | The previous key during rotation: rows encrypted with it still decrypt; remove it after `POST /api/secrets/rotate` |
+| `SECRETS_CACHE_TTL` | `60` s (min 0) | How long a decrypted value stays in the worker memory; also how long it takes to switch to a changed value |
+
+### Side-effect journal
+
+| Variable | Default | Description |
+|---|---|---|
+| `SIDE_EFFECTS_RETENTION_DAYS` | `30` (at least 1) | After how many days rows of the external call journal `step_side_effects` are deleted (hourly purge in `RecoveryJob`). See [Reliability → Side effects and repeats](reliability.md#side-effects-and-repeats) |
+| `WPS_MAIL_MESSAGE_ID_DOMAIN` | `wps.local` | Domain of the e-mail `Message-ID`: `<{execution_id}.{effect_key}@domain>` — mail systems use it to drop a repeated send |
+
+### Mail (`send_email`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `MAILER_DSN` | empty (`smtp://mailpit:1025` in `docker-compose.yml`) | Default transport of [`send_email`](../03-user-guide/actions.md#send-an-e-mail): `smtp://user:pass@host:587`, `smtps://user:pass@host:465`, parameter `?timeout=`. Empty — a process with `send_email` without `transport` cannot be saved. The password is masked in the audit and logs |
+| `MAILER_FROM` | empty (compose: `wps@wps.local`) | Default sender; empty — `from` is required in the action |
+| `MAILER_FROM_NAME` | empty (compose: `WPS`) | Default sender name |
+| `MAILER_ALLOWED_FROM` | empty (any) | Allowed senders, comma-separated: addresses or domains `@company.ru`. Another `from` is rejected (`Sender address is not allowed`) |
+| `MAILER_TIMEOUT` | `15` s (min 1) | SMTP connection timeout; keep it below `EXECUTION_LOCK_TTL` |
+| `MAILER_MAX_RECIPIENTS` | `50` (min 1) | Recipients of one letter (`to` + `cc` + `bcc`); more — the step fails |
+| `MAILER_RATE_PER_MINUTE` | `60` (`0` — no limit) | Letters a minute per transport; above it the step is retried (`MAIL_RATE_LIMIT`) |
+| `MAILER_RATE_PER_RECIPIENT_HOUR` | `10` (`0` — no limit) | Letters an hour to one recipient; above it the recipient is skipped (`rate_limited`) |
+| `MAILPIT_API_URL` | `http://mailpit:8025` (compose) | Mailpit API address for the integration tests; not used by the service |
+
+### Outgoing HTTP requests (`http_request`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `HTTP_ALLOW_PLAIN_HTTP` | `true` | `false` — `http://` requests are forbidden (`https` only); recommended in production |
+| `HTTP_DENY_PORTS` | `22,25,3306,5432,6379,6380,9200,11211` | Forbidden ports |
+| `HTTP_ALLOW_PORTS` | empty (any except the forbidden ones) | When set — only these ports are allowed |
+| `HTTP_ALLOW_HOSTS` | empty (any public host) | Allow list of hosts, comma-separated, `*.company.ru` — subdomains |
+| `HTTP_DENY_HOSTS` | `localhost, metadata.google.internal, postgres, redis-stream, redis-data, mock` + the CRM host (stand compose: without `mock` and the CRM host) | Always forbidden hosts; a set value replaces the whole list |
+| `HTTP_ALLOW_PRIVATE_CIDRS` | empty (stand compose: `172.16.0.0/12,192.168.0.0/16`) | Private networks that may be called (internal ERP etc.). On the stand — so that tests can call the mock in the docker network; **do not copy to production** |
+| `HTTP_TLS_VERIFY` | `true` | Certificate verification against the host name; `false` — for debugging only |
+| `HTTP_CA_FILE` | empty (system CAs) | Own root certificate file |
+| `HTTP_MAX_TIMEOUT` | `30` s | Upper bound of the action's `timeout`; keep it below `EXECUTION_LOCK_TTL` |
+| `HTTP_MAX_RESPONSE_BYTES` | `5242880` (5 MB) | Response limit; counted while reading, above it — `Response is too large` |
+| `HTTP_MAX_REQUEST_BYTES` | `1048576` (1 MB) | Request body limit |
+| `HTTP_RETRY_AFTER_MAX` | `60` s | Upper bound of a `Retry-After` delay |
+| `HTTP_MAX_STORED_BODY_BYTES` | `65536` (64 KB) | A larger response body is not put into the variable (`body_truncated: true`) |
+
+Details — [Security → Outgoing HTTP requests](security.md#outgoing-http-requests-ssrf-protection).
+
+### Notifications (`notify`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `CRM_ALERT_PROFILE` | `suitecrm8` | The set of fields of the `Alerts` record of the `crm_alert` channel and the default record link template: `suitecrm8` (SuiteCRM 8 fields, link `#/{module_kebab}/record/{id}`), `suitecrm7` (link `index.php?module={module}&action=DetailView&record={id}`), `custom` (fields only from the channel `fields`, link only from `CRM_RECORD_URL_TEMPLATE`) |
+| `CRM_RECORD_URL_TEMPLATE` | empty — by the profile | Record link template: `{module}`, `{module_lower}` (`Leads` → `leads`), `{module_kebab}` (`AOS_Contracts` → `aos-contracts`), `{id}`. Relative (`#/…`) or absolute (`https://crm.company.com/…`) |
+| `CRM_UI_BASE_URL` | empty — `CRM_API_BASE_URL` without `/api/…` | Address of the CRM UI for absolute "Open" links in messengers (the CRM bell gets a relative link). Set it when the CRM API and its UI live at different addresses |
+| `TELEGRAM_API_BASE` | `https://api.telegram.org` | The Bot API address. Changed for tests (`http://mock:9502/mock/telegram`) or a self-hosted Bot API server |
+
+Requests to Telegram, Slack and Teams pass the outgoing HTTP protection (the table above): with `HTTP_ALLOW_HOSTS` set,
+add `api.telegram.org`, `hooks.slack.com` and the Teams webhook host. See
+[Actions → Notification](../03-user-guide/actions.md#notification).
+
+### Owner assignment (`assign`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `ASSIGN_POOL_CACHE_TTL` | `60` s (`0` — no cache) | How long the members of a security group (`pool.security_group`) are cached. A new group member joins the distribution within this time |
+| `ASSIGN_LEAST_BUSY_MAX_POOL` | `50` (1..200) | The largest pool of the `least_busy` strategy: one CRM count request per user. More — step error `Pool is too large for least_busy` |
+
+The `round_robin` and `least_busy` queues live in redis-data: `assign:rr:{queue_key}` — the last assigned,
+`assign:last:{queue_key}:{user}` — when the user was assigned (30 days), `assign:decided:{execution}:{pc}:{iteration}` —
+the step decision for repeats (a day). To reset a queue so that the distribution starts from the first id:
+
+```bash
+docker compose exec redis-data redis-cli DEL assign:rr:<queue_key>
+```
+
+The default queue key is `p{process id}:{step id or pc}` (visible in `request_data.queue_key` of the step). See
+[Actions → Assign an owner](../03-user-guide/actions.md#assign-an-owner).
+
+### Record links (`link_records`, `unlink_records`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `LINK_RECORDS_MAX` | `500` (at least 1) | How many related record ids one step may take; more is a step error `Too many related ids (N > 500)`. The size of a CRM request batch is `max_link_batch` from the plugin capabilities. See [Actions → Link / unlink records](../03-user-guide/actions.md#link--unlink-records) |
+
+### Record search, update and aggregates (`find_records`, `update_records`, `aggregate`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `FIND_RECORDS_MAX` | `500` (at least 1) | Upper bound of the step `limit`; a larger `limit` is rejected when the process is saved |
+| `FIND_RECORDS_SCAN_MAX` | `1000` (at least 1) | Relationship mode (`related_to`): how many related records the step reads and checks with the local filter; beyond that — `has_more: true` and a warning in the audit |
+| `FIND_RECORDS_MAX_BYTES` | `1048576` (1 MB, at least 10000) | Limit of the found list size in JSON; larger is a step error `result is too large`, narrow `fields` or `limit` |
+| `UPDATE_RECORDS_MAX` | `200` (1..5000) | [Update list records](../03-user-guide/actions.md#update-list-records): most records of one `update_records` step and the upper bound of its `max`; more fail the step before any change |
+| `AGGREGATE_MAX_RECORDS` | `5000` (1..50000) | [Aggregate over records](../03-user-guide/change-types-and-expressions.md#aggregate-over-records): most records one aggregate reads and the upper bound of its `limit` (`limit` = 1000 by default) |
+
+See [Actions → Find records](../03-user-guide/actions.md#find-records).
+
+### Loops (`foreach`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOOP_MAX_ITEMS` | `500` (1..5000) | [`foreach` loop](../03-user-guide/actions.md#loop-for-each-item): most items of one loop and the upper bound of `max_items`. The item snapshot is kept in a separate Redis key `exec:{id}:loop:{pc}`, not in the execution hash |
+
+### Waiting executions and pause (`delay`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `WAIT_POLL_INTERVAL_MS` | `1000` (at least 100) | Period of `WaitResumeJob`: how often a worker looks for due waits |
+| `WAIT_BATCH` | `20` | How many waits a worker claims per iteration |
+| `WAIT_LEASE_SECONDS` | `120` (at least 10) | Lease of an `execution_waits` row while it is being woken; when it expires another worker may take it again |
+| `WAIT_MAX_ATTEMPTS` | `10` | Wake attempts after which the execution ends `failed` |
+| `WAIT_INLINE_MAX_SECONDS` | `5` | Pauses and retry delays up to this wait in the coroutine, longer ones park the execution (`waiting`) |
+| `WAIT_STATE_MAX_BYTES` | `1048576` | Largest state snapshot that can be parked; larger fails the step |
+| `DELAY_MAX` | `P400D` | Longest single `delay` pause (ISO 8601 or a short form); the step field `max_wait` can only lower it |
+
+Details — [Reliability → Waiting executions](reliability.md#waiting-executions).
 
 ### Authentication and HTTP
 
@@ -162,7 +285,7 @@ SwooleApp configuration. `server.php` overrides `server.*` and `SWOOLE.*` from t
 | `SWOOLE.http_parse_post` | `false` | Bodies are parsed as JSON by the controllers |
 | `controllers` | `["Wps\\Controllers"]` | Namespace scanned for `#[Route]` controllers |
 | `globalMiddlewares` | `["Wps\\Middleware\\AuthMiddleware"]` | JWT + role check for every request |
-| `CyclicJobs` | `StreamConsumerJob`, `RecoveryJob` | Background loops (0.5 s and 30 s) |
+| `CyclicJobs` | `StreamConsumerJob`, `RecoveryJob`, `WaitResumeJob` | Background loops (0.5 s, 30 s and `WAIT_POLL_INTERVAL_MS`) |
 | `cyclic_jobs.strategy` | `ALL_WORKERS` | Every HTTP worker runs the jobs |
 | `cyclic_jobs.monitoring_interval` | `60` | Interval of the framework health check of cyclic jobs, seconds (with `APP_DEBUG` it also logs job statistics) |
 | `StateContainerInitiation` | `["Wps\\State\\StateInitiation"]` | Builds `AppConfig` and the shared metrics table before workers fork |

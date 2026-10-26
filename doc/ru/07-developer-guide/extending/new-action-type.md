@@ -212,15 +212,164 @@ docker compose up -d --build backend
 | Конфигурация отсутствует или неверна | `$scope->error()` в `validate()` | `422`, `details[].field = definition.actions[N].<key>` |
 | Чтение переменной, которой ещё нет | `$scope->checkReadPath($path, $field)` | `Variable "v9" is not defined at this point` |
 | Действие создаёт переменную | `$scope->declare('name', 'created')` или `checkWritePath()` | следующие шаги могут её использовать |
+| Действие кладёт список записей (только чтение) | `$scope->declare('name', ExecutionContext::SOURCE_LIST)`; при выполнении `setVariable($name, $value, $module, ExecutionContext::SOURCE_LIST)` | `modify` / `save_object` по ней отклоняются, `set()` бросает `ConfigurationException` (так делает `FindRecordsHandler`) |
+| Действию нужна переменная только на время вычисления (текущая запись) | при валидации — `$scope->declare($var, ExecutionContext::SOURCE_LOOP)` перед проверкой параметров и `$scope->undeclare($var)` после; при выполнении — `$context->withTemporaryVariable($var, $record, $module, fn () => …)` | переменная удаляется и при исключении; так делает `UpdateRecordsHandler` для `item` |
 | Внешняя система временно недоступна | `throw new RecoverableException('…')` | повторы, статус `retrying`, затем `failed` |
 | Постоянный сбой (4xx, плохие данные) | `throw new NonRecoverableException('…', ['response' => …])` | шаг `failed`, подробности в `result_data.details` |
 | Делать нечего | `return ActionResult::skipped('reason')` | шаг `skipped`, выполнение продолжается |
 
 Перед повтором движок восстанавливает снимок контекста, поэтому `execute()` может менять контекст до того, как упадёт.
-Внешние побочные эффекты не откатываются — если шаг может повторяться, делайте их идемпотентными.
+Внешние побочные эффекты не откатываются — проводите их через журнал побочных эффектов (см.
+[ниже](#внешние-вызовы-и-журнал-побочных-эффектов)) или делайте идемпотентными.
 
 В ведомых процессах область видимости создаётся с `inheritsVariables: true`, поэтому там `checkReadPath()` принимает
 неизвестные переменные.
+
+### Поля, принимающие секрет
+
+Если действию нужны учётные данные (токен, пароль, DSN), объявите поле, в котором автор процесса указывает ссылку
+`secret://name` или `secret://name.field`, и разрешайте её в `execute()` через `SecretResolver`
+(`Container::secretResolver()`, передайте его в конструктор обработчика):
+
+```php
+$token = $this->secrets->resolve($actionConfig['auth']['token'], $context->secretMasker); // string|array
+$hosts = $this->secrets->allowedHosts($actionConfig['auth']['token']);                      // [] = любые хосты
+$kind = $this->secrets->kind($actionConfig['auth']['token']);                               // 'bearer', 'basic_auth', …
+```
+
+- `resolve()` расшифровывает значение (кэш в памяти воркера, `SECRETS_CACHE_TTL`) и регистрирует его и производные формы
+  в маскере шага `$context->secretMasker`. Движок прогоняет `request`, `result`, текст и `details` ошибки шага через этот
+  маскер перед записью в аудит, поэтому значение заменяется на `***` автоматически. Не кладите значение секрета в
+  переменные процесса и в логи без маскера.
+- Нет секрета или поля — `NonRecoverableException` (`Secret "x" not found`, `Secret "x" has no field "y"`).
+- При сохранении процесса валидатор сам проверяет, что секрет существует, и отклоняет ссылки в полях данных
+  (`value`, `expression`, `field`, `target`, `template`, `subject`, `body`, `text`, `html`) и в условиях. Поэтому поле
+  учётных данных не называйте так, как поля данных. Если действие ожидает определённые виды секретов, проверьте
+  `kind()` в `execute()` и завершите шаг понятной ошибкой.
+- Если секрет уходит во внешнюю систему, проверьте хост запроса по `allowedHosts()`.
+
+### Текстовые поля и шаблоны
+
+Если поле действия — текст с подстановками (тема и тело письма, URL, заголовки, тело запроса), не собирайте его сами:
+используйте `TemplateEngine` (`Container::templates()`) и проверяйте его при сохранении через `TemplateValidator`
+(`Container::templateValidator()`). Режим экранирования `EscapeMode` выбирает действие по назначению поля:
+
+```php
+use Wps\Template\EscapeMode;
+use Wps\Template\MissingPolicy;
+
+// validate()
+$this->templateValidator->validate($config['subject'] ?? null, $scope, "{$path}.subject", EscapeMode::Header);
+$this->templateValidator->validate($config['html'] ?? null, $scope, "{$path}.html", EscapeMode::Html, allowRaw: false);
+$this->templateValidator->validate($config['url'] ?? null, $scope, "{$path}.url", EscapeMode::Url);   // хост фиксирован
+$this->templateValidator->validate($config['body'] ?? null, $scope, "{$path}.body", EscapeMode::Json); // массив-документ
+
+// execute()
+$resolve = static fn (string $p) => $context->resolve($p);
+$subject = $this->templates->render($config['subject'], $resolve, EscapeMode::Header)->value;
+$to = $this->templates->render($config['to'], $resolve, EscapeMode::Text, MissingPolicy::Error)->value;
+$body = $this->templates->renderStructure($config['body'], $resolve)->value; // числа остаются числами
+```
+
+- `text` — как есть; `header` — CR/LF удаляются (+ предупреждение в `RenderResult::$warnings`); `html` —
+  `htmlspecialchars`, фильтр `raw` допустим, только если вы передали `allowRaw: true` для доверенного поля; `url` —
+  `rawurlencode` и запрет подстановок в схеме, хосте и порту; `json` — `renderStructure()`.
+- Для получателей и URL используйте `MissingPolicy::Error`: пустой адрес не должен уходить молча.
+- `RenderResult::$missing` и `$warnings` положите в `result` шага, чтобы они были видны в аудите.
+
+### Внешние вызовы и журнал побочных эффектов
+
+Шаг выполняется «как минимум один раз»: после падения воркера он повторяется целиком. Если действие отправляет
+что-то во внешнюю систему (письмо, вебхук, уведомление), проведите вызов через `SideEffectLedger`
+(`Container::sideEffects()`), иначе повтор отправит его второй раз. Подробно о модели —
+[Надёжность](../../04-operations/reliability.md#побочные-эффекты-и-повторы).
+
+```php
+use Wps\SideEffects\DeliveryPolicy;
+use Wps\SideEffects\HasDeliveryPolicy;
+use Wps\SideEffects\SideEffectLedger;
+use Wps\SideEffects\UnknownOutcomeException;
+
+final class PostToErpHandler implements ActionHandlerInterface, HasDeliveryPolicy
+{
+    public function __construct(private readonly SideEffectLedger $ledger /* , … */) {}
+
+    public function defaultDelivery(array $config): string
+    {
+        // повтор POST может создать дубль → по умолчанию «не более одного раза»
+        return DeliveryPolicy::AT_MOST_ONCE;
+    }
+
+    public function execute(ExecutionContext $context, array $actionConfig): ActionResult
+    {
+        $delivery = DeliveryPolicy::resolve($actionConfig['delivery'] ?? null, $this->defaultDelivery($actionConfig));
+        $request = ['url' => $url, 'body' => $body];                       // что уходит наружу (без секретов)
+        $out = $this->ledger->run($context, $this->type(), '', $delivery, $request,
+            function (string $idempotencyKey) use ($url, $body): array {
+                // передайте ключ наружу: заголовок Idempotency-Key, Message-ID письма
+                // ошибка ДО отправки (нет соединения, DNS)    → throw new RecoverableException(…)   — повторится
+                // таймаут/обрыв ПОСЛЕ отправки (at_most_once) → throw UnknownOutcomeException::forEffect(…)
+                // окончательная ошибка (4xx, отказ SMTP)      → throw new NonRecoverableException(…)
+                return ['status' => 201, 'body' => $responseBody];          // сериализуемый результат
+            });
+        return ActionResult::success($request, $out['response'] + [
+            'idempotency_key' => $out['idempotency_key'],
+            'replayed' => $out['replayed'],
+        ]);
+    }
+}
+```
+
+- `run()` пишет в журнал `started` до вызова, `done` с ответом после успеха (через маскер секретов шага), `failed` после
+  невосстановимой ошибки; восстановимая ошибка и `UnknownOutcomeException` оставляют `started`.
+- Повтор после `done` не вызывает замыкание и возвращает сохранённый ответ (`replayed: true`); чужой `started` при
+  `at_most_once` — `UnknownOutcomeException` (`error_code: UNKNOWN_OUTCOME` в `result_data` шага).
+- Несколько внешних вызовов в одном шаге (письмо каждому получателю, два канала уведомления) различайте параметром
+  `$sub` — стабильным идентификатором вызова (`'0'`, `'1'`, `'slack'`): ключ эффекта станет `{pc}@{iteration}#{sub}`.
+- Внешний ключ `$idempotencyKey` = `{execution_id}:{effect_key}`; для `Message-ID` писем используйте домен
+  `AppConfig::$mailMessageIdDomain` (`WPS_MAIL_MESSAGE_ID_DOMAIN`).
+- В тестовом прогоне (`$context->dryRun`) замыкание не вызывается, журнал не трогается, `response = ['dry_run' => true]`.
+- Поле `delivery` разрешено только у действий, реализующих `HasDeliveryPolicy`: валидатор сам проверяет значение
+  (`Delivery must be "at_most_once" or "at_least_once"`) и отклоняет его у остальных действий
+  (`Action "modify" does not support "delivery"`).
+
+### Ждущее действие (парковка)
+
+Действие, которому нужно ждать долго (ответ внешней системы, срок), не должно спать в корутине: верните
+`ActionResult::wait()`, и движок припаркует выполнение — снимок состояния уйдёт в `execution_waits`, воркер освободится,
+а `WaitResumeJob` продолжит выполнение после срока, в том числе после перезапуска
+([Движок выполнения → Ожидание](../../05-architecture/execution-engine.md#ожидание-и-пробуждение-waitresumejob)).
+Шаг на время ожидания получает статус `waiting`.
+
+```php
+use Wps\Actions\ResumableActionInterface;
+
+final class WaitForApprovalHandler implements ActionHandlerInterface, ResumableActionInterface
+{
+    public function execute(ExecutionContext $context, array $actionConfig): ActionResult
+    {
+        $dueAt = $this->clock->now()->modify('+1 day');
+        // ActionResult::wait($dueAt, $reason, $request, $result, $info)
+        return ActionResult::wait($dueAt, 'approval', ['ticket' => $id], [], ['ticket' => $id]);
+    }
+
+    public function resume(ExecutionContext $context, array $actionConfig, array $waitInfo): ActionResult
+    {
+        // $waitInfo — $info из wait() + due_at, parked_at
+        return ActionResult::success(['ticket' => $waitInfo['ticket']], ['approved' => $this->check($waitInfo['ticket'])]);
+    }
+}
+```
+
+- `$reason` попадает в `executions.wait_reason` и `wait.reason` API; `$info` — в `execution_waits.info` и в `resume()`.
+  Держите его маленьким и сериализуемым.
+- Без `ResumableActionInterface` шаг после пробуждения просто становится `success` с `request`/`result` из `wait()`.
+- `resume()` может вернуть `success`, `skipped` или бросить исключение — дальше работают обычные `on_error` и повторы.
+- Короткие паузы (до `WAIT_INLINE_MAX_SECONDS`) дешевле выполнить в корутине (`Coroutine::sleep`), как это делает
+  `DelayHandler`.
+- `WAITING` допустим только там, где есть выполнение: в `prepare()`, при вычислении условий и в тестовом прогоне без
+  `handle` шаг падает с `This step cannot wait here (condition evaluation or a test run)`.
+- Снимок больше `WAIT_STATE_MAX_BYTES` не паркуется: `Execution state is too large to wait (N bytes, limit M)`.
 
 ## 5. UI и переводы
 
@@ -261,16 +410,16 @@ function actionTypeLabel(type: string): string {
 ## 6. Тест
 
 Это проверенная группа `testExtensions()`, общая для всех примеров расширений в этом разделе (компаратор
-`starts_with`, тип изменения `append`, стратегия загрузки `by_id_or_field`, функция `coalesce`, действие `log_message`,
-эндпоинт `/api/dictionaries/expression-functions`). Вызовите её из `run()` после `testRunOnce()`.
+`starts_with`, тип изменения `append`, стратегия загрузки `by_id_or_field`, функция `repeat`, действие `log_message`,
+эндпоинт `/api/dictionaries/function-categories`). Вызовите её из `run()` после `testRunOnce()`.
 
 ```php
 private function testExtensions(): void
 {
     echo "[extensions]\n";
-    $this->test('Expression functions dictionary lists coalesce', function () {
-        $res = $this->request('GET', '/api/dictionaries/expression-functions', token: $this->viewerToken, expectedStatus: 200);
-        $this->assertTrue(in_array('coalesce', array_column($res['data'], 'value'), true));
+    $this->test('Function categories dictionary lists date', function () {
+        $res = $this->request('GET', '/api/dictionaries/function-categories', token: $this->viewerToken, expectedStatus: 200);
+        $this->assertTrue(in_array('date', array_column($res['data'], 'value'), true));
     });
     $this->test('Change types and action types contain the new entries', function () {
         $changeTypes = $this->request('GET', '/api/dictionaries/change-types', token: $this->adminToken)['data'];
@@ -335,7 +484,7 @@ private function testExtensions(): void
 
 ```
 [extensions]
-  Expression functions dictionary lists coalesce ... OK
+  Function categories dictionary lists date ... OK
   Change types and action types contain the new entries ... OK
   log_message without a message is rejected ... OK
   Seed an account with an INN in the mock CRM ... OK
@@ -359,5 +508,5 @@ Passed: 74, Failed: 0, Skipped: 0
 <!-- footer-nav -->
 ---
 
-← Назад: [Тестирование](../testing.md) | [Оглавление](../../README.md) | [Новый оператор сравнения](new-comparator.md) Далее →
+← Назад: [Тестирование](../testing.md) | [Оглавление](../../README.md) | [Новый тип блока](new-block-type.md) Далее →
 <!-- /footer-nav -->

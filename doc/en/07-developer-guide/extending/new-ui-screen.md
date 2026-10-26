@@ -366,5 +366,5 @@ Manual check (steps 1–4 were verified on a separate stack, see [Development en
 <!-- footer-nav -->
 ---
 
-← Previous: [New CRM adapter](new-crm-adapter.md) | [Contents](../../README.md) | [New UI language](new-language.md) Next →
+← Previous: [New notification channel](new-notify-channel.md) | [Contents](../../README.md) | [New UI language](new-language.md) Next →
 <!-- /footer-nav -->

@@ -1,0 +1,617 @@
+{
+ "01-deal-vip.json:Active deal → mark account as VIP": {
+  "conditions": [
+   {
+    "field": "object.status",
+    "operator": "equals",
+    "value_type": "static",
+    "value": "Active"
+   }
+  ],
+  "preload": [
+   {
+    "var": "v1",
+    "source": "object_field",
+    "module": "Accounts",
+    "by_field": "id",
+    "value": "object.account_id"
+   }
+  ],
+  "actions": [
+   {
+    "type": "modify",
+    "target": "v1.rating",
+    "change_type": "set_value",
+    "value": "VIP",
+    "save_to_crm": true
+   }
+  ]
+ },
+ "02-invoice-discount.json:Invoice discount 10%": {
+  "conditions": [
+   {
+    "field": "object.status",
+    "operator": "equals",
+    "value_type": "static",
+    "value": "Active"
+   }
+  ],
+  "preload": [],
+  "actions": [
+   {
+    "type": "modify",
+    "target": "object.amount",
+    "change_type": "calculate",
+    "value": "round(object.amount * 0.9, 2)",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "object.description",
+    "change_type": "calculate",
+    "value": "concat('Discount applied, new amount: ', object.amount)",
+    "save_to_crm": false
+   },
+   {
+    "type": "save_object",
+    "target": "object"
+   }
+  ]
+ },
+ "03-contact-account-name.json:Contact: copy account name": {
+  "conditions": [
+   {
+    "field": "object.status",
+    "operator": "not_equals",
+    "value_type": "static",
+    "value": "Closed"
+   },
+   {
+    "field": "v1.status",
+    "operator": "equals",
+    "value_type": "static",
+    "value": "Active"
+   }
+  ],
+  "preload": [
+   {
+    "var": "v1",
+    "source": "object_field",
+    "module": "Accounts",
+    "by_field": "id",
+    "value": "object.account_id"
+   }
+  ],
+  "actions": [
+   {
+    "type": "modify",
+    "target": "object.description",
+    "change_type": "set_from_variable",
+    "value": "v1.name",
+    "save_to_crm": true
+   }
+  ]
+ },
+ "04-child-follow-up-task.json:Create follow-up task": {
+  "conditions": [],
+  "preload": [],
+  "actions": [
+   {
+    "type": "modify",
+    "target": "task.name",
+    "change_type": "calculate",
+    "value": "concat('Call back: ', object.name)",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.status",
+    "change_type": "set_value",
+    "value": "Not Started",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.parent_id",
+    "change_type": "calculate",
+    "value": "object.id",
+    "save_to_crm": false
+   },
+   {
+    "type": "save_object",
+    "target": "task",
+    "module": "Tasks"
+   }
+  ]
+ },
+ "05-payment-failure-demo.json:Payment sync (CRM failure demo)": {
+  "conditions": [],
+  "preload": [],
+  "actions": [
+   {
+    "type": "preload",
+    "var": "v1",
+    "source": "manual",
+    "module": "Accounts",
+    "by_field": "id",
+    "value": "fail500-demo"
+   },
+   {
+    "type": "modify",
+    "target": "object.status",
+    "change_type": "set_value",
+    "value": "Synced",
+    "save_to_crm": true
+   }
+  ]
+ },
+ "06-lead-run-once.json:New lead → schedule a call (once per lead)": {
+  "conditions": [
+   {
+    "field": "object.status",
+    "operator": "equals",
+    "value_type": "static",
+    "value": "New"
+   },
+   {
+    "field": "object.email",
+    "operator": "contains",
+    "value_type": "static",
+    "value": "@"
+   }
+  ],
+  "preload": [],
+  "actions": [
+   {
+    "type": "start_process",
+    "process_id": 4
+   }
+  ]
+ },
+ "suiteCRM7.processes.json:suiteCRM7 — звонок": {
+  "conditions": [],
+  "preload": [],
+  "actions": [
+   {
+    "type": "modify",
+    "target": "call.name",
+    "change_type": "calculate",
+    "value": "substr(concat('Позвонить: ', topic.text), 0, 50)",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.direction",
+    "change_type": "set_value",
+    "value": "Outbound",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.status",
+    "change_type": "set_value",
+    "value": "Planned",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.date_start",
+    "change_type": "set_from_variable",
+    "value": "object.date_modified",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.duration_hours",
+    "change_type": "set_value",
+    "value": "0",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.duration_minutes",
+    "change_type": "set_value",
+    "value": "15",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.parent_type",
+    "change_type": "set_value",
+    "value": "Leads",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.parent_id",
+    "change_type": "set_from_variable",
+    "value": "object.id",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.assigned_user_id",
+    "change_type": "set_from_variable",
+    "value": "owner.id",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.description",
+    "change_type": "calculate",
+    "value": "concat('Первичный звонок по лиду. Ответственный: ', topic.owner_name, '. Телефон: ', object.phone_work, ' ', object.phone_mobile, '. Компания: ', object.account_name)",
+    "save_to_crm": false
+   },
+   {
+    "type": "save_object",
+    "target": "call",
+    "module": "Calls"
+   }
+  ]
+ },
+ "suiteCRM7.processes.json:suiteCRM7 — задача": {
+  "conditions": [],
+  "preload": [],
+  "actions": [
+   {
+    "type": "modify",
+    "target": "task.name",
+    "change_type": "calculate",
+    "value": "substr(concat('Квалифицировать: ', topic.text), 0, 50)",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.status",
+    "change_type": "set_value",
+    "value": "Not Started",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.priority",
+    "change_type": "set_value",
+    "value": "High",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.date_due",
+    "change_type": "set_from_variable",
+    "value": "object.date_modified",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.parent_type",
+    "change_type": "set_value",
+    "value": "Leads",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.parent_id",
+    "change_type": "set_from_variable",
+    "value": "object.id",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.assigned_user_id",
+    "change_type": "set_from_variable",
+    "value": "owner.id",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.description",
+    "change_type": "calculate",
+    "value": "concat('Источник: ', object.lead_source, '. Ответственный: ', topic.owner_name, '. Найден контрагент в CRM: ', account.name)",
+    "save_to_crm": false
+   },
+   {
+    "type": "save_object",
+    "target": "task",
+    "module": "Tasks"
+   }
+  ]
+ },
+ "suiteCRM7.processes.json:suiteCRM7": {
+  "conditions": [
+   {
+    "field": "object.status",
+    "operator": "equals",
+    "value_type": "static",
+    "value": "New"
+   },
+   {
+    "field": "object.lead_source",
+    "operator": "not_equals",
+    "value_type": "static",
+    "value": ""
+   },
+   {
+    "field": "owner.status",
+    "operator": "equals",
+    "value_type": "static",
+    "value": "Active"
+   }
+  ],
+  "preload": [
+   {
+    "var": "owner",
+    "source": "object_field",
+    "module": "Users",
+    "by_field": "id",
+    "value": "object.assigned_user_id"
+   },
+   {
+    "var": "account",
+    "source": "object_field",
+    "module": "Accounts",
+    "by_field": "name",
+    "value": "object.account_name"
+   }
+  ],
+  "actions": [
+   {
+    "type": "modify",
+    "target": "topic.text",
+    "change_type": "calculate",
+    "value": "concat(trim(concat(object.first_name, ' ', object.last_name)), ' [', upper(object.lead_source), ']')",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "topic.owner_name",
+    "change_type": "calculate",
+    "value": "trim(concat(owner.first_name, ' ', owner.last_name))",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "object.wps_processed_c",
+    "change_type": "set_value",
+    "value": "1",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "object.status",
+    "change_type": "set_value",
+    "value": "In Process",
+    "save_to_crm": true
+   },
+   {
+    "type": "start_process",
+    "process_names": [
+     "suiteCRM7 — звонок",
+     "suiteCRM7 — задача"
+    ]
+   }
+  ]
+ },
+ "suiteCRM8.processes.json:suiteCRM8 — звонок": {
+  "conditions": [],
+  "preload": [],
+  "actions": [
+   {
+    "type": "modify",
+    "target": "call.name",
+    "change_type": "calculate",
+    "value": "substr(concat('Позвонить: ', topic.text), 0, 50)",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.direction",
+    "change_type": "set_value",
+    "value": "Outbound",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.status",
+    "change_type": "set_value",
+    "value": "Planned",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.date_start",
+    "change_type": "set_from_variable",
+    "value": "object.date_modified",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.duration_hours",
+    "change_type": "set_value",
+    "value": "0",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.duration_minutes",
+    "change_type": "set_value",
+    "value": "15",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.parent_type",
+    "change_type": "set_value",
+    "value": "Leads",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.parent_id",
+    "change_type": "set_from_variable",
+    "value": "object.id",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.assigned_user_id",
+    "change_type": "set_from_variable",
+    "value": "owner.id",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "call.description",
+    "change_type": "calculate",
+    "value": "concat('Первичный звонок по лиду. Ответственный: ', topic.owner_name, '. Телефон: ', object.phone_work, ' ', object.phone_mobile, '. Компания: ', object.account_name)",
+    "save_to_crm": false
+   },
+   {
+    "type": "save_object",
+    "target": "call",
+    "module": "Calls"
+   }
+  ]
+ },
+ "suiteCRM8.processes.json:suiteCRM8 — задача": {
+  "conditions": [],
+  "preload": [],
+  "actions": [
+   {
+    "type": "modify",
+    "target": "task.name",
+    "change_type": "calculate",
+    "value": "substr(concat('Квалифицировать: ', topic.text), 0, 50)",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.status",
+    "change_type": "set_value",
+    "value": "Not Started",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.priority",
+    "change_type": "set_value",
+    "value": "High",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.date_due",
+    "change_type": "set_from_variable",
+    "value": "object.date_modified",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.parent_type",
+    "change_type": "set_value",
+    "value": "Leads",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.parent_id",
+    "change_type": "set_from_variable",
+    "value": "object.id",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.assigned_user_id",
+    "change_type": "set_from_variable",
+    "value": "owner.id",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "task.description",
+    "change_type": "calculate",
+    "value": "concat('Источник: ', object.lead_source, '. Ответственный: ', topic.owner_name, '. Найден контрагент в CRM: ', account.name)",
+    "save_to_crm": false
+   },
+   {
+    "type": "save_object",
+    "target": "task",
+    "module": "Tasks"
+   }
+  ]
+ },
+ "suiteCRM8.processes.json:suiteCRM8": {
+  "conditions": [
+   {
+    "field": "object.status",
+    "operator": "equals",
+    "value_type": "static",
+    "value": "New"
+   },
+   {
+    "field": "object.lead_source",
+    "operator": "not_equals",
+    "value_type": "static",
+    "value": ""
+   },
+   {
+    "field": "owner.status",
+    "operator": "equals",
+    "value_type": "static",
+    "value": "Active"
+   }
+  ],
+  "preload": [
+   {
+    "var": "owner",
+    "source": "object_field",
+    "module": "Users",
+    "by_field": "id",
+    "value": "object.assigned_user_id"
+   },
+   {
+    "var": "account",
+    "source": "object_field",
+    "module": "Accounts",
+    "by_field": "name",
+    "value": "object.account_name"
+   }
+  ],
+  "actions": [
+   {
+    "type": "modify",
+    "target": "topic.text",
+    "change_type": "calculate",
+    "value": "concat(trim(concat(object.first_name, ' ', object.last_name)), ' [', upper(object.lead_source), ']')",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "topic.owner_name",
+    "change_type": "calculate",
+    "value": "trim(concat(owner.first_name, ' ', owner.last_name))",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "object.wps_processed_c",
+    "change_type": "set_value",
+    "value": "1",
+    "save_to_crm": false
+   },
+   {
+    "type": "modify",
+    "target": "object.status",
+    "change_type": "set_value",
+    "value": "In Process",
+    "save_to_crm": true
+   },
+   {
+    "type": "start_process",
+    "process_names": [
+     "suiteCRM8 — звонок",
+     "suiteCRM8 — задача"
+    ]
+   }
+  ]
+ }
+}

@@ -36,6 +36,10 @@ The UI keeps both tokens in `localStorage` (`wps_access_token`, `wps_refresh_tok
 
 User management for administrators is described in [Users and roles](../03-user-guide/users-and-roles.md).
 
+Process secrets: `admin` creates, changes, deletes and re-encrypts them; `editor` sees names, kinds and masks (to pick a
+secret in a process); `viewer` has no access to `/api/secrets`. Nobody can read a secret value — see
+[Process secrets](#process-secrets).
+
 ## Access rules (`Wps\Auth\AccessPolicy`)
 
 The global middleware `Wps\Middleware\AuthMiddleware` (configured in `config.json` → `globalMiddlewares`) runs for every
@@ -47,6 +51,10 @@ request. The first matching rule wins:
 | any | `^/metrics$` | public |
 | `POST` | `^/api/auth/(login\|refresh)$` | public |
 | any | `^/api/users(/.*)?$` | admin |
+| `GET` | `^/api/secrets(/[^/]+)?$` | admin, editor |
+| any | `^/api/secrets(/.*)?$` | admin |
+| any | `^/api/mail(/.*)?$` | admin (test letter `POST /api/mail/test`) |
+| `GET` | `^/api/dictionaries/mail-transports$` | admin, editor (names of mail secrets) |
 | `DELETE` | `^/api/processes/[^/]+/runs/[^/]+/[^/]+$` | admin, editor |
 | `DELETE` | `^/api/processes/[^/]+$` | admin |
 | `POST` | `^/api/processes$` | admin, editor |
@@ -80,12 +88,107 @@ If that is not acceptable, do not publish the backend port and restrict `/metric
 | PostgreSQL password | `secret` | `POSTGRES_PASSWORD` and `DB_POSTGRES_PASSWORD` |
 | Redis | no password | `requirepass` in Redis + `REDIS_STREAM_PASSWORD`, `REDIS_DATA_PASSWORD`, `MOCK_REDIS_PASSWORD` |
 | CRM API key | `mySecretKey` (mock) | `CRM_API_STATIC_KEY` in WPS and the same key in the CRM plugin (`WPS_API_STATIC_KEY`) |
+| Secrets store key | test key in `docker-compose.yml` (`WPS_SECRETS_KEY`) | `WPS_SECRETS_KEY` — generate your own, see [Process secrets](#process-secrets) |
 
 Never commit real secrets: `./.env` and `.tehnical/*/.env` are local files.
 
 > **Warning**
 > Anyone who can write to `crm_events` can make WPS run processes and therefore change CRM records. Protect the stream Redis
 > with a password and keep it in a private network.
+
+## Process secrets
+
+Credentials of external actions (SMTP password, API token, bot key, OAuth2 client secret) are stored in WPS separately
+from processes. A process definition holds only a reference `secret://name` — the value itself never gets into the
+definition, the audit or Redis. How to create secrets and refer to them — [Secrets](../03-user-guide/secrets.md).
+
+### Encryption
+
+- The value is encrypted by the application: AEAD **XChaCha20-Poly1305** (libsodium), a fresh random nonce for every
+  encryption.
+- Associated data is `wps-secret|<name>|<version>`: a ciphertext copied into another table row does not decrypt.
+- Every row has a `kek_id` — the first 8 hex characters of `sha256(key)`; it selects the key on decryption.
+- The `secrets` table (PostgreSQL) stores the ciphertext and the nonce (base64) and a ready mask; there is no plaintext
+  in the database.
+
+### Key
+
+`WPS_SECRETS_KEY` is 32 random bytes in base64:
+
+```bash
+docker compose exec backend php bin/secrets-key.php     # or php back/bin/secrets-key.php
+# hWC+YI6MCicl6PHwI1aK/61wwBnFOmhJeekBdj96TNQ=
+```
+
+- No key — the service starts, processes without secrets work, the secrets API answers `503 SECRETS_KEY_NOT_CONFIGURED`;
+  a step that refers to a secret fails.
+- A key of the wrong format — the service does not start, the log says:
+  `WPS_SECRETS_KEY: expected base64 of 32 bytes (generate with: php bin/secrets-key.php)`.
+- Keep the key where the other deployment secrets live (a secrets manager, CI environment variables) and back it up.
+  **Losing the key = losing all values**: the secrets have to be entered again (processes do not change — they refer to
+  names).
+
+> **Warning**
+> `docker-compose.yml` sets a default test key — for development and tests only. Set your own `WPS_SECRETS_KEY` in
+> production.
+
+### Key rotation
+
+1. Generate a new key.
+2. Move the old key to `WPS_SECRETS_KEY_PREVIOUS`, put the new one into `WPS_SECRETS_KEY`, restart the backend. Rows with
+   the old `kek_id` still decrypt, new writes use the new key.
+3. Call `POST /api/secrets/rotate` (admin) — every secret is re-encrypted with the new key, the response is
+   `{"reencrypted": N}`.
+4. Remove `WPS_SECRETS_KEY_PREVIOUS` and restart the backend.
+
+### Access and masking
+
+- The value is write-only: no endpoint returns it, a mask is returned instead (`****` + the last 4 characters for values
+  of 12+ characters, otherwise `********`; composite secrets show their non-secret fields — `username`, `client_id`,
+  `token_url`, `scope` — as is).
+- Secrets cannot be used in templates, `modify` values, expressions or conditions — only in credential fields of
+  actions, so a value never ends up in a process variable or an email body.
+- For every step the engine creates a masker: each secret the step resolves registers its value and derived forms
+  (URL-encoded, JSON-escaped, base64, for Basic — base64 of `user:password`). The step request, result and error text go
+  through the masker before they are written to the audit; occurrences become `***`.
+- Regardless of secrets, the headers `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`,
+  `X-Auth-Key` and the fields `api_key`, `token`, `access_token`, `client_secret`, `password` are masked by name.
+- Decrypted values are cached only in the worker memory for `SECRETS_CACHE_TTL` seconds (default 60) and are never
+  written to Redis. After a value changes, workers pick it up within that time.
+- Changes of secrets are logged (`Secret created/updated/deleted`, the name and the user id, no value).
+
+## Outgoing HTTP requests (SSRF protection)
+
+The [`http_request`](../03-user-guide/actions.md#http-request) action calls external systems by a URL from the process
+definition. So that a process editor cannot make WPS reach the internal network (databases, Redis, the CRM, cloud
+metadata), every request is checked by `EgressGuard`:
+
+1. **Scheme** — `http` / `https` only; `http` is forbidden entirely with `HTTP_ALLOW_PLAIN_HTTP=false` (recommended in
+   production).
+2. **Port** — ports from `HTTP_DENY_PORTS` are forbidden (default `22,25,3306,5432,6379,6380,9200,11211`); when
+   `HTTP_ALLOW_PORTS` is set, only those are allowed.
+3. **Host** — `HTTP_DENY_HOSTS` are always forbidden (default `localhost`, `metadata.google.internal`, `postgres`,
+   `redis-stream`, `redis-data`, `mock` and the CRM host from `CRM_API_BASE_URL`); when `HTTP_ALLOW_HOSTS` is set
+   (`*.company.ru` is supported), the host must be in it.
+4. **Addresses** — the host is resolved to **all** A and AAAA records and every address is checked against private,
+   special and documentation networks (`10/8`, `127/8`, `169.254/16`, `172.16/12`, `192.168/16`, `100.64/10`, `::1`,
+   `fc00::/7`, `fe80::/10`, IPv4-mapped IPv6 and others). A match fails with
+   `Destination address is not allowed (private network)`. Internal systems that may be called are listed in
+   `HTTP_ALLOW_PRIVATE_CIDRS` (e.g. `10.20.0.0/16`); the forbidden hosts of item 3 take precedence.
+5. **Connection to the checked address** — WPS connects to the already checked IP and sends `Host` and TLS SNI with the
+   host name; the certificate is verified against the name (`HTTP_TLS_VERIFY=true`, own CA — `HTTP_CA_FILE`). There is
+   no second DNS lookup, so changing DNS after the check (DNS rebinding) does not work.
+6. **Redirects** are checked again at every hop; authorization headers, cookies and the API key are not sent to another
+   origin (scheme + host + port).
+
+Also: the scheme and host of the URL in a definition are literal only (the path and query may be substituted);
+credentials come only from secrets, and a secret with `allowed_hosts` is not sent to other hosts; the response size is
+limited by `HTTP_MAX_RESPONSE_BYTES` (counted while reading, without loading the whole body into memory), the request
+body by `HTTP_MAX_REQUEST_BYTES`.
+
+> **Development stand.** `docker-compose.yml` sets `HTTP_ALLOW_PRIVATE_CIDRS=172.16.0.0/12,192.168.0.0/16` and
+> `HTTP_DENY_HOSTS` without `mock` for the stand — so that tests can call the mock CRM inside the docker network. Do not
+> override these variables in production (or set only the subnets of your internal systems).
 
 ## CRM key
 

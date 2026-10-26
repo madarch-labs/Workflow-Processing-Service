@@ -17,6 +17,9 @@ API values) are never translated.
 | object type (CRM module) | тип объекта (модуль CRM) | `object_type` | The CRM module a process reacts to, e.g. `Deals`, `Accounts`, `Leads`. |
 | event | событие | stream message | A message in the Redis Stream `crm_events` saying that a CRM object was saved; it carries the object fields. |
 | event object / source object | объект события / исходный объект | `object` | The object from the event, available in a process as the reserved variable `object` (`object.status`). |
+| values before (old values) | значения до (старые значения) | `object_before` | Old values of the **changed** fields of a contract 2.0 event. A read-only variable; a field that did not change is absent; `null` — old values are unknown (an old-format event). |
+| changed fields | изменённые поля | `changed_fields`, `event_info.changed_fields` | Fields changed by the save, as reported by the CRM plugin. `null` — unknown, `[]` — the save changed nothing. |
+| event info | сведения о событии | `event_info`, `EventInfo` | The event type (`create` / `update` / `delete`), changed fields, whether `before` came, the origin (`wps_origin`) and the old-format flag (`legacy`). Kept in the execution context, not in `object`. |
 | condition | условие | `conditions[]` | A row "field — operator — value" that must be true for the process to start; all rows are combined with AND. |
 | operator (comparison) | оператор сравнения | `operator` | How a condition compares values: `equals`, `not_equals`, `contains`, `not_contains`. |
 | preload | предзагрузка | `preload` | Loading an object from the CRM into a variable, by `id` or by another field. |

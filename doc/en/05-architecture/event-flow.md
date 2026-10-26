@@ -70,10 +70,45 @@ sequenceDiagram
    present, otherwise the stream message id is used.
 4. `ProcessResolverService` returns active, not deleted, **top-level** processes of that object type, sorted by
    `priority` ascending. The list is cached for `PROCESS_CACHE_TTL` seconds and invalidated when a process is saved.
+   Then `EventProcessorService` keeps the processes whose `trigger_on` contains the event type (`Process::triggersOn()`;
+   the cache key does not depend on the type). An event with an unsupported `event_type` (`link`, `unlink`) is acknowledged
+   at once with the status `unsupported_event_type`. The `Event handled` log (debug) has `processes_total` and
+   `processes_matched`.
 5. For every process the engine builds its own `ExecutionContext` from the event and runs `handle()` — the details are
    in [Execution engine](execution-engine.md). A process whose conditions are not met leaves no execution, only the
    idempotency key with the value `skipped`.
 6. The message is acknowledged after all processes are handled — also when no process matched (customer answer #23).
+
+### Event envelope and event info
+
+`EventProcessorService::parse()` turns a message into `Wps\Events\EventEnvelope` — an immutable envelope shared by the stream
+and manual runs (the future webhook 6.5 uses it too):
+
+| Envelope field | Content |
+|---|---|
+| `module`, `object` | the module and the record **without** the service keys `event_type`, `before`, `changed_fields`, `wps_origin` |
+| `eventType` | `create` / `update` / `delete`; without `event_type` in the event — `create` when `wps_is_update = "0"`, otherwise `update` |
+| `unsupportedType` | `event_type` is not `create`, `update` or `delete` — no process is started |
+| `before` | old values of the changed fields; `null` — unknown, `[]` — known to be none |
+| `changedFields` | the changed field list; `null` — unknown |
+| `origin` | `wps_origin` (`execution_id`, `process_id`, `depth`) — for the cascade guard (7.5) |
+| `legacy` | the event has no `event_type` (a contract 1.0 publisher) |
+| `warnings` | dropped service fields of a wrong type — logged and counted in `wps_events_malformed_fields_total` |
+
+How missing fields are derived — see [CRM integration](../04-operations/crm-integration.md#how-wps-parses-an-event).
+
+`ExecutionContext::fromEnvelope()` builds the context of a process:
+
+- the variable `object` is the envelope record, `object_before` is `before` (metadata `source: event_before`); `object_before` is
+  **read-only**: `set()`, `setVariable()`, `setClean()`, `setModule()` throw `ConfigurationException`, and the validator rejects such
+  targets when a process is saved (`DefinitionScope::checkWritePath()`, preload, `save_object`);
+- `ExecutionContext::$eventInfo` is an immutable `Wps\Context\EventInfo` (`eventType`, `changedFields`, `hasBefore`, `origin`,
+  `legacy`, method `isChanged(field)`: `true` / `false` / `null` — unknown). It is used by the change operators (3.3), system
+  variables (5.2.9) and the cascade guard (7.5).
+
+`event_info` is serialized with the context: in the Redis state of the execution (the `event_info` hash field, so it survives
+`resume()` after a worker crash) and in `executions.context_snapshot`. `forChild()` passes both `object_before` and `event_info`
+to a child process. State saved before 6.1 is restored with the default `EventInfo` (`legacy: true`).
 
 ## Child processes
 

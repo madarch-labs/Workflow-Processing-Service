@@ -29,7 +29,7 @@ back/
 ├── config/config.json         SwooleApp config: server, Swoole settings, controllers namespace,
 │                              global middlewares, CyclicJobs, StateContainerInitiation
 ├── composer.json / .lock      Dependencies; PSR-4 "Wps\\" → src/
-├── Dockerfile                 phpswoole/swoole:6.0-php8.3, composer install, code copied into the image
+├── Dockerfile                 phpswoole/swoole:6.0-php8.3 + bcmath, intl; composer install, code copied into the image
 ├── docker/entrypoint.sh       .env from .env.example if missing → migrations → server
 ├── .env.example               All backend variables with defaults
 ├── API.md                     REST API contract
@@ -137,6 +137,7 @@ doc/
 | New expression function | `Container::expressions()` → [guide](extending/expression-functions.md) |
 | New endpoint | `back/src/Controllers/…`, `AccessPolicy`, `back/API.md` → [guide](extending/new-api-endpoint.md) |
 | Another CRM | `ExternalApiAdapterService`, or a CRM-side API → [guide](extending/new-crm-adapter.md) |
+| New notification channel | `back/src/Notify/Channels/`, `Container::notifyChannels()` → [guide](extending/new-notify-channel.md) |
 | New page in the UI | `front/src/views/`, `router/index.ts`, `AppLayout.vue`, `api/` → [guide](extending/new-ui-screen.md) |
 | New UI language | `front/src/locales/`, `front/src/i18n/` → [guide](extending/new-language.md) |
 | Database change | new `back/migrations/00N_*.sql` (applied on the next backend start) |

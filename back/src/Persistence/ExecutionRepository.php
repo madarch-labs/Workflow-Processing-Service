@@ -10,7 +10,8 @@ use Wps\Support\Json;
 final class ExecutionRepository
 {
     private const SUMMARY = 'e.id, e.process_id, p.name AS process_name, e.process_version, e.parent_execution_id, e.trigger,
-        e.event_id, e.object_type, e.object_id, e.status, e.retry_count, e.error_message, e.started_at, e.finished_at';
+        e.event_id, e.object_type, e.object_id, e.status, e.retry_count, e.handled_errors, e.error_message, e.started_at, e.finished_at,
+        e.waiting_until, e.wait_reason';
 
     public function __construct(private readonly Database $db)
     {
@@ -44,13 +45,13 @@ final class ExecutionRepository
     /**
      * @param array<string, mixed> $snapshot
      */
-    public function finish(string $id, string $status, int $retryCount, array $snapshot, ?string $error): void
+    public function finish(string $id, string $status, int $retryCount, array $snapshot, ?string $error, int $handledErrors = 0): void
     {
         $this->db->execute(
-            'UPDATE executions SET status = :status, retry_count = :retry_count, finished_at = NOW(),
+            'UPDATE executions SET status = :status, retry_count = :retry_count, handled_errors = :handled_errors, finished_at = NOW(),
                     context_snapshot = CAST(:snapshot AS JSONB), error_message = :error
              WHERE id = CAST(:id AS UUID)',
-            ['id' => $id, 'status' => $status, 'retry_count' => $retryCount, 'snapshot' => $snapshot, 'error' => $error],
+            ['id' => $id, 'status' => $status, 'retry_count' => $retryCount, 'handled_errors' => $handledErrors, 'snapshot' => $snapshot, 'error' => $error],
         );
     }
 
@@ -78,8 +79,27 @@ final class ExecutionRepository
      */
     public function paginateByProcess(int $processId, array $filters, int $page, int $perPage): array
     {
-        $where = ['e.process_id = :process_id'];
-        $params = ['process_id' => $processId];
+        return $this->paginate(['process_id' => $processId] + $filters, $page, $perPage);
+    }
+
+    /**
+     * Executions of every process (GET /api/executions): status, process_id, due_before (waiting until), dates.
+     *
+     * @param array<string, mixed> $filters
+     * @return array{0: list<array<string, mixed>>, 1: int}
+     */
+    public function paginate(array $filters, int $page, int $perPage): array
+    {
+        $where = ['TRUE'];
+        $params = [];
+        if (($filters['process_id'] ?? null) !== null && $filters['process_id'] !== '') {
+            $where[] = 'e.process_id = :process_id';
+            $params['process_id'] = (int)$filters['process_id'];
+        }
+        if (($filters['due_before'] ?? '') !== '') {
+            $where[] = 'e.waiting_until <= CAST(:due_before AS TIMESTAMPTZ)';
+            $params['due_before'] = $filters['due_before'];
+        }
         if (($filters['status'] ?? '') !== '') {
             $where[] = 'e.status = :status';
             $params['status'] = $filters['status'];
@@ -174,6 +194,9 @@ final class ExecutionRepository
             'object_id' => (string)$row['object_id'],
             'status' => (string)$row['status'],
             'retry_count' => (int)$row['retry_count'],
+            'handled_errors' => (int)($row['handled_errors'] ?? 0),
+            'waiting_until' => isset($row['waiting_until']) ? Json::time((string)$row['waiting_until']) : null,
+            'wait_reason' => $row['wait_reason'] ?? null,
             'error_message' => $row['error_message'] !== null ? (string)$row['error_message'] : null,
             'started_at' => $started,
             'finished_at' => $finished,

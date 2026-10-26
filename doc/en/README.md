@@ -22,9 +22,10 @@ Start with [Quick start](02-getting-started/quick-start.md) if you want to see W
 - [Sign-in and the interface](03-user-guide/login-and-ui.md) — How to sign in to the WPS web interface, find your way around it and switch the interface language.
 - [Processes](03-user-guide/processes.md) — How to find, create, edit, clone and delete processes, and what every field of the process configuration means.
 - [Trigger conditions](03-user-guide/triggers-and-conditions.md) — When WPS starts a process and how to write the conditions in **Block 1. Trigger conditions**.
-- [Actions](03-user-guide/actions.md) — What a process does once its conditions are met: preload related objects, change fields, save to the CRM and start child processes.
+- [Actions](03-user-guide/actions.md) — What a process does once its conditions are met: preload related objects, change fields, save to the CRM, find records and loop over them, send e-mails, call external APIs, branch, wait and start child processes.
 - [Change types and expressions](03-user-guide/change-types-and-expressions.md) — How a **Modify object / variable** row computes the new value: a fixed value, a copy of another field, or a calculated expression.
 - [Child processes](03-user-guide/subprocesses.md) — How to split a scenario into a parent and child processes, what a child receives and how it is started.
+- [Secrets](03-user-guide/secrets.md) — How an administrator stores credentials of external systems in WPS and how a process refers to them without seeing the value.
 - [Executions and audit](03-user-guide/executions-and-audit.md) — Where to see every run of a process, how to read an execution page and how to find the cause of an error.
 - [Manual run and run-once reset](03-user-guide/manual-run-and-reset.md) — How to run a process with a test object without the CRM, and how to lift the "run once per record" restriction.
 - [Users and roles](03-user-guide/users-and-roles.md) — Who can do what in WPS, how an administrator manages users and why to change the default password first.
@@ -65,12 +66,14 @@ Start with [Quick start](02-getting-started/quick-start.md) if you want to see W
 ### Extending WPS
 
 - [New action type](07-developer-guide/extending/new-action-type.md) — How to add a new kind of step to process definitions, using a verified `log_message` action ("Write to log") as the example.
-- [New comparison operator](07-developer-guide/extending/new-comparator.md) — How to add an operator for process conditions, using `starts_with` ("Starts with") as a complete, verified example.
-- [New change type](07-developer-guide/extending/new-change-type.md) — How to add a way of computing the new value in a `modify` action, using a verified `append` change type ("Append to value").
+- [New block type](07-developer-guide/extending/new-block-type.md) — How to add a control-flow construct with nested action lists, using the built-in `condition` block as the example.
+- [New comparison operator](07-developer-guide/extending/new-comparator.md) — How to add an operator for process conditions, using the built-in `starts_with` ("Starts with") operator as the example.
+- [New change type](07-developer-guide/extending/new-change-type.md) — How to add a way of computing the new value in a `modify` action, using a teaching `append_note` change type ("Append a note").
 - [New load strategy](07-developer-guide/extending/new-load-strategy.md) — How to add a way of loading a CRM object into a preload variable, using a verified `by_id_or_field` strategy as the example.
-- [Expression functions](07-developer-guide/extending/expression-functions.md) — How to add a function to `calculate` expressions, using a verified `coalesce(a, b, …)` as the example.
-- [New API endpoint](07-developer-guide/extending/new-api-endpoint.md) — How to add a REST endpoint, using a verified `GET /api/dictionaries/expression-functions` as the example.
+- [Expression functions](07-developer-guide/extending/expression-functions.md) — How to add a function to `calculate` expressions, using `repeat(s, n)` as the example.
+- [New API endpoint](07-developer-guide/extending/new-api-endpoint.md) — How to add a REST endpoint, using a tutorial `GET /api/dictionaries/function-categories` as the example.
 - [New CRM adapter](07-developer-guide/extending/new-crm-adapter.md) — How to connect WPS to a CRM other than the mock or SuiteCRM 7/8, using a verified bridge service as the example.
+- [New notification channel](07-developer-guide/extending/new-notify-channel.md) — How to add a channel to the `notify` action ("Notification") — on a teaching example of a Discord webhook.
 - [New UI screen](07-developer-guide/extending/new-ui-screen.md) — How to add a page to the web UI — view, route, menu item, store, API module and translations — using a verified "System status" screen as the example.
 - [New UI language](07-developer-guide/extending/new-language.md) — How to add a language to the web UI, using a verified German (`de`) locale as the example.
 

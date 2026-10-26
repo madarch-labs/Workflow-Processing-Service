@@ -25,6 +25,10 @@ final class MetricsController extends BaseController
             $gauges['wps_redis_stream_pending'] = $info['pending'];
         } catch (\Throwable) {
         }
+        try {
+            $gauges['wps_executions_waiting'] = $c->executionWaits()->count();
+        } catch (\Throwable) {
+        }
         return JsonResponder::text($this->response, $c->metrics()->render($gauges), 'text/plain; version=0.0.4; charset=utf-8');
     }
 }

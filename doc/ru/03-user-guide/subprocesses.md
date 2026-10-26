@@ -130,5 +130,5 @@
 <!-- footer-nav -->
 ---
 
-← Назад: [Типы изменений и выражения](change-types-and-expressions.md) | [Оглавление](../README.md) | [Выполнения и аудит](executions-and-audit.md) Далее →
+← Назад: [Типы изменений и выражения](change-types-and-expressions.md) | [Оглавление](../README.md) | [Секреты](secrets.md) Далее →
 <!-- /footer-nav -->

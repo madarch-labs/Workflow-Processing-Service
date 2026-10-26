@@ -39,6 +39,60 @@ conditions as "advanced" and saves them unchanged. See [Triggers and conditions]
 Yes. Declare the variable in **Preload** (for example `v1` = the account) and use `v1.status` in a condition. WPS first
 checks the rows on `object.*`; only if they pass does it run the preload and check the remaining rows ("lazy preload").
 
+### How do I get all tasks (deals, contacts) of a record, not just one?
+
+Preload loads one record. For a list use the **Find records** action (`find_records`): by module with a filter
+(`Tasks`, `parent_id equals object.id`, `status not_in [...]`) or by relationship (`related_to: {record: object, link:
+contacts}`). The result is a list variable `{items, count, has_more, ids}`: templates and expressions read it
+(`{{ tasks.count }}`), and `ids` can be passed to "Link records". The list is read-only — see
+[Actions → Find records](03-user-guide/actions.md#find-records).
+
+### Can a field be compared with a computed value, e.g. "more than 80 % of the limit"?
+
+Yes: `"value_type": "expression"` — the right side is computed by an expression (`v1.credit_limit * 0.8`,
+`coalesce(v1.limit, 0)`, `add_days(today(), 30)`) and cast with the same `cast` as the field. For `between` — a pair of
+expressions. API only for now. See [Trigger conditions → Comparing with an expression](03-user-guide/triggers-and-conditions.md#comparing-with-an-expression).
+
+### How do I write a condition "within the next 30 days" or "within the last day"?
+
+With a relative date in a static value of a condition with `cast: date` / `datetime`: `today+30d`, `now-24h`,
+`["start_of_quarter", "end_of_quarter"]` for `between`. Anchors are computed in `WPS_TIMEZONE`, there are no working
+days. The same works in Find records and aggregate filters. See
+[Trigger conditions → Relative dates](03-user-guide/triggers-and-conditions.md#relative-dates).
+
+### How do I distribute leads or cases between employees?
+
+With the **Assign an owner** action (`assign`): `round_robin`, `least_busy` — to the least busy, `random`, `manager` —
+to the manager of the current owner, `user` — to a specific user. The pool is a list of users or a CRM security group;
+inactive employees and those on leave are skipped. A repeated step after an error does not move the queue. Reset a
+queue with `DEL assign:rr:<queue_key>` in redis-data. See
+[Actions → Assign an owner](03-user-guide/actions.md#assign-an-owner).
+
+### How do I send a notification to the CRM bell, Telegram or Slack?
+
+With the **Notification** action (`notify`): one step, several channels — `crm_alert` (an `Alerts` record, visible in
+the SuiteCRM 7 and 8 bell), `telegram` (a bot, a `telegram_bot` secret), `slack` and `teams` (a webhook, a
+`webhook_url` secret). A repeated step does not duplicate what was delivered. Check a channel without a process —
+`POST /api/notify/test`. E-mails to customers — with the Send an e-mail action. See
+[Actions → Notification](03-user-guide/actions.md#notification).
+
+### How do I compute the sum or the count of related records?
+
+With the **Aggregate over records** change type (`aggregate`) in `modify` or `set_variable`: `count`, `sum`, `avg`,
+`min`, `max` over module records by a filter or by relationship — without a search and a loop. If a selection is needed
+but there is no module filter (in SuiteCRM deals have no `account_id` column), use Find records by relationship with a
+filter and a loop accumulator. See [Aggregate over records](03-user-guide/change-types-and-expressions.md#aggregate-over-records).
+
+### How do I change every found record?
+
+If all records need the same fields (status, owner, date) — with the **Update list records** action
+(`update_records`): one step, unchanged records are not sent, see
+[Actions → Update list records](03-user-guide/actions.md#update-list-records). If every record needs different
+actions — with the **Loop** block (`foreach`): `"source": "deals.items", "as": "deal"`, in the body — `modify deal.…` and
+always `save_object` with `target: "deal"` (the item is a copy, without saving the changes do not reach the CRM; such
+iterations show up in `unsaved_items`). Filter items with `where`, go on after an item error with
+`on_item_error: continue`. See [Actions → Loop](03-user-guide/actions.md#loop-for-each-item).
+
 ### Several processes match the same event. In which order do they run?
 
 In ascending `priority` (lower runs earlier). Each process gets its own fresh copy of the event, so one process does not see
@@ -65,7 +119,9 @@ new version immediately, because the process cache is cleared on save.
 ### What if the CRM is down?
 
 Temporary errors (timeout, connection error, HTTP 5xx) are retried `ACTION_RETRY_MAX` times (3) with exponential backoff:
-1 s, 2 s, 4 s by default. While waiting, the execution status is "Retrying". After the last attempt the step and the
+1 s, 2 s, 4 s by default. While waiting, the execution status is "Retrying"; a delay longer than
+`WAIT_INLINE_MAX_SECONDS` (5 s, e.g. `retry.max_delay: 10m`) parks the execution — status "Waiting", no worker is held,
+the wait survives a restart. After the last attempt the step and the
 execution are "Failed", and the remaining steps are "Skipped". A CRM 4xx answer is not retried. See
 [Reliability](04-operations/reliability.md).
 

@@ -211,14 +211,163 @@ Each executed step writes one log line. A line from the verification run (messag
 | Missing/invalid config | `$scope->error()` in `validate()` | `422`, `details[].field = definition.actions[N].<key>` |
 | Reads a variable that does not exist yet | `$scope->checkReadPath($path, $field)` | `Variable "v9" is not defined at this point` |
 | Creates a variable | `$scope->declare('name', 'created')` or `checkWritePath()` | later steps may use it |
+| Puts a read-only list of records | `$scope->declare('name', ExecutionContext::SOURCE_LIST)`; at run time `setVariable($name, $value, $module, ExecutionContext::SOURCE_LIST)` | `modify` / `save_object` on it are rejected, `set()` throws `ConfigurationException` (as `FindRecordsHandler` does) |
+| Needs a variable only while computing (the current record) | at validation — `$scope->declare($var, ExecutionContext::SOURCE_LOOP)` before checking the parameters and `$scope->undeclare($var)` after; at run time — `$context->withTemporaryVariable($var, $record, $module, fn () => …)` | the variable is removed also on an exception; `UpdateRecordsHandler` does this for `item` |
 | External system temporarily down | `throw new RecoverableException('…')` | retried, status `retrying`, then `failed` |
 | Permanent failure (4xx, bad data) | `throw new NonRecoverableException('…', ['response' => …])` | step `failed`, details in `result_data.details` |
 | Nothing to do | `return ActionResult::skipped('reason')` | step `skipped`, execution continues |
 
 The engine restores the context snapshot before a retry, so `execute()` may change the context before it fails.
-External side effects are not rolled back — make them idempotent if they can be retried.
+External side effects are not rolled back — run them through the side-effect journal (see
+[below](#external-calls-and-the-side-effect-journal)) or make them idempotent.
 
 In child processes the scope is created with `inheritsVariables: true`, so `checkReadPath()` accepts unknown variables there.
+
+### Fields that accept a secret
+
+If an action needs credentials (a token, a password, a DSN), declare a field where the process author puts a reference
+`secret://name` or `secret://name.field`, and resolve it in `execute()` with `SecretResolver`
+(`Container::secretResolver()`, pass it to the handler constructor):
+
+```php
+$token = $this->secrets->resolve($actionConfig['auth']['token'], $context->secretMasker); // string|array
+$hosts = $this->secrets->allowedHosts($actionConfig['auth']['token']);                      // [] = any host
+$kind = $this->secrets->kind($actionConfig['auth']['token']);                               // 'bearer', 'basic_auth', …
+```
+
+- `resolve()` decrypts the value (cached in the worker memory, `SECRETS_CACHE_TTL`) and registers it and its derived forms
+  in the step masker `$context->secretMasker`. The engine passes the step `request`, `result`, error text and `details`
+  through this masker before writing the audit, so the value becomes `***` automatically. Do not put a secret value into
+  process variables, and do not log it without the masker.
+- No such secret or field — `NonRecoverableException` (`Secret "x" not found`, `Secret "x" has no field "y"`).
+- When a process is saved, the validator itself checks that the secret exists and rejects references in data fields
+  (`value`, `expression`, `field`, `target`, `template`, `subject`, `body`, `text`, `html`) and in conditions. So do not
+  name a credential field like a data field. If the action expects particular kinds of secrets, check `kind()` in
+  `execute()` and fail the step with a clear error.
+- If the secret goes to an external system, check the request host against `allowedHosts()`.
+
+### Text fields and templates
+
+If an action field is text with substitutions (e-mail subject and body, URL, headers, request body), do not build it
+yourself: use `TemplateEngine` (`Container::templates()`) and check it on save with `TemplateValidator`
+(`Container::templateValidator()`). The action picks the `EscapeMode` by the purpose of the field:
+
+```php
+use Wps\Template\EscapeMode;
+use Wps\Template\MissingPolicy;
+
+// validate()
+$this->templateValidator->validate($config['subject'] ?? null, $scope, "{$path}.subject", EscapeMode::Header);
+$this->templateValidator->validate($config['html'] ?? null, $scope, "{$path}.html", EscapeMode::Html, allowRaw: false);
+$this->templateValidator->validate($config['url'] ?? null, $scope, "{$path}.url", EscapeMode::Url);   // fixed host
+$this->templateValidator->validate($config['body'] ?? null, $scope, "{$path}.body", EscapeMode::Json); // a document array
+
+// execute()
+$resolve = static fn (string $p) => $context->resolve($p);
+$subject = $this->templates->render($config['subject'], $resolve, EscapeMode::Header)->value;
+$to = $this->templates->render($config['to'], $resolve, EscapeMode::Text, MissingPolicy::Error)->value;
+$body = $this->templates->renderStructure($config['body'], $resolve)->value; // numbers stay numbers
+```
+
+- `text` — as is; `header` — CR/LF removed (plus a warning in `RenderResult::$warnings`); `html` — `htmlspecialchars`,
+  the `raw` filter is allowed only if you pass `allowRaw: true` for a trusted field; `url` — `rawurlencode` and no
+  substitutions in the scheme, host and port; `json` — `renderStructure()`.
+- Use `MissingPolicy::Error` for recipients and URLs: an empty address must not go out silently.
+- Put `RenderResult::$missing` and `$warnings` into the step `result` so they show in the audit.
+
+### External calls and the side-effect journal
+
+A step runs at least once: after a worker crash it is repeated as a whole. If the action sends something to an external
+system (an e-mail, a webhook, a notification), run the call through `SideEffectLedger` (`Container::sideEffects()`),
+otherwise a repeat sends it a second time. The model is described in
+[Reliability](../../04-operations/reliability.md#side-effects-and-repeats).
+
+```php
+use Wps\SideEffects\DeliveryPolicy;
+use Wps\SideEffects\HasDeliveryPolicy;
+use Wps\SideEffects\SideEffectLedger;
+use Wps\SideEffects\UnknownOutcomeException;
+
+final class PostToErpHandler implements ActionHandlerInterface, HasDeliveryPolicy
+{
+    public function __construct(private readonly SideEffectLedger $ledger /* , … */) {}
+
+    public function defaultDelivery(array $config): string
+    {
+        // a repeated POST may create a duplicate → "at most once" by default
+        return DeliveryPolicy::AT_MOST_ONCE;
+    }
+
+    public function execute(ExecutionContext $context, array $actionConfig): ActionResult
+    {
+        $delivery = DeliveryPolicy::resolve($actionConfig['delivery'] ?? null, $this->defaultDelivery($actionConfig));
+        $request = ['url' => $url, 'body' => $body];                       // what goes out (no secrets)
+        $out = $this->ledger->run($context, $this->type(), '', $delivery, $request,
+            function (string $idempotencyKey) use ($url, $body): array {
+                // pass the key on: Idempotency-Key header, Message-ID of an e-mail
+                // error BEFORE sending (no connection, DNS)        → throw new RecoverableException(…)   — retried
+                // timeout / broken connection AFTER sending (at_most_once) → throw UnknownOutcomeException::forEffect(…)
+                // final error (4xx, SMTP rejection)                → throw new NonRecoverableException(…)
+                return ['status' => 201, 'body' => $responseBody];          // a serializable result
+            });
+        return ActionResult::success($request, $out['response'] + [
+            'idempotency_key' => $out['idempotency_key'],
+            'replayed' => $out['replayed'],
+        ]);
+    }
+}
+```
+
+- `run()` writes `started` before the call, `done` with the response after success (through the secret masker of the
+  step), `failed` after a non-recoverable error; a recoverable error and `UnknownOutcomeException` keep `started`.
+- A repeat after `done` does not call the closure and returns the stored response (`replayed: true`); a foreign
+  `started` with `at_most_once` throws `UnknownOutcomeException` (`error_code: UNKNOWN_OUTCOME` in the step
+  `result_data`).
+- Several external calls in one step (an e-mail per recipient, two notification channels) are told apart by `$sub` — a
+  stable id of the call (`'0'`, `'1'`, `'slack'`): the effect key becomes `{pc}@{iteration}#{sub}`.
+- The external key `$idempotencyKey` is `{execution_id}:{effect_key}`; for the `Message-ID` of e-mails use the domain
+  `AppConfig::$mailMessageIdDomain` (`WPS_MAIL_MESSAGE_ID_DOMAIN`).
+- In a dry run (`$context->dryRun`) the closure is not called, the journal is not touched, `response = ['dry_run' => true]`.
+- The `delivery` field is allowed only on actions that implement `HasDeliveryPolicy`: the validator checks the value
+  (`Delivery must be "at_most_once" or "at_least_once"`) and rejects it on other actions
+  (`Action "modify" does not support "delivery"`).
+
+### A waiting action (parking)
+
+An action that has to wait long (an external answer, a due time) must not sleep in the coroutine: return
+`ActionResult::wait()` and the engine parks the execution — the state snapshot goes to `execution_waits`, the worker is
+released, and `WaitResumeJob` resumes the execution after the due time, even after a restart
+([Execution engine → Waiting](../../05-architecture/execution-engine.md#waiting-and-waking-up-waitresumejob)).
+While waiting, the step has the `waiting` status.
+
+```php
+use Wps\Actions\ResumableActionInterface;
+
+final class WaitForApprovalHandler implements ActionHandlerInterface, ResumableActionInterface
+{
+    public function execute(ExecutionContext $context, array $actionConfig): ActionResult
+    {
+        $dueAt = $this->clock->now()->modify('+1 day');
+        // ActionResult::wait($dueAt, $reason, $request, $result, $info)
+        return ActionResult::wait($dueAt, 'approval', ['ticket' => $id], [], ['ticket' => $id]);
+    }
+
+    public function resume(ExecutionContext $context, array $actionConfig, array $waitInfo): ActionResult
+    {
+        // $waitInfo — $info from wait() + due_at, parked_at
+        return ActionResult::success(['ticket' => $waitInfo['ticket']], ['approved' => $this->check($waitInfo['ticket'])]);
+    }
+}
+```
+
+- `$reason` goes to `executions.wait_reason` and `wait.reason` of the API; `$info` — to `execution_waits.info` and to
+  `resume()`. Keep it small and serializable.
+- Without `ResumableActionInterface` the step simply becomes `success` after the wake-up with `request`/`result` from `wait()`.
+- `resume()` may return `success`, `skipped` or throw — the usual `on_error` and retries apply.
+- Short pauses (up to `WAIT_INLINE_MAX_SECONDS`) are cheaper in the coroutine (`Coroutine::sleep`), as `DelayHandler` does.
+- `WAITING` is allowed only where an execution exists: in `prepare()`, during condition evaluation and in a test run
+  without `handle` the step fails with `This step cannot wait here (condition evaluation or a test run)`.
+- A snapshot larger than `WAIT_STATE_MAX_BYTES` is not parked: `Execution state is too large to wait (N bytes, limit M)`.
 
 ## 5. UI and translations
 
@@ -259,16 +408,16 @@ To make the action editable, add a row type to `ModifyRow` (`front/src/types/ind
 ## 6. Test
 
 This is the verified `testExtensions()` group used for all extension examples in this section (comparator
-`starts_with`, change type `append`, load strategy `by_id_or_field`, function `coalesce`, action `log_message`,
-endpoint `/api/dictionaries/expression-functions`). Call it from `run()` after `testRunOnce()`.
+`starts_with`, change type `append`, load strategy `by_id_or_field`, function `repeat`, action `log_message`,
+endpoint `/api/dictionaries/function-categories`). Call it from `run()` after `testRunOnce()`.
 
 ```php
 private function testExtensions(): void
 {
     echo "[extensions]\n";
-    $this->test('Expression functions dictionary lists coalesce', function () {
-        $res = $this->request('GET', '/api/dictionaries/expression-functions', token: $this->viewerToken, expectedStatus: 200);
-        $this->assertTrue(in_array('coalesce', array_column($res['data'], 'value'), true));
+    $this->test('Function categories dictionary lists date', function () {
+        $res = $this->request('GET', '/api/dictionaries/function-categories', token: $this->viewerToken, expectedStatus: 200);
+        $this->assertTrue(in_array('date', array_column($res['data'], 'value'), true));
     });
     $this->test('Change types and action types contain the new entries', function () {
         $changeTypes = $this->request('GET', '/api/dictionaries/change-types', token: $this->adminToken)['data'];
@@ -333,7 +482,7 @@ Verified result (separate stack `wpsext`, mock CRM):
 
 ```
 [extensions]
-  Expression functions dictionary lists coalesce ... OK
+  Function categories dictionary lists date ... OK
   Change types and action types contain the new entries ... OK
   log_message without a message is rejected ... OK
   Seed an account with an INN in the mock CRM ... OK
@@ -357,5 +506,5 @@ Passed: 74, Failed: 0, Skipped: 0
 <!-- footer-nav -->
 ---
 
-← Previous: [Testing](../testing.md) | [Contents](../../README.md) | [New comparison operator](new-comparator.md) Next →
+← Previous: [Testing](../testing.md) | [Contents](../../README.md) | [New block type](new-block-type.md) Next →
 <!-- /footer-nav -->

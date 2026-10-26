@@ -88,6 +88,9 @@ docker run --rm -u "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer -v "$PWD":
 rm -rf vendor                          # vendor lives only in the image
 cd .. && docker compose up -d --build backend
 docker compose exec backend php tests/IntegrationTest.php
+
+# unit tests (no stack needed)
+docker build -f back/Dockerfile --target test -t wps-backend-test . && docker run --rm wps-backend-test --testsuite unit
 ```
 
 A new major/minor version (0.4, 1.x) is set in `back/composer.json`. Check its changelog against the two workarounds WPS
@@ -128,7 +131,8 @@ Execution logs carry `execution_id`, `process_id`, `event_id`, `step`, so one `g
 | Real exception text in `500 INTERNAL_ERROR` responses | `APP_DEBUG=true` (never in production) |
 | Generate an event | `curl -g 'http://localhost:9502/test-event?module=Deals&set[status]=Active'` |
 | Look at a CRM object in the mock | `curl http://localhost:9502/mock/objects/Accounts/<id>` |
-| Simulate CRM failures | ids starting with `fail500` → HTTP 500 (retries), `slow` → 3 s delay |
+| Simulate CRM failures | ids starting with `fail500` → HTTP 500 (retries), `fail<N>x500` (e.g. `fail2x500-abc`) → the first N requests with this id get HTTP 500, then a normal answer (testing a `retry` profile), `slow` → 3 s delay |
+| Check `http_request` without an external system | URL `http://mock:9502/mock/echo/...` (on the stand the mock is allowed by the compose SSRF settings); what arrived — `curl 'http://localhost:9502/mock/echo-last?key=<X-Mock-Key>'`; other targets — `/mock/status/{code}`, `/mock/redirect`, `/mock/big`, `/mock/oauth/token`, `/mock/protected` ([list](../04-operations/crm-integration.md)) |
 | Look at the live execution context | `GET /api/executions/{id}` (while running it is read from Redis `exec:{uuid}`) |
 | Inspect the stream | `docker compose exec redis-stream redis-cli XINFO GROUPS crm_events`, DLQ: `XRANGE crm_events:dlq - +` |
 | Check a process definition without the UI | `POST /api/processes` returns `422` with `details[].field` paths |

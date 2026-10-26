@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Wps\Context;
 
+use Wps\Events\EventEnvelope;
 use Wps\Exceptions\ConfigurationException;
+use Wps\Secrets\SecretMasker;
 
 /**
  * Runtime state of one process execution: the source event, variables and their metadata.
@@ -16,11 +18,34 @@ use Wps\Exceptions\ConfigurationException;
 final class ExecutionContext
 {
     public const OBJECT = 'object';
+    /** old values of the changed fields of the event, null when unknown (6.1); read-only */
+    public const OBJECT_BEFORE = 'object_before';
+    /** system values written by the engine (sys.last_error, sys.errors_count — 7.1; more in 5.2.9); read-only */
+    public const SYS = 'sys';
+    public const READ_ONLY = [self::OBJECT_BEFORE, self::SYS];
+    /** a process variable that is not a CRM record (set_variable, 4.13): never dirty, cannot be saved */
+    public const SOURCE_LOCAL = 'local';
+    /** a record list of find_records (4.10): {items, count, has_more, ids}; cannot be modified or saved */
+    public const SOURCE_LIST = 'list';
+    /** the current item of a foreach loop (4.11): a copy, changes are saved with save_object */
+    public const SOURCE_LOOP = 'loop';
+    /** data of the current iteration ({index, number, count, first, last}); read-only */
+    public const SOURCE_LOOP_INFO = 'loop_info';
 
     /** Runtime info about the step being executed (not persisted, set by the Execution Engine). */
     public ?string $executionId = null;
     public ?int $processId = null;
+    /** audit sequence number of the current step (seq); used e.g. in the idempotency key of child processes */
     public int $stepIndex = 0;
+    /** pc of the current instruction and the loop iteration ("2/0" — indexes of nested loops, "" outside loops) */
+    public int $pc = 0;
+    public string $iteration = '';
+    /** masker of the current step: secret values resolved by the step are removed from its audit record */
+    public ?SecretMasker $secretMasker = null;
+    /** one attempt of a step (all its in-step retries): tells a retry from the trace of a crashed worker (0.4) */
+    public ?string $attemptToken = null;
+    /** test run: external calls are not made (md/tasks_list/7.6-dry-run.md) */
+    public bool $dryRun = false;
 
     /**
      * @param array<string, mixed> $event
@@ -35,7 +60,56 @@ final class ExecutionContext
         private array $meta = [],
         private array $dirty = [],
         public int $depth = 0,
+        public readonly EventInfo $eventInfo = new EventInfo(),
     ) {
+    }
+
+    /**
+     * Context of a normalized event: "object" without service keys, "object_before" and the event info.
+     */
+    public static function fromEnvelope(string $eventId, EventEnvelope $envelope): self
+    {
+        return new self(
+            eventId: $eventId,
+            event: $envelope->object,
+            variables: [self::OBJECT => $envelope->object, self::OBJECT_BEFORE => $envelope->before],
+            meta: [
+                self::OBJECT => ['module' => $envelope->module, 'source' => 'event'],
+                self::OBJECT_BEFORE => ['module' => $envelope->module, 'source' => 'event_before'],
+            ],
+            eventInfo: $envelope->eventInfo(),
+        );
+    }
+
+    /**
+     * A step error handled by on_error (continue / goto): sys.last_error and sys.errors_count (7.1).
+     *
+     * @param array<string, mixed> $error
+     */
+    public function recordHandledError(array $error): void
+    {
+        $sys = is_array($this->variables[self::SYS] ?? null) ? $this->variables[self::SYS] : [];
+        $sys['last_error'] = $error;
+        $sys['errors_count'] = (int)($sys['errors_count'] ?? 0) + 1;
+        $this->variables[self::SYS] = $sys;
+        $this->meta[self::SYS] = ['module' => null, 'source' => 'system'];
+    }
+
+    public function handledErrors(): int
+    {
+        return (int)($this->variables[self::SYS]['errors_count'] ?? 0);
+    }
+
+    public static function isReadOnly(string $variable): bool
+    {
+        return in_array($variable, self::READ_ONLY, true);
+    }
+
+    private static function assertWritable(string $variable): void
+    {
+        if (self::isReadOnly($variable)) {
+            throw new ConfigurationException("Variable \"{$variable}\" is read-only");
+        }
     }
 
     /**
@@ -43,12 +117,7 @@ final class ExecutionContext
      */
     public static function fromEvent(string $eventId, array $object, string $module): self
     {
-        return new self(
-            eventId: $eventId,
-            event: $object,
-            variables: [self::OBJECT => $object],
-            meta: [self::OBJECT => ['module' => $module, 'source' => 'event']],
-        );
+        return self::fromEnvelope($eventId, EventEnvelope::fromArray($object, $module));
     }
 
     /**
@@ -95,6 +164,7 @@ final class ExecutionContext
      */
     public function setVariable(string $name, ?array $value, ?string $module = null, string $source = 'preload'): void
     {
+        self::assertWritable($name);
         $this->variables[$name] = $value;
         $this->meta[$name] = ['module' => $module, 'source' => $source];
         unset($this->dirty[$name]);
@@ -152,6 +222,11 @@ final class ExecutionContext
         if ($field === null) {
             throw new ConfigurationException("Target \"{$path}\" must point to a field (e.g. {$path}.name)");
         }
+        self::assertWritable($var);
+        $this->assertNotLoopInfo($var);
+        if ($this->isList($var)) {
+            throw new ConfigurationException("Variable \"{$var}\" is a record list; use foreach to change its records");
+        }
         if (!isset($this->variables[$var]) || !is_array($this->variables[$var])) {
             $this->variables[$var] = [];
             if (!isset($this->meta[$var])) {
@@ -159,7 +234,70 @@ final class ExecutionContext
             }
         }
         $this->variables[$var][$field] = $value;
-        $this->dirty[$var][$field] = true;
+        if (!$this->isLocal($var)) {
+            $this->dirty[$var][$field] = true;
+        }
+    }
+
+    /**
+     * Writes a field of a local variable (created as local when missing).
+     */
+    public function setLocal(string $path, mixed $value): void
+    {
+        [$var, $field] = self::splitPath($path);
+        if ($field === null) {
+            throw new ConfigurationException("Target \"{$path}\" must point to a field (e.g. {$path}.name)");
+        }
+        self::assertWritable($var);
+        $this->assertNotLoopInfo($var);
+        if (!$this->hasVariable($var) || $this->variables[$var] === null) {
+            $this->variables[$var] = [];
+            $this->meta[$var] = ['module' => null, 'source' => self::SOURCE_LOCAL];
+        }
+        $this->variables[$var][$field] = $value;
+    }
+
+    private function assertNotLoopInfo(string $var): void
+    {
+        if (($this->meta[$var]['source'] ?? null) === self::SOURCE_LOOP_INFO) {
+            throw new ConfigurationException("Variable \"{$var}\" is read-only");
+        }
+    }
+
+    /**
+     * Runs $fn with a temporary variable that is removed afterwards (update_records: the current record).
+     *
+     * @template T
+     * @param array<string, mixed> $value
+     * @param callable(): T $fn
+     * @return T
+     */
+    public function withTemporaryVariable(string $name, array $value, ?string $module, callable $fn): mixed
+    {
+        $this->setVariable($name, $value, $module, self::SOURCE_LOOP);
+        try {
+            return $fn();
+        } finally {
+            $this->unsetVariable($name);
+        }
+    }
+
+    /**
+     * Removes a variable (the loop variables after the loop).
+     */
+    public function unsetVariable(string $name): void
+    {
+        unset($this->variables[$name], $this->meta[$name], $this->dirty[$name]);
+    }
+
+    public function isList(string $var): bool
+    {
+        return ($this->meta[$var]['source'] ?? null) === self::SOURCE_LIST;
+    }
+
+    public function isLocal(string $var): bool
+    {
+        return ($this->meta[$var]['source'] ?? null) === self::SOURCE_LOCAL;
     }
 
     /**
@@ -215,6 +353,7 @@ final class ExecutionContext
      */
     public function setClean(string $var, string $field, mixed $value): void
     {
+        self::assertWritable($var);
         if (!isset($this->variables[$var]) || !is_array($this->variables[$var])) {
             $this->variables[$var] = [];
         }
@@ -223,6 +362,7 @@ final class ExecutionContext
 
     public function setModule(string $var, ?string $module): void
     {
+        self::assertWritable($var);
         $this->meta[$var]['module'] = $module;
         $this->meta[$var]['source'] ??= 'created';
     }
@@ -232,7 +372,7 @@ final class ExecutionContext
      */
     public function forChild(): self
     {
-        return new self($this->eventId, $this->event, $this->variables, $this->meta, [], $this->depth + 1);
+        return new self($this->eventId, $this->event, $this->variables, $this->meta, [], $this->depth + 1, $this->eventInfo);
     }
 
     /**
@@ -247,6 +387,7 @@ final class ExecutionContext
             'meta' => $this->meta,
             'dirty' => array_map(static fn (array $f) => array_keys($f), $this->dirty),
             'depth' => $this->depth,
+            'event_info' => $this->eventInfo->toArray(),
         ];
     }
 
@@ -268,6 +409,7 @@ final class ExecutionContext
             meta: (array)($data['meta'] ?? []),
             dirty: $dirty,
             depth: (int)($data['depth'] ?? 0),
+            eventInfo: EventInfo::fromArray(is_array($data['event_info'] ?? null) ? $data['event_info'] : []),
         );
     }
 }

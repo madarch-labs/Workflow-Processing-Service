@@ -369,5 +369,5 @@ dist/assets/SystemView-BEnnSfuu.js                2.81 kB │ gzip:   1.15 kB
 <!-- footer-nav -->
 ---
 
-← Назад: [Новый адаптер CRM](new-crm-adapter.md) | [Оглавление](../../README.md) | [Новый язык интерфейса](new-language.md) Далее →
+← Назад: [Новый канал уведомлений](new-notify-channel.md) | [Оглавление](../../README.md) | [Новый язык интерфейса](new-language.md) Далее →
 <!-- /footer-nav -->

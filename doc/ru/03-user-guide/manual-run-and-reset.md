@@ -92,6 +92,28 @@ curl -s -X POST http://localhost:9501/api/processes/1/run \
 
 Ход выполнения: `GET /api/executions/{execution_id}`.
 
+#### Событие формата 2.0: тип, старые значения, изменённые поля
+
+Чтобы проверить процесс с условиями по `object_before`, передайте служебные поля события прямо в `object` — так же, как их
+присылает плагин CRM (см. [Как WPS разбирает событие](../04-operations/crm-integration.md#как-wps-разбирает-событие)):
+
+```bash
+curl -s -X POST http://localhost:9501/api/processes/1/run \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"object":{"id":"27285","module":"Leads","status":"Assigned",
+       "event_type":"update","before":{"status":"New"},"changed_fields":["status"]}}'
+```
+
+`event_type`, `before`, `changed_fields` не попадают в `object`: старые значения доступны как `object_before.status`, а тип
+события и список изменённых полей — в `context.event_info` выполнения. Без этих полей ручной запуск считается событием старого
+формата: `object_before` = `null`, условия по нему ложны. Ручной запуск не проверяет [`trigger_on`](triggers-and-conditions.md#тип-события-и-поле-запускать-при-trigger_on):
+процесс с `["delete"]` можно проверить вручную, передав `"event_type":"delete"` (тогда `save_object` для `object` будет пропущен).
+
+Так же проверяются [операторы изменения](triggers-and-conditions.md#условия-на-изменение-поля) (`changed`, `changed_to`,
+`changed_from`, `not_changed`): с полями из примера выше условие `object.status` **Изменилось с** `New` выполнено, в трассе
+`conditions[k].changed = true`. Без `event_type` / `changed_fields` сведений об изменениях нет: все четыре оператора ложны, в
+трассе `"change_info": "missing"`.
+
 ## Однократный запуск для записи
 
 Если в шапке процесса включён **Однократный запуск для записи** (`run_once`), процесс выполняется для каждой записи CRM

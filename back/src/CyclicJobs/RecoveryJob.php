@@ -23,6 +23,7 @@ final class RecoveryJob extends AbstractCyclicJob
     {
         $c = Container::get();
         $c->stream()->reclaimPending();
+        $this->purgeSideEffects($c);
 
         $engine = $c->engine();
         $state = $c->stateStore();
@@ -38,6 +39,22 @@ final class RecoveryJob extends AbstractCyclicJob
                     $c->logger()->error('Execution recovery failed', ['execution_id' => $id, 'error' => $e]);
                 }
             });
+        }
+    }
+
+    /**
+     * Once an hour across all workers (SET NX): side-effect journal rows older than SIDE_EFFECTS_RETENTION_DAYS.
+     */
+    private function purgeSideEffects(Container $c): void
+    {
+        try {
+            $claimed = $c->redisData()->run(static fn (\Redis $r) => $r->set('side_effects:purge', '1', ['nx', 'ex' => 3600]));
+            if ($claimed) {
+                $deleted = $c->sideEffects()->purgeOlderThan($c->config()->sideEffectsRetentionDays);
+                $c->logger()->info('Side-effect journal purged', ['deleted' => $deleted]);
+            }
+        } catch (\Throwable $e) {
+            $c->logger()->warning('Side-effect journal purge failed', ['error' => $e->getMessage()]);
         }
     }
 }

@@ -14,7 +14,19 @@
 - выполнение: процесс и его версия, источник запуска, id события, объект, статус, число повторов, ошибка, время, а также
   итоговый контекст (событие, переменные, результаты условий);
 - каждый шаг: тип действия, статус, число попыток, время начала, длительность, `request_data` (что шаг сделал или
-  отправил) и `result_data` (что он получил или изменил), текст ошибки.
+  отправил) и `result_data` (что он получил или изменил), текст ошибки, а также положение шага в программе:
+  - `step_index` — порядковый номер записи в аудите выполнения;
+  - `pc` — номер инструкции программы (для линейного процесса совпадает со `step_index`);
+  - `step_path` — место шага в определении: `preload[0]`, `actions[2]`, `actions[1].branches[0].actions[0]`,
+    `actions[1].else[0]`;
+  - `iteration` — номер итерации цикла [`foreach`](actions.md#цикл-для-каждого-элемента) с нуля, во вложенных циклах —
+    индексы от внешнего к внутреннему (`"2/0"`); пусто вне циклов;
+  - `step_id` — пользовательский `id` шага, если он задан (см. [Действия](actions.md#вложенные-блоки-и-поля-шага));
+  - `error_code` — код ошибки упавшего шага (`HTTP_503`, `TIMEOUT`, `CONFIG`, `UNKNOWN_OUTCOME` …);
+  - `handled` — как обработана ошибка: `continue`, `goto` (по `on_error`), `item_continue` (цикл с
+    `on_item_error: continue` перешёл к следующему элементу) или пусто (ошибка остановила выполнение), см.
+    [Действия → Ошибки шага](actions.md#ошибки-шага-on_error-и-повторы);
+- у выполнения также `handled_errors` — число ошибок шагов, обработанных `on_error` или `on_item_error: continue`.
 
 > **Примечание**
 > Событие, для которого условия процесса **не выполнены**, выполнения не создаёт и в журнал не попадает. То же
@@ -35,7 +47,7 @@
 | **ID события** | id сообщения Redis Stream (`1792050605348-0`) или `manual-<uuid>` для ручного запуска |
 | **Объект** | id записи CRM из события |
 | **Источник** | **Событие CRM** (`stream`), **Ручной запуск** (`manual`), **Дочерний** (`child`) |
-| **Статус** | **Выполняется**, **Повтор**, **Завершено**, **Ошибка** |
+| **Статус** | **Выполняется**, **Повтор**, **Ожидает**, **Завершено**, **Ошибка**, **Отменено** |
 | **Начат** / **Завершён** / **Длительность** | Время выполнения |
 | **Retry** | Сколько раз повторялись шаги этого выполнения |
 
@@ -59,18 +71,24 @@ stateDiagram-v2
     [*] --> running: условия выполнены
     running --> retrying: восстановимая ошибка, повторы не исчерпаны
     retrying --> running: после задержки
+    running --> waiting: пауза delay или длинная задержка повтора
+    waiting --> running: срок наступил (WaitResumeJob)
+    waiting --> cancelled: процесс удалён с force=true
     running --> completed: все шаги выполнены
     running --> failed: невосстановимая ошибка или повторы исчерпаны
     completed --> [*]
     failed --> [*]
+    cancelled --> [*]
 ```
 
 | Статус | В интерфейсе | Значение |
 |---|---|---|
 | `running` | **Выполняется** | Шаги выполняются |
 | `retrying` | **Повтор** | Шаг завершился временной ошибкой (таймаут CRM, 5xx от CRM, сеть); WPS ждёт и повторяет его |
-| `completed` | **Завершено** | Все шаги выполнены |
-| `failed` | **Ошибка** | Шаг завершился ошибкой, остальные шаги не выполнялись |
+| `waiting` | **Ожидает** | Выполнение приостановлено до срока `waiting_until` (пауза `delay` или длинная задержка повтора); воркер свободен, состояние хранится в PostgreSQL |
+| `completed` | **Завершено** | Все шаги выполнены; ошибки шагов, обработанные `on_error` (`continue` / `goto`) или циклом с `on_item_error: continue`, видны в `handled_errors` |
+| `failed` | **Ошибка** | Шаг завершился ошибкой (с `on_error: stop`, по умолчанию), остальные шаги не выполнялись |
+| `cancelled` | **Отменено** | Ожидающее выполнение отменено: процесс удалён с `?force=true` (`error_message` «Process deleted») |
 
 Статусы шагов:
 
@@ -79,6 +97,36 @@ stateDiagram-v2
 | `success` | **Успех** | Шаг выполнен |
 | `failed` | **Ошибка** | Шаг завершился ошибкой, см. колонку **Ошибка** |
 | `skipped` | **Пропущен** | Шаг не выполнялся: предыдущий шаг упал, сохранять было нечего или переменная для сохранения пуста |
+| `waiting` | **Ожидает** | Шаг приостановил выполнение (`result_data.wait = {due_at, reason}`); после пробуждения та же запись получает итоговый статус |
+
+### Ожидающие выполнения
+
+У выполнения в статусе `waiting` есть поля `waiting_until` (срок, UTC) и `wait_reason` (`delay` — пауза, `retry` —
+длинная задержка повтора). `GET /api/executions/{id}` для такого выполнения отдаёт ещё объект `wait`
+(`due_at`, `reason`, `attempts` — попытки пробуждения, `info`), а контекст берёт из сохранённого снимка ожидания:
+
+```json
+{ "id": "…", "status": "waiting", "waiting_until": "2026-10-19T09:00:00+00:00", "wait_reason": "delay",
+  "current_step": 1,
+  "wait": { "due_at": "2026-10-19T09:00:00+00:00", "reason": "delay", "attempts": 0,
+            "info": { "pc": 1, "seq": 1, "mode": "after_wait", "parked_at": "2026-10-16T09:00:00+00:00" } },
+  "actions": [ { "step_index": 0, "action_type": "modify", "status": "success" },
+               { "step_index": 1, "action_type": "delay", "status": "waiting", "result_data": { "wait": { "due_at": "…", "reason": "delay" } } } ] }
+```
+
+После пробуждения запись шага паузы получает статус `success` с `waited: true`, `waited_seconds` и `lateness_ms`
+(насколько позже срока выполнение продолжилось), дальше идут следующие шаги. Шаг повтора (`retry`) после пробуждения
+выполняется заново и перезаписывает ту же запись аудита.
+
+Найти все ожидающие выполнения (по всем процессам):
+
+```bash
+curl -s "http://localhost:9501/api/executions?status=waiting&due_before=2026-10-20T00:00:00Z&page=1&per_page=50" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+В журнале процесса фильтр **Статус** тоже принимает `waiting` и `cancelled`. Удаление процесса с ожидающими
+выполнениями отклоняется (`409 PROCESS_HAS_WAITING_EXECUTIONS`), с `?force=true` (admin) они отменяются.
 
 ## Страница выполнения
 
@@ -112,10 +160,88 @@ stateDiagram-v2
 | Действие | `request_data` | `result_data` |
 |---|---|---|
 | `preload` | `var`, `module`, `strategy` (`by_id`/`by_field`), `by_field`, `source`, `value`, `lookup_value` | `found`, `object` (загруженная запись или `null`) |
-| `modify` | `target`, `change_type`, `value` (значение или выражение) | `old_value`, `new_value`; при `save_to_crm` ещё `save` |
+| `modify` | `target`, `change_type`, `value` (значение или выражение) | `old_value`, `new_value`; при `save_to_crm` ещё `save`; у `aggregate` — `function`, `module` / `link`, `records_scanned`, `pages`, `truncated`, `total`, `skipped_reason` (см. [Агрегат по записям](change-types-and-expressions.md#агрегат-по-записям)) |
 | `save_object` | `method` (`PUT`/`POST`), `module`, `id`, отправленные `attributes` | `saved`, `response`, `created_id` для новой записи |
 | `start_process` | `process_ids` | `children`: `started` / `skipped` для каждого ведомого процесса |
-| шаг с ошибкой | конфигурация шага | `error_class`, `recoverable`, `details` (например, ответ CRM) |
+| `condition` (блок) | `branches` (число веток), `has_else` | `selected` — индекс выбранной ветки, `"else"` или `"none"` (ни одна ветка не подошла и `else` нет); `branches` — для каждой проверенной ветки `branch`, `name`, `result` и трасса условий `conditions` (см. [ниже](#запись-блока-condition)) |
+| `stop_process` (блок) | `status`, `code`, `message` (шаблон сообщения) | `stopped: true`, `status`, `code`, `message` после подстановок; `message_error`, если шаблон не удалось вычислить (см. [ниже](#остановленное-выполнение)) |
+| `assign` | `target`, `field`, `strategy`, `only_active`, `queue_key`, `save` | `chosen_user_id`, `previous_user_id`, `unchanged`, `reason`, `pool_size`, `pool`, `pool_source`, `inactive`, `excluded`, `counts`, `manager_of`, `fallback`, `reused_decision`, `save` (см. [Назначить ответственного](actions.md#назначить-ответственного)) |
+| `notify` | `title`, `message_preview`, `link`, `channels` (без секретов), `delivery` | `channels`: по каналу `status` (`success` / `failed` / `skipped`), `deliveries` (`user`/`record`, `chat_id`/`message_id`, `status`, `replayed`), `error`, `error_code`; `warnings` (см. [Уведомление](actions.md#уведомление)) |
+| `update_records` | `list`, `module`, `count`, `set`, `only_changed`, `max` | `updated`, `unchanged`, `skipped_no_id`, `errors`, `items` (до 200: `{id, status, fields, error}`); если записи упали — шаг `failed` («N of M records failed»), та же сводка в `details` (см. [Изменить записи списка](actions.md#изменить-записи-списка)) |
+| `foreach` (блок) | `source`, `as`, `max_items`, `on_overflow`, `on_item_error`, `has_where` | в начале — `count`, `truncated`, `source_missing`; по окончании цикла запись перезаписывается итогами: `processed`, `skipped_by_where`, `failed_items`, `failed_indexes`, `unsaved_items`, `where_traces`, при ошибке `failed_at_index` (см. [ниже](#запись-цикла-foreach)) |
+| `delay` | `mode` и поля срока, `due_at` (UTC), `due_at_local` | в корутине — `waited: true`, `waited_seconds`, `inline: true`; после парковки — `waited: true`, `lateness_ms`, `waited_seconds`; момент прошёл — `waited: false`, `past_due: true` (см. [Пауза](actions.md#пауза-delay)) |
+| шаг с ошибкой | конфигурация шага | `error_class`, `recoverable`, `error_code`, `error` — классифицированная ошибка (`code`, `message`, `transient`, `http_status`, `retry_after`), `details` (например, ответ CRM); при `on_error: {goto}` — `goto` (id цели) |
+| внешнее действие (`send_email`, `http_request`, `notify`) | что отправлено (секреты замаскированы) | ответ внешней системы, `idempotency_key` — внешний ключ идемпотентности; `replayed: true`, если шаг повторно выполнился после сбоя и ответ взят из журнала побочных эффектов без повторного вызова |
+
+Шаги невыбранных веток в аудит не попадают. Если шаг упал (и `on_error` — `stop`), `skipped` получают следующие шаги
+его списка (например, ветки) и следующие шаги всех объемлющих списков вплоть до верхнего уровня. При `on_error:
+continue` упавший шаг остаётся `failed` с `handled: "continue"`, а выполнение идёт дальше; при `goto` шаги между
+ошибкой и целью не выполняются и в аудит не пишутся.
+
+### Запись блока condition
+
+Блок `condition` пишет одну запись `condition` на каждое выполнение; шаги выбранной ветки идут следом обычными
+записями (`step_path` вида `actions[0].branches[1].actions[0]`), шаги невыбранных веток не пишутся.
+
+```json
+{ "step_index": 0, "pc": 0, "step_path": "actions[0]", "step_id": "deal_size", "action_type": "condition", "status": "success",
+  "request_data": { "branches": 3, "has_else": false },
+  "result_data": { "selected": 1,
+    "branches": [
+      { "branch": 0, "name": "Больше 1 млн", "result": false,
+        "conditions": [ { "field": "object.amount", "operator": "greater_than", "actual": "5000", "expected": "1000000", "result": false } ] },
+      { "branch": 1, "name": "Больше 100 тыс. или VIP", "result": true, "conditions": [ … ] } ] } }
+```
+
+- `selected` — номер выбранной ветки, `"else"` или `"none"` (ни одна ветка не подошла, `else` нет).
+- `branches` — только **проверенные** ветки по порядку: ветки после выбранной не вычисляются и в трассе отсутствуют.
+  `name` — подпись ветки, если задана; `conditions` — та же трасса, что у условий запуска (`actual`, `expected`,
+  `*_cast`, `missing`, `cast_error`).
+- Ошибка в условии ветки (`on_cast_error: "error"`) — запись `condition` со статусом `failed` и трассой упавшей строки.
+
+### Запись цикла foreach
+
+Цикл [`foreach`](actions.md#цикл-для-каждого-элемента) пишет **одну** запись `foreach` (её `step_index` — перед шагами
+тела) и обычные записи шагов тела с номером итерации. Когда цикл заканчивается, запись `foreach` перезаписывается
+итогами, а `duration_ms` становится длительностью всего цикла:
+
+```json
+[ { "step_index": 2, "pc": 2, "step_path": "actions[2]", "step_id": "each_deal", "action_type": "foreach", "status": "success",
+    "request_data": { "source": "deals.items", "as": "deal", "max_items": 500, "on_overflow": "fail", "on_item_error": "stop", "has_where": true },
+    "result_data": { "count": 3, "processed": 2, "skipped_by_where": 1, "failed_items": 0, "failed_indexes": [],
+                     "unsaved_items": 0, "truncated": false, "source_missing": false,
+                     "where_traces": [ { "index": 2, "conditions": [ … ] } ] } },
+  { "step_index": 3, "step_path": "actions[2].actions[0]", "iteration": "0", "action_type": "modify", "status": "success" },
+  { "step_index": 4, "step_path": "actions[2].actions[1]", "iteration": "0", "action_type": "save_object", "status": "success" },
+  { "step_index": 6, "step_path": "actions[2].actions[0]", "iteration": "1", "action_type": "modify", "status": "success" } ]
+```
+
+- Элементы, отсеянные `where`, записей не дают: только счётчик `skipped_by_where` и трасса первых 20 в `where_traces`.
+- `unsaved_items` — итерации, после которых у переменной элемента остались несохранённые изменения (нет `save_object`).
+- `on_item_error: continue`: упавший шаг — `failed` с `handled: "item_continue"`, остаток итерации не пишется, итог
+  цикла — `failed_items` и `failed_indexes` (до 50), выполнение `completed`.
+- `on_item_error: stop`: запись `foreach` — `failed` с `failed_at_index`, шаги после цикла — `skipped`.
+- Цикл, прерванный `stop_process`, получает в итогах `stopped: true`; оставленный переходом `goto` — статус `failed` и
+  `left_by: "goto"`.
+
+### Остановленное выполнение
+
+Шаг [`stop_process`](actions.md#завершить-процесс) пишет одну запись `stop_process` со статусом `success`, после неё
+оставшиеся шаги получают `skipped` с причиной `Not executed: the process was stopped by stop_process`:
+
+```json
+[ { "step_index": 0, "action_type": "condition", "status": "success", "result_data": { "selected": 0, "branches": [ … ] } },
+  { "step_index": 1, "step_path": "actions[0].branches[0].actions[0]", "action_type": "stop_process", "status": "success",
+    "request_data": { "status": "failed", "code": "NO_CONTACTS", "message": "У лида {{ object.last_name }} нет email" },
+    "result_data": { "stopped": true, "status": "failed", "code": "NO_CONTACTS", "message": "У лида Иванов нет email" } },
+  { "step_index": 2, "step_path": "actions[1]", "action_type": "modify", "status": "skipped",
+    "result_data": { "reason": "Not executed: the process was stopped by stop_process" } } ]
+```
+
+- `status: failed` — статус выполнения `failed`, `error_message = "[NO_CONTACTS] У лида Иванов нет email"`;
+  `status: completed` — выполнение `completed`, `error_message` пуст.
+- В снимке выполнения (`context`) — `stop: { status, code, message }`: так видно, что процесс завершён досрочно,
+  даже если статус `completed`.
 
 ## Разбор ошибки выполнения
 
@@ -147,6 +273,7 @@ stateDiagram-v2
 | `Variable "v1" is empty (object was not loaded) — nothing to save` (шаг **Пропущен**) | Предзагрузка ничего не нашла | Добавить условие на переменную (например, `v1.id` **Не равен** пустому значению) |
 | `Child process 42 not found`, `… is not a child process` | Ведомый процесс удалён или сменил тип | Исправить строку **Запустить следующий процесс** |
 | `Execution context expired or lost; it could not be resumed` | Воркер упал, а состояние в Redis истекло | Запустить процесс заново вручную |
+| `Outcome of the previous attempt is unknown …` (`error_code: UNKNOWN_OUTCOME`) | Воркер упал после отправки письма или запроса (`delivery: at_most_once`), шаг не повторён, чтобы не отправить дважды | Сверить с внешней системой; журнал вызовов — `GET /api/executions/{id}/side-effects`; подробно — [Надёжность](../04-operations/reliability.md#побочные-эффекты-и-повторы) |
 
 > **Примечание**
 > При каждом сохранении процесса его версия увеличивается. Выполнение хранит версию, с которой оно запускалось
@@ -158,5 +285,5 @@ stateDiagram-v2
 <!-- footer-nav -->
 ---
 
-← Назад: [Ведомые процессы](subprocesses.md) | [Оглавление](../README.md) | [Ручной запуск и сброс однократного запуска](manual-run-and-reset.md) Далее →
+← Назад: [Секреты](secrets.md) | [Оглавление](../README.md) | [Ручной запуск и сброс однократного запуска](manual-run-and-reset.md) Далее →
 <!-- /footer-nav -->

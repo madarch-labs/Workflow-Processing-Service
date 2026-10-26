@@ -247,7 +247,7 @@ export interface ProcessObjectRun {
 
 // ===== Выполнения =====
 
-export type ExecutionStatus = 'running' | 'retrying' | 'completed' | 'failed'
+export type ExecutionStatus = 'running' | 'retrying' | 'waiting' | 'completed' | 'failed' | 'cancelled'
 export type ExecutionTrigger = 'stream' | 'manual' | 'child'
 
 export interface Execution {
@@ -281,6 +281,11 @@ export interface ExecutionAction {
   request_data: unknown
   result_data: unknown
   error_message: string | null
+  /** flat program (md/tasks_list/done/0.1-program-compiler.md): instruction, tree path, loop iteration, user step id */
+  pc?: number | null
+  step_path?: string | null
+  iteration?: string
+  step_id?: string | null
 }
 
 export interface ExecutionContext {

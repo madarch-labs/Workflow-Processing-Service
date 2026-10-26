@@ -24,6 +24,14 @@ classDiagram
         +update(module, id, attributes) array
         +create(module, attributes) array
         +getModules() list
+        +findPage(module, filter, sort, fields, size, cursor) CrmPage
+        +findMany(module, filter, sort, fields, limit) array
+        +count(module, filter) int
+        +delete(module, id) bool
+        +listRelated(module, id, link) CrmPage
+        +link(module, id, link, items) array
+        +unlink(module, id, link, relatedId) bool
+        +capabilities() array
         +request(method, url, body) array
         +flatten(resource)$
     }
@@ -58,6 +66,30 @@ So "a new CRM adapter" means one of two things:
 This page shows way A with a complete, verified example. Way B is the SuiteCRM plugin: read
 `.tehnical/suiteCRM7/README.md`. Way C is a change of the core, not an extension — see [Validation and errors](#4-validation-and-errors)
 for the rules any adapter must follow.
+
+### 2.1 Minimal and full contract
+
+The contract is described in [CRM integration](../../04-operations/crm-integration.md#crm-api-contract-20). Implement as much
+as your processes need:
+
+| Level | What to implement | What it enables |
+|---|---|---|
+| **1.0 (minimum)** | `GET {base}/{module}/{id}`, `GET {base}/{module}?filter[f]=v&size=N`, `PUT {base}/{module}/{id}`, `POST {base}/{module}`, `GET {base}/modules`; an event with `module`, `id` and the record fields | Preload, `save_object`, `save_to_crm`; searching record sets by equality only, up to 100 records |
+| **2.0 (full)** | All of 1.0 + `GET {base}/capabilities` (`contract_version: "2.0"` and the `features` list), filter operators, `sort`, cursor `page[after]` / `meta.next_cursor`, `fields`, `count=1`, `DELETE`, relationships `…/relationships/{link}` with link fields, event v2 (`event_type`, `before`, `changed_fields`) and `wps_origin` from the `X-WPS-*` headers | Searching record sets and aggregates, relationships (meeting invitees), delete, conditions on changes, cascade protection |
+
+2.0 can be implemented partially: list in `features` only what is done. WPS features without the needed capability fail with
+`CRM_CAPABILITY_MISSING` ([Capabilities and degradation](../../04-operations/crm-integration.md#capabilities-and-degradation)).
+
+Check the implementation with the `bin/contract_check.sh` scenario from the SuiteCRM plugin package
+(`../SuiteCRM8/bin/contract_check.sh`):
+
+```bash
+contract_check.sh http://<crm>/api/v9 <key> <redis-stream container>
+```
+
+It creates records, checks operators, the cursor, `fields`, `count`, `422` errors, v2 events in the stream, `DELETE` and
+relationships, and prints `ALL OK`. A few checks are SuiteCRM-specific (user `admin`, link `Users.reportees`, modules
+`Opportunities` and `Meetings`) — adapt them to your schema for another CRM.
 
 ## 3. Step by step
 
@@ -363,11 +395,12 @@ all four steps must be `success`, and the account in the CRM must have `rating =
 - [ ] `X-Auth-Key` checked for the current and the previous hour; the same key in `CRM_API_STATIC_KEY`
 - [ ] `CRM_API_BASE_URL` ends with `/api/v<N>`, `MOCK_SERVICE_URL` empty, modules cache refreshed
 - [ ] The CRM publishes events to `crm_events` with `module` and `id`; loops prevented with `run_once` or conditions
+- [ ] For contract 2.0: `GET /capabilities` lists the implemented `features`, `contract_check.sh` passes
 - [ ] Smoke test and one end-to-end execution pass
 - [ ] The CRM described in [CRM integration](../../04-operations/crm-integration.md) (en + ru) if it becomes a supported option
 
 <!-- footer-nav -->
 ---
 
-← Previous: [New API endpoint](new-api-endpoint.md) | [Contents](../../README.md) | [New UI screen](new-ui-screen.md) Next →
+← Previous: [New API endpoint](new-api-endpoint.md) | [Contents](../../README.md) | [New notification channel](new-notify-channel.md) Next →
 <!-- /footer-nav -->

@@ -40,6 +40,7 @@
 
 ```bash
 docker compose up -d --build backend
+docker build -f back/Dockerfile --target test -t wps-backend-test . && docker run --rm wps-backend-test --testsuite unit
 docker compose exec backend php tests/IntegrationTest.php
 # … Passed: 67, Failed: 0, Skipped: 0   (more if you added checks)
 ```

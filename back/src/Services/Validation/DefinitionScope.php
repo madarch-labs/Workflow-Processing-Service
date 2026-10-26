@@ -6,21 +6,26 @@ namespace Wps\Services\Validation;
 
 use Wps\Context\ExecutionContext;
 use Wps\Exceptions\ConfigurationException;
+use Wps\Persistence\Process;
 
 /**
- * Validation state while checking one process definition: collected errors, variables known
- * at the current position (in execution order) and referenced child processes.
+ * Validation state while checking one process definition: collected errors and warnings, variables known
+ * at the current position (in execution order), step ids and referenced child processes.
+ *
+ * Branches of a block are validated in forks (fork()): a fork has its own copy of the variables, while errors,
+ * warnings, step ids and child references are shared. After the branches, mergeBranches() decides what is
+ * known after the block (md/tasks_list/done/0.1-program-compiler.md §4.8): a variable set in every branch of an
+ * exhaustive block keeps its kind, a variable set only in some branches becomes "conditional" — reading it is
+ * allowed but produces a warning.
  */
 final class DefinitionScope
 {
-    /** @var list<array{field: string, message: string}> */
-    private array $errors = [];
+    public const CONDITIONAL = 'conditional';
 
-    /** @var array<string, string> variable => kind (event|preload|created) */
-    private array $variables = [ExecutionContext::OBJECT => 'event'];
+    /** @var array<string, string> variable => kind (event|preload|created|conditional|...) */
+    private array $variables = [ExecutionContext::OBJECT => 'event', ExecutionContext::OBJECT_BEFORE => 'event_before', ExecutionContext::SYS => 'system'];
 
-    /** @var array<int, string> child process id => field path (where it is referenced) */
-    private array $childReferences = [];
+    private ValidationLog $log;
 
     /**
      * @param bool $inheritsVariables child processes receive all variables of the parent,
@@ -29,12 +34,34 @@ final class DefinitionScope
     public function __construct(
         public readonly ?int $processId = null,
         public readonly bool $inheritsVariables = false,
+        ?ValidationLog $log = null,
+        /** @var list<string> event types of the process (6.2): saving "object" is pointless when it only runs on delete */
+        public readonly array $triggerOn = Process::DEFAULT_TRIGGER_ON,
     ) {
+        $this->log = $log ?? new ValidationLog();
+    }
+
+    /**
+     * The process runs only on delete (and is not a child): the event record is already deleted in the CRM.
+     */
+    public function onlyOnDelete(): bool
+    {
+        return !$this->inheritsVariables && $this->triggerOn === ['delete'];
     }
 
     public function error(string $field, string $message): void
     {
-        $this->errors[] = ['field' => $field, 'message' => $message];
+        $this->log->errors[] = ['field' => $field, 'message' => $message];
+    }
+
+    public function warning(string $field, string $message): void
+    {
+        foreach ($this->log->warnings as $warning) {
+            if ($warning['field'] === $field && $warning['message'] === $message) {
+                return;
+            }
+        }
+        $this->log->warnings[] = ['field' => $field, 'message' => $message];
     }
 
     /**
@@ -42,22 +69,56 @@ final class DefinitionScope
      */
     public function errors(): array
     {
-        return $this->errors;
+        return $this->log->errors;
+    }
+
+    /**
+     * @return list<array{field: string, message: string}>
+     */
+    public function warnings(): array
+    {
+        return $this->log->warnings;
     }
 
     public function hasErrors(): bool
     {
-        return $this->errors !== [];
+        return $this->log->errors !== [];
     }
 
     public function declare(string $variable, string $kind): void
     {
-        $this->variables[$variable] ??= $kind;
+        if (!isset($this->variables[$variable]) || $this->variables[$variable] === self::CONDITIONAL) {
+            $this->variables[$variable] = $kind;
+        }
+    }
+
+    /**
+     * Forgets a variable (the loop variables after the loop body).
+     */
+    public function undeclare(string $variable): void
+    {
+        unset($this->variables[$variable]);
+    }
+
+    /**
+     * Kind of a declared variable (event, preload, created, local, http, conditional …), null when not declared.
+     */
+    public function kind(string $variable): ?string
+    {
+        return $this->variables[$variable] ?? null;
     }
 
     public function isDeclared(string $variable): bool
     {
         return isset($this->variables[$variable]);
+    }
+
+    /**
+     * Declared on every path to this point (not only in some branches).
+     */
+    public function isDefinitelyDeclared(string $variable): bool
+    {
+        return isset($this->variables[$variable]) && $this->variables[$variable] !== self::CONDITIONAL;
     }
 
     /**
@@ -68,9 +129,68 @@ final class DefinitionScope
         return $this->variables;
     }
 
+    /**
+     * A copy for one branch of a block: own variables, shared errors / warnings / step ids / child references.
+     */
+    public function fork(): self
+    {
+        $fork = new self($this->processId, $this->inheritsVariables, $this->log, $this->triggerOn);
+        $fork->variables = $this->variables;
+        return $fork;
+    }
+
+    /**
+     * Variables after a block with the given branches. $exhaustive: one of the branches always runs
+     * (a condition with "else"); otherwise "no branch ran" is a path too.
+     *
+     * @param list<self> $branches
+     */
+    public function mergeBranches(array $branches, bool $exhaustive): void
+    {
+        $new = [];
+        foreach ($branches as $branch) {
+            foreach ($branch->variables as $name => $kind) {
+                if (!isset($this->variables[$name]) || $this->variables[$name] === self::CONDITIONAL) {
+                    $new[$name] ??= $kind;
+                }
+            }
+        }
+        foreach ($new as $name => $kind) {
+            $everywhere = $exhaustive && $branches !== [];
+            foreach ($branches as $branch) {
+                if (!$branch->isDefinitelyDeclared($name)) {
+                    $everywhere = false;
+                    break;
+                }
+            }
+            $this->variables[$name] = $everywhere ? $kind : self::CONDITIONAL;
+        }
+    }
+
+    /**
+     * A user id of a step ("id"): unique in the whole process, nested blocks included.
+     */
+    public function registerStepId(string $id, string $field): bool
+    {
+        if (isset($this->log->stepIds[$id])) {
+            $this->error($field, "Step id \"{$id}\" is already used at {$this->log->stepIds[$id]}");
+            return false;
+        }
+        $this->log->stepIds[$id] = preg_replace('/\.id$/', '', $field) ?? $field;
+        return true;
+    }
+
+    /**
+     * @return array<string, string> step id => path of the step
+     */
+    public function stepIds(): array
+    {
+        return $this->log->stepIds;
+    }
+
     public function addChildReference(int $processId, string $field): void
     {
-        $this->childReferences[$processId] ??= $field;
+        $this->log->childReferences[$processId] ??= $field;
     }
 
     /**
@@ -78,7 +198,7 @@ final class DefinitionScope
      */
     public function childReferences(): array
     {
-        return $this->childReferences;
+        return $this->log->childReferences;
     }
 
     /**
@@ -99,6 +219,9 @@ final class DefinitionScope
             $this->error($field, "Variable \"{$var}\" is not defined at this point");
             return false;
         }
+        if (($this->variables[$var] ?? null) === self::CONDITIONAL) {
+            $this->warning($field, "Variable \"{$var}\" may be undefined here: it is set only in some branches");
+        }
         return true;
     }
 
@@ -112,6 +235,10 @@ final class DefinitionScope
             return false;
         }
         [$var, $name] = $parts;
+        if (ExecutionContext::isReadOnly($var) || ($this->variables[$var] ?? null) === ExecutionContext::SOURCE_LOOP_INFO) {
+            $this->error($field, "Variable \"{$var}\" is read-only");
+            return false;
+        }
         if ($name === null) {
             $this->error($field, "\"{$path}\" must point to a field, e.g. {$var}.name");
             return false;

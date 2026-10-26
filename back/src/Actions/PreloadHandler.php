@@ -101,6 +101,8 @@ final class PreloadHandler implements ActionHandlerInterface
             $scope->error("{$path}.var", 'Variable name is required (letters, digits, "_"; e.g. v1)');
         } elseif ($var === ExecutionContext::OBJECT) {
             $scope->error("{$path}.var", 'Name "object" is reserved for the event object');
+        } elseif (ExecutionContext::isReadOnly($var)) {
+            $scope->error("{$path}.var", "Name \"{$var}\" is reserved");
         } elseif ($scope->isDeclared($var)) {
             $scope->error("{$path}.var", "Variable \"{$var}\" is already defined");
         }

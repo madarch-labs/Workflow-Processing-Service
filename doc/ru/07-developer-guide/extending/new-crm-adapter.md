@@ -24,6 +24,14 @@ classDiagram
         +update(module, id, attributes) array
         +create(module, attributes) array
         +getModules() list
+        +findPage(module, filter, sort, fields, size, cursor) CrmPage
+        +findMany(module, filter, sort, fields, limit) array
+        +count(module, filter) int
+        +delete(module, id) bool
+        +listRelated(module, id, link) CrmPage
+        +link(module, id, link, items) array
+        +unlink(module, id, link, relatedId) bool
+        +capabilities() array
         +request(method, url, body) array
         +flatten(resource)$
     }
@@ -58,6 +66,29 @@ classDiagram
 На этой странице разобран способ A с законченным проверенным примером. Способ B — это плагин SuiteCRM: см.
 `.tehnical/suiteCRM7/README.md`. Способ C — изменение ядра, а не расширение; правила, которым должен следовать любой
 адаптер, — в разделе [Валидация и ошибки](#4-валидация-и-ошибки).
+
+### 2.1 Минимальный и полный контракт
+
+Контракт описан в разделе [Интеграция с CRM](../../04-operations/crm-integration.md#контракт-api-20). Реализуйте столько,
+сколько нужно вашим процессам:
+
+| Уровень | Что реализовать | Что даёт |
+|---|---|---|
+| **1.0 (минимум)** | `GET {base}/{module}/{id}`, `GET {base}/{module}?filter[f]=v&size=N`, `PUT {base}/{module}/{id}`, `POST {base}/{module}`, `GET {base}/modules`; событие с `module`, `id` и полями записи | Предзагрузка, `save_object`, `save_to_crm`; поиск наборов только по равенству до 100 записей |
+| **2.0 (полный)** | Всё из 1.0 + `GET {base}/capabilities` (`contract_version: "2.0"` и список `features`), фильтр с операторами, `sort`, курсор `page[after]` / `meta.next_cursor`, `fields`, `count=1`, `DELETE`, связи `…/relationships/{link}` с полями связи, событие v2 (`event_type`, `before`, `changed_fields`) и `wps_origin` из заголовков `X-WPS-*` | Поиск наборов и агрегаты, связи (участники встреч), удаление, условия по изменениям, защита от каскадов |
+
+Можно реализовать 2.0 частично: перечислите в `features` только то, что сделано. Функции WPS без нужной возможности падают с
+`CRM_CAPABILITY_MISSING` ([Возможности и деградация](../../04-operations/crm-integration.md#возможности-и-деградация)).
+
+Проверить реализацию можно сценарием `bin/contract_check.sh` из пакета плагина SuiteCRM (`../SuiteCRM8/bin/contract_check.sh`):
+
+```bash
+contract_check.sh http://<crm>/api/v9 <ключ> <контейнер redis-stream>
+```
+
+Он создаёт записи, проверяет операторы, курсор, `fields`, `count`, ошибки `422`, события v2 в стриме, `DELETE` и связи и
+печатает `ALL OK`. Несколько проверок завязаны на SuiteCRM (пользователь `admin`, связь `Users.reportees`, модули
+`Opportunities` и `Meetings`) — для другой CRM поправьте их под свою схему.
 
 ## 3. Пошагово
 
@@ -365,11 +396,12 @@ docker compose exec backend sh -c "
 - [ ] `X-Auth-Key` проверяется для текущего и предыдущего часа; тот же ключ указан в `CRM_API_STATIC_KEY`
 - [ ] `CRM_API_BASE_URL` заканчивается на `/api/v<N>`, `MOCK_SERVICE_URL` пуст, кэш модулей обновлён
 - [ ] CRM публикует события в `crm_events` с `module` и `id`; циклы исключены через `run_once` или условия
+- [ ] Для контракта 2.0: `GET /capabilities` перечисляет реализованные `features`, `contract_check.sh` проходит
 - [ ] Smoke-тест и одно сквозное выполнение проходят
 - [ ] Если CRM становится поддерживаемым вариантом, она описана в разделе [Интеграция с CRM](../../04-operations/crm-integration.md) (en + ru)
 
 <!-- footer-nav -->
 ---
 
-← Назад: [Новый эндпоинт API](new-api-endpoint.md) | [Оглавление](../../README.md) | [Новый экран UI](new-ui-screen.md) Далее →
+← Назад: [Новый эндпоинт API](new-api-endpoint.md) | [Оглавление](../../README.md) | [Новый канал уведомлений](new-notify-channel.md) Далее →
 <!-- /footer-nav -->

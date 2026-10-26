@@ -77,6 +77,7 @@ If you try to leave the editor with unsaved changes (the **unsaved** badge next 
 | **Object type (object.type)** | CRM module whose events trigger the process. For a child process — the module of the record it works with | Latin letters, digits, `_`, starts with a letter. Pick from the list or type a value | `Deals` | **Select an object type**; API: `Object type (CRM module) is required` |
 | **Priority** | Order among processes of the same object type: **Lower runs earlier** | integer, may be negative, default `0` | `10` | **Enter a priority**; API: `Priority must be an integer` |
 | **Repeat runs** → **Run once per record** | The process runs at most once per CRM record; later saves of that record are ignored | `run_once`: `false` / `true` | off | API: `Must be true or false` |
+| **Run on** (API only) | CRM event types that start a top-level process: record created, changed, deleted. Ignored for a child process; a manual run does not check it | `trigger_on`: an array of `create`, `update`, `delete`; default `["create", "update"]`; `[]` — manual runs only | `["delete"]` | API: `Must be an array of event types`, `Unknown event type "link" (allowed: create, update, delete)`, `The process runs only on delete: the deleted record cannot be saved` |
 
 ### Object type and the module list
 
@@ -85,6 +86,13 @@ The list of modules comes from the CRM (or from the mock) and is cached for 5 mi
 ### Priority
 
 When an event arrives, WPS takes all **active top-level** processes of its object type and runs them one after another in ascending priority (equal priority — by ID). Each process gets its own copy of the event; a failure in one process does not stop the others. See [Trigger conditions](triggers-and-conditions.md#when-a-process-starts).
+
+### Run on (trigger_on)
+
+The field is set through the API (the editor has no control for it yet). The default `["create", "update"]` matches the former
+behaviour; a `PUT` without the field keeps the current value, so an editor that does not know the field does not reset it. Details —
+in [Trigger conditions](triggers-and-conditions.md#event-type-and-the-run-on-field-trigger_on), including what happens on record
+deletion. The process list is filtered with `GET /api/processes?trigger_on=delete`.
 
 ### Run once per record
 
@@ -105,7 +113,7 @@ Every save increases the version: the editor title shows `#1 · version 3`, and 
 **Clone** (in the list or on the card) creates a copy named `<name> (копия)`. The copy:
 
 - is **Inactive** — review it and activate it explicitly;
-- keeps the type, object type, priority, "run once" flag and the whole definition;
+- keeps the type, object type, priority, "run once" flag, `trigger_on` and the whole definition;
 - does **not** copy the run-once marks of the original.
 
 You see **Copy «…» created**, and the editor of the copy opens.

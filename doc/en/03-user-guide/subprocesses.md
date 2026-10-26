@@ -128,5 +128,5 @@ See also: [Recipes](recipes.md) (recipes 4 and 6),
 <!-- footer-nav -->
 ---
 
-← Previous: [Change types and expressions](change-types-and-expressions.md) | [Contents](../README.md) | [Executions and audit](executions-and-audit.md) Next →
+← Previous: [Change types and expressions](change-types-and-expressions.md) | [Contents](../README.md) | [Secrets](secrets.md) Next →
 <!-- /footer-nav -->

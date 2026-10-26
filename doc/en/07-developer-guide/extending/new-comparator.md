@@ -1,6 +1,6 @@
 # New comparison operator
 
-How to add an operator for process conditions, using `starts_with` ("Starts with") as a complete, verified example.
+How to add an operator for process conditions, using the built-in `starts_with` ("Starts with") operator as the example.
 
 <!-- lang-switch -->
 🇬🇧 English | [🇷🇺 Русский](../../../ru/07-developer-guide/extending/new-comparator.md)
@@ -8,8 +8,13 @@ How to add an operator for process conditions, using `starts_with` ("Starts with
 
 ## 1. When you need it
 
-The built-in operators are `equals`, `not_equals`, `contains`, `not_contains`. Add a new one when a condition cannot be
-expressed with them — a prefix, a regular expression, a numeric comparison (`greater_than`), an "is empty" check.
+The built-in operators are listed in [Trigger conditions](../../03-user-guide/triggers-and-conditions.md#operators) and
+in the `GET /api/dictionaries/operators` dictionary. Add a new one when a condition cannot be expressed with them, e.g. a
+regular expression or a Levenshtein distance comparison.
+
+> **Note**
+> `starts_with` and `ends_with` are already shipped (task 3.5): below is how they are built. When repeating the example,
+> choose your own operator name (e.g. `matches_regex`) and add it to the exact list in `testDictionaries()`.
 
 ## 2. How it works
 
@@ -19,29 +24,55 @@ classDiagram
         <<interface>>
         +name() string
         +label() string
-        +compare(actual, expected) bool
+        +supportedCasts() list~CastType~
+        +operandKind() OperandKind
+        +expectedCast(CastOptions) CastOptions
+        +compare(actual, expected, CastOptions) bool
+    }
+    class AbstractComparator {
+        <<abstract>>
+        #TypeCaster caster
+        +operandKind() Value
+        +expectedCast(options) options
     }
     class ComparatorRegistry {
-        +default() ComparatorRegistry
+        +default(TypeCaster) ComparatorRegistry
         +register(ComparatorInterface)
         +has(name) bool
         +get(name) ComparatorInterface
         +dictionary() list
-        +stringify(value) string
     }
-    ComparatorInterface <|.. EqualsComparator
-    ComparatorInterface <|.. ContainsComparator
-    ComparatorInterface <|.. StartsWithComparator
+    ComparatorInterface <|.. AbstractComparator
+    AbstractComparator <|-- EqualsComparator
+    AbstractComparator <|-- ContainsComparator
+    AbstractComparator <|-- StartsWithComparator
     ComparatorRegistry o-- ComparatorInterface
     ConditionEngineService --> ComparatorRegistry
+    ConditionEngineService --> TypeCaster
     ProcessValidatorService --> ComparatorRegistry
     OperatorsController --> ComparatorRegistry
 ```
 
 - `name()` is the code stored in a condition row (`"operator": "starts_with"`), `label()` is the default caption.
-- Both sides are converted to strings before the call (`ComparatorRegistry::stringify()`: `null` → `''`, `true` → `'true'`,
-  floats without trailing zeros, arrays → JSON), so `compare()` always gets two strings.
-- `ComparatorRegistry::default()` lists the operators; `Container::comparators()` builds it once per worker.
+- Before the call `ConditionEngineService` casts both sides to the type of the condition row (`cast`, `cast_options`)
+  with `Wps\Types\TypeCaster`: the left side with the row's `CastOptions`, the right side with `expectedCast($options)`
+  (the same options by default; `contains` with `list` casts the right side as a list element — `$options->element()`).
+  Without `cast` both sides are strings (`TypeCaster::stringify()`: `null` → `''`, `true` → `'true'`, floats without
+  trailing zeros, arrays → JSON), as before. See [Comparison type (cast)](../../03-user-guide/triggers-and-conditions.md#comparison-type-cast).
+- A missing field, an empty value (for types other than `string` and `bool`) and a cast error are handled by the engine:
+  the row becomes false and the trace gets `missing` / `empty` / `cast_error`. They never reach `compare()`, so the
+  comparator receives values already cast to its type: `string`, `int`, a canonical `decimal` string,
+  `DateTimeImmutable` (`date`, `datetime`), `bool`, `list<string>`.
+- `supportedCasts()` lists the `CastType`s the operator works with. The validator rejects the others
+  (`Operator "starts_with" does not support cast "decimal" (supported: string)`); the operators dictionary returns it
+  as `casts`.
+- `operandKind()` is the shape of the right-hand side (`OperandKind`: `value` — one value; `none`, `presence`, `list`,
+  `range`, `change`, `change_value` — for future emptiness, list, range and change operators). In the dictionary —
+  `operands`.
+- The base class `AbstractComparator` holds the `TypeCaster` (`$this->caster` — for `equals()` / `compare()` of values)
+  and provides `operandKind() = Value` and `expectedCast()` = the same options.
+- `ComparatorRegistry::default(TypeCaster)` lists the operators; `Container::comparators()` builds it once per worker and
+  passes the `TypeCaster` with the `WPS_TIMEZONE` time zone.
 - The same registry is used by three consumers:
   - `ConditionEngineService` — evaluates conditions at run time;
   - `ProcessValidatorService` — rejects unknown operators on save (`Unknown comparison operator`);
@@ -60,10 +91,13 @@ declare(strict_types=1);
 
 namespace Wps\Comparators;
 
+use Wps\Types\CastOptions;
+use Wps\Types\CastType;
+
 /**
  * Prefix match: "object.phone" starts with "+7".
  */
-final class StartsWithComparator implements ComparatorInterface
+final class StartsWithComparator extends AbstractComparator
 {
     public function name(): string
     {
@@ -75,9 +109,15 @@ final class StartsWithComparator implements ComparatorInterface
         return 'Начинается с';
     }
 
-    public function compare(string $actual, string $expected): bool
+    public function supportedCasts(): array
     {
-        return str_starts_with($actual, $expected);
+        return [CastType::String];
+    }
+
+    public function compare(mixed $actual, mixed $expected, CastOptions $options): bool
+    {
+        // both sides are already cast to strings (case_sensitive / trim applied)
+        return str_starts_with((string)$actual, (string)$expected);
     }
 }
 ```
@@ -89,14 +129,15 @@ final class StartsWithComparator implements ComparatorInterface
 ### 3.2 Registration — `back/src/Comparators/ComparatorRegistry.php`
 
 ```php
-public static function default(): self
+public static function default(?TypeCaster $caster = null): self
 {
+    $caster ??= new TypeCaster();
     $registry = new self();
-    $registry->register(new EqualsComparator());
-    $registry->register(new NotEqualsComparator());
-    $registry->register(new ContainsComparator());
-    $registry->register(new NotContainsComparator());
-    $registry->register(new StartsWithComparator());
+    $registry->register(new EqualsComparator($caster));
+    $registry->register(new NotEqualsComparator($caster));
+    $registry->register(new ContainsComparator($caster));
+    $registry->register(new NotContainsComparator($caster));
+    $registry->register(new StartsWithComparator($caster));
     return $registry;
 }
 ```
@@ -108,7 +149,7 @@ The order of `register()` calls is the order in the UI select.
 ```bash
 docker compose up -d --build backend
 curl -s http://localhost:9501/api/dictionaries/operators -H "Authorization: Bearer $TOKEN"
-# … {"value":"starts_with","label":"Начинается с"}
+# … {"value":"starts_with","label":"Начинается с","casts":["string"],"operands":"value"}
 ```
 
 ### 3.4 Use it in a process
@@ -117,13 +158,23 @@ curl -s http://localhost:9501/api/dictionaries/operators -H "Authorization: Bear
 { "field": "object.phone", "operator": "starts_with", "value_type": "static", "value": "+7" }
 ```
 
+Case-insensitive — through the options of the `string` type:
+
+```json
+{ "field": "object.email", "operator": "starts_with", "value": "info@", "cast": "string", "cast_options": { "case_sensitive": false } }
+```
+
 ## 4. Validation and errors
 
-- Nothing to add: the validator accepts any registered operator and checks `field`/`value` paths itself.
+- Nothing to add: the validator accepts any registered operator and checks the `field`/`value` paths, `cast` /
+  `cast_options`, compatibility with `supportedCasts()` and that a static value can be cast to the type
+  (`expectedCast()`).
 - `compare()` must be pure and must not throw. A run-time problem in a condition would make every event of that object
   type fail; return `false` instead.
-- If the operator needs a specific value format (a number, a regex), validate it in `compare()` defensively
-  (`is_numeric`, `@preg_match(...) === false` → `false`).
+- No need to validate number and date formats — the values are already cast. If the operator needs a special format
+  (a regex, for example), validate it in `compare()` defensively (`@preg_match(...) === false` → `false`).
+- Compare with `$this->caster->equals()` / `$this->caster->compare()` rather than `===` / `<`: they respect the type
+  (`decimal` via `bccomp`, dates by day or moment, lists as sets).
 
 ## 5. UI and translations
 
@@ -191,8 +242,10 @@ other examples, and a matching phone (`+79990000000`) starts an execution that c
 
 ## 7. Checklist
 
-- [ ] Class in `back/src/Comparators/`, `final`, `strict_types`, unique `snake_case` `name()`
-- [ ] Registered in `ComparatorRegistry::default()`
+- [ ] Class in `back/src/Comparators/`, `final`, `strict_types`, extends `AbstractComparator`, unique `snake_case` `name()`
+- [ ] `supportedCasts()` lists the allowed types, `compare()` works on cast values and has a unit test
+      (`back/tests/Unit/Comparators`)
+- [ ] Registered in `ComparatorRegistry::default()` with the shared `$caster`
 - [ ] `dict.operator.<name>` in `en.json` and `ru.json`; `npm run build` passes
 - [ ] `testDictionaries()` list updated, behaviour check added, suite green
 - [ ] Operator described in [Triggers and conditions](../../03-user-guide/triggers-and-conditions.md) (en + ru) and in `back/API.md`
@@ -200,5 +253,5 @@ other examples, and a matching phone (`+79990000000`) starts an execution that c
 <!-- footer-nav -->
 ---
 
-← Previous: [New action type](new-action-type.md) | [Contents](../../README.md) | [New change type](new-change-type.md) Next →
+← Previous: [New block type](new-block-type.md) | [Contents](../../README.md) | [New change type](new-change-type.md) Next →
 <!-- /footer-nav -->

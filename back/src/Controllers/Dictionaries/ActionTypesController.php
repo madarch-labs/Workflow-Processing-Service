@@ -13,6 +13,9 @@ final class ActionTypesController extends BaseController
 {
     protected function handle(): Response
     {
-        return $this->ok($this->container()->actions()->dictionary());
+        // actions and control-flow blocks share the "type" field of a definition row; "kind" tells them apart
+        $c = $this->container();
+        $actions = array_map(static fn (array $a) => $a + ['kind' => 'action'], $c->actions()->dictionary());
+        return $this->ok(array_merge($actions, $c->blocks()->dictionary()));
     }
 }

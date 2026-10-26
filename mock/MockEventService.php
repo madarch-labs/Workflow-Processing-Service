@@ -23,9 +23,11 @@ final class MockEventService
 
     /**
      * @param array<string, mixed> $overrides fields to force (e.g. status=Active)
+     * @param string|null $eventType contract 2.0: create | update | delete (null = an event of contract 1.0)
+     * @param array<string, mixed> $before contract 2.0: old values of the changed fields
      * @return array{message_id: string, event: array<string, mixed>}
      */
-    public function sendTestEvent(?string $module = null, array $overrides = []): array
+    public function sendTestEvent(?string $module = null, array $overrides = [], ?string $eventType = null, array $before = []): array
     {
         if ($module === null || !MockModulesList::exists($module)) {
             $module = array_rand(MockModulesList::MODULES);
@@ -37,8 +39,46 @@ final class MockEventService
             }
         }
         $this->storage->put($module, $event);
+        if ($eventType !== null || $before !== []) {
+            $event = self::v2($event, $eventType ?? 'update', array_map('strval', array_filter($before, 'is_scalar')));
+        }
         $id = $this->publish($event);
         return ['message_id' => $id, 'event' => $event];
+    }
+
+    /**
+     * Event of contract 2.0 for a write made through the mock CRM API (MOCK_PUBLISH_ON_WRITE).
+     *
+     * @param array<string, mixed> $object the record after the write
+     * @param array<string, mixed> $before old values of the changed fields
+     * @param array<string, mixed>|null $origin wps_origin from the X-WPS-* headers
+     */
+    public function publishWrite(string $module, string $eventType, array $object, array $before, ?array $origin): string
+    {
+        $event = self::v2(['id' => (string)$object['id'], 'module' => $module, 'object_type' => $module] + $object, $eventType, $before);
+        if ($origin !== null) {
+            $event['wps_origin'] = $origin;
+        }
+        return $this->publish($event);
+    }
+
+    /**
+     * @param array<string, mixed> $event
+     * @param array<string, string|null> $before
+     * @return array<string, mixed>
+     */
+    private static function v2(array $event, string $eventType, array $before): array
+    {
+        $event['event_type'] = $eventType;
+        $event['before'] = (object)($eventType === 'update' ? $before : []);
+        $service = ['id', 'module', 'object_type', 'event_type', 'before', 'changed_fields', 'created_at', 'updated_at'];
+        $event['changed_fields'] = match ($eventType) {
+            'create' => array_values(array_filter(array_keys($event), static fn ($k) => !in_array($k, $service, true) && ($event[$k] ?? '') !== '')),
+            'update' => array_keys($before),
+            default => [],
+        };
+        $event['wps_event_version'] = 2;
+        return $event;
     }
 
     /**

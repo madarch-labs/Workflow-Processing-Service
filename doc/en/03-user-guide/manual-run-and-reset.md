@@ -91,6 +91,28 @@ curl -s -X POST http://localhost:9501/api/processes/1/run \
 
 Follow the execution: `GET /api/executions/{execution_id}`.
 
+#### A format 2.0 event: type, old values, changed fields
+
+To test a process with conditions on `object_before`, pass the service fields of the event right in `object` — the way a CRM
+plugin sends them (see [How WPS parses an event](../04-operations/crm-integration.md#how-wps-parses-an-event)):
+
+```bash
+curl -s -X POST http://localhost:9501/api/processes/1/run \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"object":{"id":"27285","module":"Leads","status":"Assigned",
+       "event_type":"update","before":{"status":"New"},"changed_fields":["status"]}}'
+```
+
+`event_type`, `before`, `changed_fields` do not stay in `object`: the old values are available as `object_before.status`, the event
+type and the changed field list are in `context.event_info` of the execution. Without these fields a manual run is an old-format
+event: `object_before` = `null`, conditions on it are false. A manual run does not check [`trigger_on`](triggers-and-conditions.md#event-type-and-the-run-on-field-trigger_on):
+a `["delete"]` process can be tried manually with `"event_type":"delete"` (`save_object` for `object` is then skipped).
+
+[Change operators](triggers-and-conditions.md#conditions-on-a-field-change) (`changed`, `changed_to`, `changed_from`,
+`not_changed`) are checked the same way: with the fields from the example above, `object.status` **Changed from** `New` is met
+and the trace has `conditions[k].changed = true`. Without `event_type` / `changed_fields` there is no change info: all four
+operators are false and the trace has `"change_info": "missing"`.
+
 ## Run once per record
 
 When **Run once per record** (`run_once`) is enabled in the process header, the process runs at most once for each CRM

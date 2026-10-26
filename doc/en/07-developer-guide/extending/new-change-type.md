@@ -1,6 +1,6 @@
 # New change type
 
-How to add a way of computing the new value in a `modify` action, using a verified `append` change type ("Append to value").
+How to add a way of computing the new value in a `modify` action, using a teaching `append_note` change type ("Append a note").
 
 <!-- lang-switch -->
 🇬🇧 English | [🇷🇺 Русский](../../../ru/07-developer-guide/extending/new-change-type.md)
@@ -8,10 +8,14 @@ How to add a way of computing the new value in a `modify` action, using a verifi
 
 ## 1. When you need it
 
-A `modify` action writes a value into `object.<field>` or `<variable>.<field>`. The built-in change types are
-`set_value` (a typed value), `set_from_variable` (copy of another field) and `calculate` (an expression). Add a change
-type when the value is produced by logic that is awkward as an expression — appending to a list, date arithmetic,
-a lookup table. If only a function is missing in expressions, add an [expression function](expression-functions.md) instead.
+A `modify` action writes a value into `object.<field>` or `<variable>.<field>`. The built-in change types are listed in
+[Change types and expressions](../../03-user-guide/change-types-and-expressions.md) and in the
+`GET /api/dictionaries/change-types` dictionary. Add a change type when the value is produced by logic that is awkward
+as an expression.
+
+> **Note**
+> The built-in `append` ("Append to the end", task 5.1.5) does more: templates, `max_length`, list mode. The teaching
+> example below is named `append_note` so as not to clash with it; choose your own name for your type. If only a function is missing in expressions, add an [expression function](expression-functions.md) instead.
 
 ## 2. How it works
 
@@ -27,7 +31,9 @@ classDiagram
     ChangeTypeInterface <|.. SetValueChangeType
     ChangeTypeInterface <|.. SetFromVariableChangeType
     ChangeTypeInterface <|.. CalculateChangeType
-    ChangeTypeInterface <|.. AppendChangeType
+    ChangeTypeInterface <|.. TemplateChangeType
+    ReportsDetails <|.. TemplateChangeType
+    ChangeTypeInterface <|.. AppendNoteChangeType
     ChangeTypeRegistry o-- ChangeTypeInterface
     ModifyHandler --> ChangeTypeRegistry
 ```
@@ -39,10 +45,19 @@ classDiagram
 - `ModifyHandler::validate()` checks that `change_type` is registered, calls your `validate()` **before** the target is
   declared (the value is computed before it is written), then checks `target`.
 - The registry is filled in `Container::changeTypes()`; `GET /api/dictionaries/change-types` lists it.
+- If the type has something to add to the step audit (e.g. `template` reports missing paths), implement the optional
+  interface `ReportsDetails::computeWithDetails($context, $config): [$value, $details]` — `ModifyHandler` calls it
+  instead of `compute()` and merges `$details` into `result_data`. Do not keep details in object properties: one
+  instance of the type serves concurrent executions.
+- A type that builds text from substitutions should not write its own parser: use `Container::templates()`
+  (`TemplateEngine::render()`) and `Container::templateValidator()`, like `TemplateChangeType`.
+- A type that reads CRM records gets `ExternalApiAdapterService` in the constructor and translates and checks a filter in
+  the Find records format with the shared `Crm\FilterTranslator` and `Crm\FilterRulesValidator` — as
+  `AggregateChangeType` does. Mind that the type is computed on every execution: cap the number of records it reads.
 
 ## 3. Step by step
 
-### 3.1 The class — `back/src/Actions/ChangeTypes/AppendChangeType.php`
+### 3.1 The class — `back/src/Actions/ChangeTypes/AppendNoteChangeType.php`
 
 ```php
 <?php
@@ -56,19 +71,19 @@ use Wps\Context\ExecutionContext;
 use Wps\Services\Validation\DefinitionScope;
 
 /**
- * "Дописать": appends the value to the current value of the target field,
+ * "Дописать заметку": appends the value to the current value of the target field,
  * separated by "separator" (default: a space). An empty field simply gets the value.
  */
-final class AppendChangeType implements ChangeTypeInterface
+final class AppendNoteChangeType implements ChangeTypeInterface
 {
     public function name(): string
     {
-        return 'append';
+        return 'append_note';
     }
 
     public function label(): string
     {
-        return 'Дописать к значению';
+        return 'Дописать заметку';
     }
 
     public function compute(ExecutionContext $context, array $config): mixed
@@ -98,7 +113,7 @@ final class AppendChangeType implements ChangeTypeInterface
 ### 3.2 Registration — `back/src/Kernel/Container.php`
 
 ```php
-use Wps\Actions\ChangeTypes\AppendChangeType;
+use Wps\Actions\ChangeTypes\AppendNoteChangeType;
 
 public function changeTypes(): ChangeTypeRegistry
 {
@@ -107,7 +122,7 @@ public function changeTypes(): ChangeTypeRegistry
         $registry->register(new SetValueChangeType());
         $registry->register(new SetFromVariableChangeType());
         $registry->register(new CalculateChangeType($this->expressions()));
-        $registry->register(new AppendChangeType());
+        $registry->register(new AppendNoteChangeType());
         return $registry;
     });
 }
@@ -116,10 +131,10 @@ public function changeTypes(): ChangeTypeRegistry
 ### 3.3 Use it
 
 ```json
-{ "type": "modify", "target": "object.note", "change_type": "append", "value": "checked", "separator": " | " }
+{ "type": "modify", "target": "object.note", "change_type": "append_note", "value": "checked", "separator": " | " }
 ```
 
-With `object.note = "start"` the result is `"start | checked"` (verified, see the test below).
+With `object.note = "start"` the result is `"start | checked"` (see the test below).
 
 ## 4. Validation and errors
 
@@ -138,22 +153,22 @@ The modify row in `ModifyPanel.vue` offers the change types from the dictionary 
 
 ```json
 // en.json → dict.changeType
-"append": "Append to value"
+"append_note": "Append a note"
 // ru.json → dict.changeType
-"append": "Дописать к значению"
+"append_note": "Дописать заметку"
 ```
 
 2. Extend the TypeScript union in `front/src/types/index.ts`:
 
 ```ts
-export type ChangeType = 'set_value' | 'set_from_variable' | 'calculate' | 'append'
+export type ChangeType = 'set_value' | 'set_from_variable' | 'calculate' | 'append_note'
 ```
 
 A type that is not in the union still works at run time, but the editor code compares `change_type` with literal values
 and `vue-tsc` keeps the union exhaustive for new branches.
 
 3. The value field: `ModifyPanel.vue` shows a variable-path input for `set_from_variable`, an expression input with help for
-`calculate` and a plain text input for anything else — `append` needs no change.
+`calculate` and a plain text input for anything else — `append_note` needs no change.
 
 > **Warning**
 > The editor keeps only `target`, `change_type`, `value` and `save_to_crm` of a modify row
@@ -163,14 +178,14 @@ and `vue-tsc` keeps the union exhaustive for new branches.
 
 ## 6. Test
 
-From the verified `testExtensions()` group (full text in [New action type → Test](new-action-type.md#6-test)):
+Following the `testExtensions()` group (full text in [New action type → Test](new-action-type.md#6-test)):
 
 ```php
-$this->test('Change types contain append', function () {
+$this->test('Change types contain append_note', function () {
     $changeTypes = $this->request('GET', '/api/dictionaries/change-types', token: $this->adminToken)['data'];
-    $this->assertTrue(in_array('append', array_column($changeTypes, 'value'), true));
+    $this->assertTrue(in_array('append_note', array_column($changeTypes, 'value'), true));
 });
-// in a process: ['type' => 'modify', 'target' => 'object.note', 'change_type' => 'append', 'value' => 'checked', 'separator' => ' | ']
+// in a process: ['type' => 'modify', 'target' => 'object.note', 'change_type' => 'append_note', 'value' => 'checked', 'separator' => ' | ']
 // manual run with 'note' => 'start', then:
 $this->assertEquals('start | checked', $execution['context']['variables']['object']['note']);
 ```

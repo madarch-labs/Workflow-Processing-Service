@@ -63,8 +63,46 @@ curl -s http://localhost:9501/api/health
 | `wps_execution_duration_seconds` | summary (`_sum`, `_count`) | Длительность выполнения |
 | `wps_action_duration_seconds` | summary (`_sum`, `_count`) | Длительность шага (каждого записанного в аудит, включая пропущенные) |
 | `wps_retry_count_total` | counter | Повторы шагов после восстановимых ошибок |
+| `wps_step_errors_handled_total` | counter | Ошибки шагов, обработанные `on_error` (`continue` / `goto`): выполнение продолжилось. Рост означает, что процессы «успешны», хотя внешние системы отвечают ошибками |
 | `wps_run_once_skipped_total` | counter | Запуски, заблокированные отметкой однократного запуска |
 | `wps_run_once_no_id_total` | counter | Однократный запуск не применён: у объекта нет `id` |
+| `wps_condition_cast_errors_total` | counter | Ошибки приведения типа в условиях (`cast`): значение не приводится к типу строки условия |
+| `wps_condition_change_info_missing_total` | counter | Операторы изменения (`changed`, `changed_to` …) на событии без сведений об изменениях: старый формат, мок, ручной запуск без `changed_fields`. Рост — повод обновить плагин CRM до 1.2.0 |
+| `wps_program_compile_total` | counter | Компиляции определений процессов в программу без попадания в кеш (растёт при первом запуске процесса в воркере и после правок) |
+| `wps_program_resume_mismatch_total` | counter | Восстановления, отклонённые из-за несовпадения хеша программы после обновления; выполнение помечается `failed` |
+| `wps_instructions_executed_total` | counter | Выполненные инструкции программ (действия, ветвления, переходы) |
+| `wps_secret_resolve_total` | counter | Разрешённые ссылки `secret://` в шагах |
+| `wps_secret_resolve_errors_total` | counter | Ошибки разрешения ссылок: секрета или поля нет, ключ не задан или не подходит |
+| `wps_side_effects_done_total` | counter | Внешние вызовы выполнены и записаны в журнал побочных эффектов |
+| `wps_side_effects_failed_total` | counter | Внешние вызовы с окончательной ошибкой |
+| `wps_side_effects_replayed_total` | counter | Повтор шага после сбоя: ответ взят из журнала без повторного вызова |
+| `wps_side_effects_unknown_total` | counter | Неизвестный исход внешнего вызова (`UNKNOWN_OUTCOME`) — требует внимания оператора |
+| `wps_template_render_errors_total` | counter | Ошибки подстановки шаблонов во время выполнения (отсутствующее значение при `missing: error`, ошибка фильтра, слишком длинный результат) |
+| `wps_emails_sent_total` | counter | Отправлено писем `send_email` (повтор шага из журнала не считается) |
+| `wps_emails_failed_total` | counter | Ошибки транспорта при отправке писем (каждая попытка) |
+| `wps_emails_rate_limited_total` | counter | Получатели, пропущенные из-за лимита `MAILER_RATE_PER_RECIPIENT_HOUR` |
+| `wps_http_requests_total` | counter | Успешно завершённые шаги `http_request` (включая ответы из журнала) |
+| `wps_crm_link_total` | counter | Выполненные шаги `link_records` / `unlink_records` (запросы к CRM — в метриках CRM) |
+| `wps_condition_branch_total` | counter | Выполненные блоки `condition` (выбор ветки); выбранная ветка — в логе `debug` `Branch selected` и в аудите |
+| `wps_process_stopped_total` | counter | Выполнения, завершённые шагом `stop_process` (`completed` и `failed`); статус и код — в логе `info` `Process stopped` и в `context.stop` |
+| `wps_loop_items_total` | counter | Элементы, обработанные циклами `foreach` (итоги цикла — в логе `info` `Loop finished`) |
+| `wps_loop_item_failures_total` | counter | Элементы `foreach` с ошибкой при `on_item_error: continue` (лог `warning` `Loop item failed, the loop continues`) |
+| `wps_loop_overflow_total` | counter | Циклы `foreach`, в которых элементов больше `max_items` (и `on_overflow: fail`) |
+| `wps_update_records_items_total` | counter | Записи CRM, обновлённые шагами `update_records` (неизменённые и упавшие не считаются; сводка шага — в `result_data`) |
+| `wps_aggregate_records_scanned` | summary | Записи CRM, прочитанные одним агрегатом (`aggregate`); `0` — `count` через `meta.total`. Рост — признак широких фильтров (см. [Нагрузка на CRM](crm-integration.md#нагрузка-на-crm-поиск-агрегаты-массовые-изменения)) |
+| `wps_notifications_sent_total` | counter | Доставленные уведомления `notify` — по доставкам (получатель колокольчика, чат, вебхук), включая взятые из журнала при повторе |
+| `wps_notifications_failed_total` | counter | Каналы `notify` с ошибкой (лог `info` `Notification sent` — `delivered`, `failed`) |
+| `wps_assign_total` | counter | Выполненные шаги `assign` (включая `skipped` по `fallback` и повторы с `reused_decision`); выбор и причина — в `result_data.reason` шага |
+| `wps_condition_expression_errors_total` | counter | Ошибки вычисления выражений в условиях (`value_type: expression`): деление на ноль, неверный аргумент; строка условия при этом ложна, подробности — в логе `warning` `Condition expression failed` (`process_id`, `field`, `error`) и в трассе (`expression_error`) |
+| `wps_events_legacy_format_total` | counter | События старого формата (без `event_type`, издатель контракта 1.0): `object_before` для них неизвестен |
+| `wps_events_malformed_fields_total` | counter | Отброшенные служебные поля события неверного типа (`before`, `changed_fields`, `wps_origin`); событие обрабатывается, в лог — `Invalid service fields in event` |
+| `wps_events_skipped_by_type_total` | counter | События, для модуля которых есть процессы, но ни один не подписан на тип события (`trigger_on`) |
+| `wps_events_unsupported_type_total` | counter | События с неподдерживаемым `event_type` (`link`, `unlink`, опечатка): подтверждены без запуска процессов, в лог (`info`) — `Unsupported event_type, no process is started` |
+| `wps_executions_parked_total` | counter | Выполнения, переведённые в ожидание (`waiting`): пауза `delay` или длинная задержка повтора |
+| `wps_executions_woken_total` | counter | Ожидающие выполнения, продолженные после срока |
+| `wps_wait_resume_failed_total` | counter | Неудачные попытки продолжить ожидающее выполнение (в лог — `Resume attempt failed`) |
+| `wps_wait_lateness_seconds` | summary | Опоздание пробуждения относительно срока, с (`_sum` / `_count`) |
+| `wps_executions_waiting` | gauge | Сколько выполнений сейчас ждёт (`COUNT(*)` из `execution_waits`) |
 | `wps_redis_stream_lag` | gauge | То же, что `stream.lag` в проверке состояния |
 | `wps_redis_stream_pending` | gauge | То же, что `stream.pending` |
 
@@ -87,6 +125,8 @@ scrape_configs:
 | Нестабильность CRM | `rate(wps_retry_count_total[5m]) > 0` |
 | Очередь растёт | `wps_redis_stream_lag > 100` |
 | Некорректные события | `increase(wps_events_invalid_total[1h]) > 0` |
+| Ожидания продолжаются с опозданием | `rate(wps_wait_lateness_seconds_sum[5m]) / rate(wps_wait_lateness_seconds_count[5m]) > 30` |
+| Ожидания не удаётся продолжить | `increase(wps_wait_resume_failed_total[15m]) > 0` |
 
 ## Логи
 

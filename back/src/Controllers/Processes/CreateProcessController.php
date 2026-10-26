@@ -13,6 +13,8 @@ final class CreateProcessController extends BaseController
 {
     protected function handle(): Response
     {
-        return $this->ok($this->container()->processService()->create($this->body())->toArray(), 201);
+        $process = $this->container()->processService()->create($this->body(), $warnings);
+        // non-blocking warnings (e.g. a variable set only in some branches) are returned next to the process
+        return $this->ok($process->toArray() + ($warnings !== [] ? ['warnings' => $warnings] : []), 201);
     }
 }

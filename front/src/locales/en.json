@@ -45,6 +45,8 @@
     "status": {
       "running": "Running",
       "retrying": "Retrying",
+      "waiting": "Waiting",
+      "cancelled": "Cancelled",
       "completed": "Completed",
       "failed": "Failed"
     }
@@ -53,7 +55,8 @@
     "status": {
       "success": "Success",
       "failed": "Failed",
-      "skipped": "Skipped"
+      "skipped": "Skipped",
+      "waiting": "Waiting"
     }
   },
   "trigger": {

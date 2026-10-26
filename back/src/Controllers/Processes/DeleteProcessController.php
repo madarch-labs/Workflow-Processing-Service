@@ -13,7 +13,8 @@ final class DeleteProcessController extends BaseController
 {
     protected function handle(): Response
     {
-        $this->container()->processService()->delete($this->intParam('id'));
+        // ?force=true (admin): waiting executions of the process are cancelled (7.2)
+        $this->container()->processService()->delete($this->intParam('id'), $this->queryBool('force') === true);
         return $this->ok(['deleted' => true]);
     }
 }

@@ -29,7 +29,7 @@ back/
 ├── config/config.json         SwooleApp config: server, Swoole settings, controllers namespace,
 │                              global middlewares, CyclicJobs, StateContainerInitiation
 ├── composer.json / .lock      Dependencies; PSR-4 "Wps\\" → src/
-├── Dockerfile                 phpswoole/swoole:6.0-php8.3, composer install, code copied into the image
+├── Dockerfile                 phpswoole/swoole:6.0-php8.3 + bcmath, intl; composer install, code copied into the image
 ├── docker/entrypoint.sh       .env from .env.example if missing → migrations → server
 ├── .env.example               All backend variables with defaults
 ├── API.md                     REST API contract
@@ -137,6 +137,7 @@ doc/
 | Новая функция выражений | `Container::expressions()` → [инструкция](extending/expression-functions.md) |
 | Новый эндпоинт | `back/src/Controllers/…`, `AccessPolicy`, `back/API.md` → [инструкция](extending/new-api-endpoint.md) |
 | Другая CRM | `ExternalApiAdapterService` или API на стороне CRM → [инструкция](extending/new-crm-adapter.md) |
+| Новый канал уведомлений | `back/src/Notify/Channels/`, `Container::notifyChannels()` → [инструкция](extending/new-notify-channel.md) |
 | Новая страница UI | `front/src/views/`, `router/index.ts`, `AppLayout.vue`, `api/` → [инструкция](extending/new-ui-screen.md) |
 | Новый язык UI | `front/src/locales/`, `front/src/i18n/` → [инструкция](extending/new-language.md) |
 | Изменение БД | новый `back/migrations/00N_*.sql` (применяется при следующем старте бэкенда) |

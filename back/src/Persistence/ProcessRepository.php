@@ -5,10 +5,11 @@ declare(strict_types=1);
 namespace Wps\Persistence;
 
 use Wps\Infrastructure\Database;
+use Wps\Program\ProgramCompiler;
 
 final class ProcessRepository
 {
-    private const COLUMNS = 'id, name, object_type, is_child, is_active, priority, run_once, version, definition, created_at, updated_at';
+    private const COLUMNS = 'id, name, object_type, is_child, is_active, priority, run_once, trigger_on, version, definition, created_at, updated_at';
 
     public function __construct(private readonly Database $db)
     {
@@ -57,7 +58,7 @@ final class ProcessRepository
     }
 
     /**
-     * @param array{search?: string|null, object_type?: string|null, is_child?: bool|null, is_active?: bool|null} $filters
+     * @param array{search?: string|null, object_type?: string|null, is_child?: bool|null, is_active?: bool|null, trigger_on?: string|null} $filters
      * @return array{0: list<Process>, 1: int}
      */
     public function paginate(array $filters, int $page, int $perPage): array
@@ -76,6 +77,10 @@ final class ProcessRepository
             $where[] = 'is_child = :is_child';
             $params['is_child'] = (bool)$filters['is_child'];
         }
+        if (($filters['trigger_on'] ?? '') !== '') {
+            $where[] = ':trigger_on = ANY(trigger_on)';
+            $params['trigger_on'] = $filters['trigger_on'];
+        }
         if (isset($filters['is_active'])) {
             $where[] = 'is_active = :is_active';
             $params['is_active'] = (bool)$filters['is_active'];
@@ -90,32 +95,43 @@ final class ProcessRepository
     }
 
     /**
-     * @param array{name: string, object_type: string, is_child: bool, is_active: bool, priority: int, run_once: bool, definition: array<mixed>} $data
+     * @param array{name: string, object_type: string, is_child: bool, is_active: bool, priority: int, run_once: bool, trigger_on?: list<string>, definition: array<mixed>} $data
      */
     public function create(array $data): Process
     {
         $row = $this->db->fetchOne(
-            'INSERT INTO processes (name, object_type, is_child, is_active, priority, run_once, version, definition)
-             VALUES (:name, :object_type, :is_child, :is_active, :priority, :run_once, 1, CAST(:definition AS JSONB))
+            'INSERT INTO processes (name, object_type, is_child, is_active, priority, run_once, trigger_on, version, definition)
+             VALUES (:name, :object_type, :is_child, :is_active, :priority, :run_once, CAST(:trigger_on AS TEXT[]), 1, CAST(:definition AS JSONB))
              RETURNING ' . self::COLUMNS,
-            $data,
+            self::params($data),
         );
         return Process::fromRow((array)$row);
     }
 
     /**
-     * @param array{name: string, object_type: string, is_child: bool, is_active: bool, priority: int, run_once: bool, definition: array<mixed>} $data
+     * @param array{name: string, object_type: string, is_child: bool, is_active: bool, priority: int, run_once: bool, trigger_on?: list<string>, definition: array<mixed>} $data
      */
     public function update(int $id, array $data): ?Process
     {
         $row = $this->db->fetchOne(
             'UPDATE processes SET name = :name, object_type = :object_type, is_child = :is_child, is_active = :is_active,
-                    priority = :priority, run_once = :run_once, definition = CAST(:definition AS JSONB), version = version + 1, updated_at = NOW()
+                    priority = :priority, run_once = :run_once, trigger_on = CAST(:trigger_on AS TEXT[]),
+                    definition = CAST(:definition AS JSONB), version = version + 1, updated_at = NOW()
              WHERE id = :id AND deleted_at IS NULL
              RETURNING ' . self::COLUMNS,
-            $data + ['id' => $id],
+            self::params($data) + ['id' => $id],
         );
         return $row === null ? null : Process::fromRow($row);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private static function params(array $data): array
+    {
+        $data['trigger_on'] = Process::toPgArray(Process::normalizeTriggerOn((array)($data['trigger_on'] ?? Process::DEFAULT_TRIGGER_ON)));
+        return $data;
     }
 
     public function softDelete(int $id): bool
@@ -138,7 +154,7 @@ final class ProcessRepository
              WHERE deleted_at IS NULL
                AND jsonb_path_exists(
                      definition,
-                     '\$.actions[*] ? (@.type == \"start_process\" && (@.process_id == \$id || @.process_ids[*] == \$id || @.process_id == \$sid || @.process_ids[*] == \$sid))',
+                     '\$.actions.** ? (@.type == \"start_process\" && (@.process_id == \$id || @.process_ids[*] == \$id || @.process_id == \$sid || @.process_ids[*] == \$sid))',
                      jsonb_build_object('id', CAST(:id AS BIGINT), 'sid', CAST(:sid AS TEXT)))
              ORDER BY name",
             ['id' => $childId, 'sid' => (string)$childId],
@@ -159,15 +175,9 @@ final class ProcessRepository
         foreach ($rows as $row) {
             $id = (int)$row['id'];
             $names[$id] = (string)$row['name'];
-            $edges[$id] = [];
             $actions = json_decode((string)$row['actions'], true);
-            foreach (is_array($actions) ? $actions : [] as $action) {
-                if (is_array($action) && ($action['type'] ?? null) === 'start_process') {
-                    foreach (\Wps\Actions\StartProcessHandler::processIds($action) as $child) {
-                        $edges[$id][] = $child;
-                    }
-                }
-            }
+            // start_process anywhere in the tree, nested blocks included (a cycle may go through a branch)
+            $edges[$id] = ProgramCompiler::collectChildIds(['actions' => is_array($actions) ? $actions : []]);
         }
         return ['edges' => $edges, 'names' => $names];
     }

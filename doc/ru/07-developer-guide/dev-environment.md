@@ -88,6 +88,9 @@ docker run --rm -u "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer -v "$PWD":
 rm -rf vendor                          # vendor lives only in the image
 cd .. && docker compose up -d --build backend
 docker compose exec backend php tests/IntegrationTest.php
+
+# юнит-тесты (без стека)
+docker build -f back/Dockerfile --target test -t wps-backend-test . && docker run --rm wps-backend-test --testsuite unit
 ```
 
 Новая мажорная или минорная версия (0.4, 1.x) указывается в `back/composer.json`. Сверьте её changelog с двумя обходными
@@ -129,7 +132,8 @@ docker compose logs -f backend | grep '<execution id>'
 | Настоящий текст исключения в ответах `500 INTERNAL_ERROR` | `APP_DEBUG=true` (никогда в production) |
 | Сгенерировать событие | `curl -g 'http://localhost:9502/test-event?module=Deals&set[status]=Active'` |
 | Посмотреть объект CRM в моке | `curl http://localhost:9502/mock/objects/Accounts/<id>` |
-| Сымитировать сбои CRM | id, начинающиеся с `fail500` → HTTP 500 (повторы), `slow` → задержка 3 с |
+| Сымитировать сбои CRM | id, начинающиеся с `fail500` → HTTP 500 (повторы), `fail<N>x500` (например `fail2x500-abc`) → первые N запросов с этим id дают HTTP 500, затем обычный ответ (проверка профиля `retry`), `slow` → задержка 3 с |
+| Проверить `http_request` без внешней системы | URL `http://mock:9502/mock/echo/...` (на стенде mock разрешён SSRF-настройками compose); что пришло — `curl 'http://localhost:9502/mock/echo-last?key=<X-Mock-Key>'`; другие цели — `/mock/status/{code}`, `/mock/redirect`, `/mock/big`, `/mock/oauth/token`, `/mock/protected` ([список](../04-operations/crm-integration.md)) |
 | Посмотреть живой контекст выполнения | `GET /api/executions/{id}` (во время работы читается из Redis `exec:{uuid}`) |
 | Заглянуть в stream | `docker compose exec redis-stream redis-cli XINFO GROUPS crm_events`, DLQ: `XRANGE crm_events:dlq - +` |
 | Проверить определение процесса без UI | `POST /api/processes` возвращает `422` с путями в `details[].field` |

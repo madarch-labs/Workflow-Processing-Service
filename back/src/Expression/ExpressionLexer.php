@@ -6,8 +6,16 @@ namespace Wps\Expression;
 
 use Wps\Exceptions\ConfigurationException;
 
+/**
+ * Tokens: num, str, path ("object.amount"), ident (a word without a dot: function names), kw (and, or, not, true,
+ * false, null — case-insensitive), op. A word with a dot is always a path, so "object.and" stays a path.
+ */
 final class ExpressionLexer
 {
+    public const KEYWORDS = ['and', 'or', 'not', 'true', 'false', 'null'];
+    private const TWO_CHAR_OPS = ['==', '!=', '<=', '>=', '<>', '&&', '||'];
+    private const ONE_CHAR_OPS = '+-*/%(),=<>![]';
+
     /**
      * @return list<array{0: string, 1: mixed, 2: int}> tokens [type, value, position]
      */
@@ -31,7 +39,10 @@ final class ExpressionLexer
                 if (!is_numeric($text)) {
                     throw new ConfigurationException("Invalid number \"{$text}\" at position {$start}");
                 }
-                $tokens[] = ['num', str_contains($text, '.') ? (float)$text : (int)$text, $start];
+                if (strlen($text) > Decimal::MAX_DIGITS) {
+                    throw new ConfigurationException("Number is too large at position {$start}");
+                }
+                $tokens[] = ['num', Decimal::toNative(Decimal::of($text)), $start];
                 continue;
             }
             if ($ch === '"' || $ch === "'") {
@@ -60,10 +71,22 @@ final class ExpressionLexer
                 }
                 $text = rtrim(substr($source, $start, $i - $start), '.');
                 $i = $start + strlen($text);
-                $tokens[] = [str_contains($text, '.') ? 'path' : 'ident', $text, $start];
+                if (str_contains($text, '.')) {
+                    $tokens[] = ['path', $text, $start];
+                } elseif (in_array(strtolower($text), self::KEYWORDS, true)) {
+                    $tokens[] = ['kw', strtolower($text), $start];
+                } else {
+                    $tokens[] = ['ident', $text, $start];
+                }
                 continue;
             }
-            if (str_contains('+-*/%(),', $ch)) {
+            $two = substr($source, $i, 2);
+            if (in_array($two, self::TWO_CHAR_OPS, true)) {
+                $tokens[] = ['op', $two, $i];
+                $i += 2;
+                continue;
+            }
+            if (str_contains(self::ONE_CHAR_OPS, $ch)) {
                 $tokens[] = ['op', $ch, $i];
                 $i++;
                 continue;
