@@ -1,0 +1,54 @@
+[
+  {
+    "value": "set_value",
+    "label": "Равен значению"
+  },
+  {
+    "value": "set_from_variable",
+    "label": "Равен переменной из поля"
+  },
+  {
+    "value": "calculate",
+    "label": "Расчет"
+  },
+  {
+    "value": "template",
+    "label": "Шаблон"
+  },
+  {
+    "value": "date_shift",
+    "label": "Сдвиг даты"
+  },
+  {
+    "value": "increment",
+    "label": "Увеличить на"
+  },
+  {
+    "value": "decrement",
+    "label": "Уменьшить на"
+  },
+  {
+    "value": "clear",
+    "label": "Очистить"
+  },
+  {
+    "value": "append",
+    "label": "Дописать в конец"
+  },
+  {
+    "value": "prepend",
+    "label": "Дописать в начало"
+  },
+  {
+    "value": "remove",
+    "label": "Удалить из списка"
+  },
+  {
+    "value": "map",
+    "label": "По таблице соответствия"
+  },
+  {
+    "value": "aggregate",
+    "label": "Агрегат по записям"
+  }
+]

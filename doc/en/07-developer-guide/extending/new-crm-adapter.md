@@ -40,18 +40,43 @@ classDiagram
     CrmObjectSaver --> ExternalApiAdapterService
     DictionaryService --> ExternalApiAdapterService : getModules()
     LoadStrategyInterface ..> ExternalApiAdapterService : load(api, …)
-    ByIdStrategy ..|> LoadStrategyInterface
-    ByFieldStrategy ..|> LoadStrategyInterface
+    FindRecordsHandler --> ExternalApiAdapterService
+    CrmCapabilitiesService --> ExternalApiAdapterService : capabilities()
 ```
 
-- There is **one** CRM client: `Wps\Services\ExternalApiAdapterService`, created in `Wps\Kernel\Container::crm()`.
-  It is a `final` class **without an interface**, and its concrete type is used in `PreloadHandler`, `CrmObjectSaver`
-  (`modify` with `save_to_crm`, `save_object`), `DictionaryService` (modules dictionary) and in the signature of
-  `LoadStrategyInterface::load()`. There is no registry of CRM adapters to plug a second implementation into.
+- There is **one** CRM client: `Wps\Services\ExternalApiAdapterService`, created in `Wps\Kernel\Container::crm()`
+  (`new ExternalApiAdapterService(AppConfig $config, LoggerInterface $logger, ?\Closure $capabilities = null)`; the closure
+  returns `CrmCapabilities` from `Container::crmCapabilities()`). It is a `final` class **without an interface**, and its
+  concrete type is used everywhere:
+
+  | Where | What it calls |
+  |---|---|
+  | `PreloadHandler`, `ByIdStrategy`, `ByFieldStrategy` (signature of `LoadStrategyInterface::load()`) | `getById()`, `findOneByField()` |
+  | `CrmObjectSaver` (`modify` with `save_to_crm`, `save_object`, `assign`) | `update()`, `create()` |
+  | `FindRecordsHandler` (`find_records`) | `findMany()`, `listRelated()` |
+  | `UpdateRecordsHandler` (`update_records`) | `update()` |
+  | `AggregateChangeType` (`aggregate`) | `findPage()`, `count()`, `listRelated()` |
+  | `LinkRecordsHandler` (`link_records` / `unlink_records`) | `link()`, `unlink()` |
+  | `SendEmailHandler` (copy of the e-mail in the CRM), `CrmAlertChannel` (`Alerts` in the bell) | `create()` |
+  | `Services/Assign/UserPoolResolver`, `AssignmentStrategies` (`assign`) | `getById()`, `findMany()`, `listRelated()`, `count()` |
+  | `CrmCapabilitiesService` | `capabilities()` (cached in Redis `crm:capabilities` for `DICT_CACHE_TTL`) |
+  | `DictionaryService` | `getModules()` |
+
+  There is no registry of CRM adapters to plug a second implementation into.
 - The adapter speaks the contract described in [CRM integration](../../04-operations/crm-integration.md#crm-api-contract-wps--crm):
   `GET/PUT {base}/{module}/{id}`, `GET {base}/{module}?filter[field]=value&size=1`, `POST {base}/{module}`,
   `GET {base}/modules`, header `X-Auth-Key = CRM_API_STATIC_KEY . gmdate("Y.m.d H")`, JSON:API resources
   `{type, id, attributes}`. `AppConfig::crmUrl()` appends `/api/v8` unless the base already ends with `/api/v<N>`.
+- The adapter learns the contract version with `GET {base}/capabilities`: an answer `404`/`405` or another
+  non-recoverable error (any `4xx`) means contract **1.0** (`CrmCapabilities::legacy()`), an answer with
+  `data.contract_version` and `features` — 2.0. Capabilities are cached in Redis `crm:capabilities` for
+  `DICT_CACHE_TTL` and refreshed together with the modules dictionary; the current ones —
+  `GET /api/dictionaries/crm-capabilities`.
+- The modules dictionary `getModules()` comes first from `MOCK_SERVICE_URL/modules` (when the variable is set), then
+  from `{base}/modules`; the answer is a list of `{value, label}` or strings.
+- Every request of a step carries the origin headers `X-WPS-Execution-Id`, `X-WPS-Process-Id`, `X-WPS-Depth`
+  (`Crm\CrmCallOrigin::headers()`). A CRM that puts them into the event as `wps_origin` lets WPS protect itself from
+  cascades ([Origin headers X-WPS](../../04-operations/crm-integration.md#origin-headers-x-wps)).
 - Events go the other way and do not use the adapter at all: the CRM writes messages to the Redis Stream `crm_events`
   ([event format](../../04-operations/crm-integration.md#event-format-crm--wps)).
 
@@ -93,6 +118,17 @@ relationships, and prints `ALL OK`. A few checks are SuiteCRM-specific (user `ad
 
 ## 3. Step by step
 
+| File | Change |
+|---|---|
+| `crm-bridge/bridge.php` | **new** — the bridge (outside `back/`, a separate service) |
+| `docker-compose.override.yml` | **new** — the bridge container next to WPS |
+| `./.env` | `CRM_API_BASE_URL`, `CRM_API_STATIC_KEY`, `MOCK_SERVICE_URL` |
+| CRM code (webhook, hook, polling) | publishing events to the Redis Stream `crm_events` |
+| `doc/{ru,en}/04-operations/crm-integration.md` | if the CRM becomes a supported option |
+
+WPS code (`back/src`) does not change, so there is no registration in `Container` and no unit tests in
+`back/tests/Unit` — checking the bridge is described in [6](#6-test).
+
 The example target CRM has a simple REST API:
 
 | Target CRM request | Response |
@@ -123,6 +159,7 @@ declare(strict_types=1);
  *   GET  /api/vN/{module}?filter[f]=v&size=1       — (not supported by the target → 422)
  *   PUT  /api/vN/{module}/{id}                     GET + PUT {TARGET_URL}/{module}/{id} (full object)
  *   POST /api/vN/{module}                          PUT {TARGET_URL}/{module}/{new id}
+ *   GET  /api/vN/capabilities                      — (404: contract 1.0, WPS limits itself to it)
  * Target responses: {"success": true, "data": {flat object}}; missing record → HTTP 404.
  */
 
@@ -218,6 +255,10 @@ if ($module === 'modules' && $id === null && $method === 'GET') {
     $names = array_filter(array_map('trim', explode(',', env('BRIDGE_MODULES', 'Accounts,Contacts,Deals'))));
     respond(200, ['data' => array_map(static fn (string $n) => ['value' => $n, 'label' => $n], array_values($names))]);
 }
+if ($module === 'capabilities' && $id === null && $method === 'GET') {
+    // no /capabilities: WPS treats the CRM as contract 1.0 (equality search, no sort / cursor / relationships)
+    error(404, 'Capabilities are not implemented');
+}
 
 $item = '/' . rawurlencode($module) . ($id !== null ? '/' . rawurlencode($id) : '');
 switch (true) {
@@ -256,6 +297,7 @@ What the bridge does for each WPS call:
 | WPS call (`ExternalApiAdapterService`) | Bridge → target CRM | Answer to WPS |
 |---|---|---|
 | `getModules()` → `GET /api/v1/modules` | — (`BRIDGE_MODULES`) | `{"data": [{"value", "label"}]}` |
+| `capabilities()` → `GET /api/v1/capabilities` | — | `404` → contract 1.0 |
 | `getById()` → `GET /api/v1/{module}/{id}` | `GET /{module}/{id}` | `200` resource or `404` |
 | `findOneByField()` → `GET /api/v1/{module}?filter…` | — | `422` (not supported) |
 | `update()` → `PUT /api/v1/{module}/{id}` | `GET` + `PUT` merged object | `200` resource or `404` |
@@ -313,20 +355,26 @@ WPS decides what to do from the **HTTP status** the CRM API (here: the bridge) r
 | Bridge answer | WPS treats it as | Step result |
 |---|---|---|
 | `200`/`201` with JSON | success | `success`; `{id, attributes}` is flattened |
-| `404` on `GET` | not found | preload variable = `null` |
-| connection error, timeout (`CRM_API_TIMEOUT`), `5xx` | `CrmApiException`, recoverable | retried `ACTION_RETRY_MAX` times, then `failed` |
-| other `4xx` (incl. `404` on `PUT`), invalid JSON | `CrmApiException`, non-recoverable | `failed` at once, remaining steps `skipped` |
+| `404` on `GET` or `DELETE` | not found | `getById()` → `null` (preload variable = `null`), `delete()` → `false` |
+| connection error, timeout (`CRM_API_TIMEOUT`) | `CrmApiException`, recoverable (`error_code` `TRANSPORT` / `TIMEOUT`) | retried per `ACTION_RETRY_MAX` or the step `retry`, then `failed` |
+| `5xx`, `408`, `425`, `429` | `CrmApiException`, recoverable (`HTTP_<code>`); `Retry-After` sets the retry delay | the same |
+| other `4xx` (incl. `404` on `PUT`), invalid JSON | `CrmApiException`, non-recoverable (`HTTP_<code>`) | `failed` (or the step `on_error`), remaining steps `skipped` |
+
+The body of an error answer (up to 500 characters) goes to `details.response` of the step error — put a clear message
+there (`{"errors": [{"status", "title"}]}`), but no secrets of the target CRM.
 
 Rules for a bridge or plugin:
 
-- Return `5xx` (the example uses `502`) only for **temporary** problems of the target CRM, so WPS retries them.
+- Return `5xx` (the example uses `502`) or `429`/`503` with `Retry-After` only for **temporary** problems of the target
+  CRM, so WPS retries them.
 - Return `4xx` for anything a retry cannot fix: unsupported operation, invalid data, rejected record.
 - Return `404` on `GET` when the record does not exist — never an empty `200`.
 - `PUT` must accept partial `attributes` (WPS sends only the changed fields unless `save_object.mode` is `full`).
 - `POST` must answer with the new `id` in `data.id`; WPS writes it back into the variable (`created_id` in the step result).
 - Check `X-Auth-Key` for the current **and** the previous hour, like the mock and the SuiteCRM plugin.
 
-Verified on a separate stack (bridge + mock as the target CRM):
+This is how a run of the process from [6](#6-test) looked on a separate stack (bridge + mock as the target CRM) when
+the page was prepared; repeat it yourself after changing the bridge:
 
 ```text
 Execution steps (process "Bridge: active deal → VIP account + contact"):
@@ -361,12 +409,15 @@ from inside the backend container (it uses the same network and key as WPS):
 KEY="bridgeKey$(date -u +'%Y.%m.%d %H')"
 docker compose exec backend sh -c "
   curl -s -H 'X-Auth-Key: $KEY' http://crm-bridge:8080/api/v1/modules; echo
+  curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Auth-Key: $KEY' http://crm-bridge:8080/api/v1/capabilities
   curl -s -H 'X-Auth-Key: $KEY' http://crm-bridge:8080/api/v1/Accounts/<existing id>; echo
   curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Auth-Key: $KEY' http://crm-bridge:8080/api/v1/Accounts/does-not-exist
   curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Auth-Key: wrong' http://crm-bridge:8080/api/v1/Accounts/1"
 ```
 
-Expected: the modules list, `{"data":{"type":"Accounts","id":…,"attributes":{…}}}`, `404`, `401`.
+Expected: the modules list, `404` (contract 1.0), `{"data":{"type":"Accounts","id":…,"attributes":{…}}}`, `404`, `401`.
+Verified answers of the bridge without a target CRM: `capabilities` → `404`, `modules` → the `BRIDGE_MODULES` list, a
+wrong key → `401`, a record while the target CRM is down → `502 Target CRM is unavailable`.
 
 Then run one process end to end: create it with the JSON below (`POST /api/processes`), publish a `Deals` event with
 `status = Active` and an existing `account_id` ([3.4](#34-publish-events)), and open the execution in the UI —
@@ -387,7 +438,20 @@ all four steps must be `success`, and the account in the CRM must have `rating =
 }
 ```
 
-## 7. Checklist
+## 7. Common pitfalls
+
+| Mistake | Consequence | Do instead |
+|---|---|---|
+| `CRM_API_BASE_URL` without `/api/v<N>` | WPS calls `…/api/v8/…`, the bridge answers `404` | a base URL with `/api/v1` (any `/api/v<N>`) |
+| An empty `200` instead of `404` for a missing record | the variable gets an empty object, conditions on it misbehave | `404` |
+| `4xx` while the target CRM is temporarily unavailable | the step fails at once without retries | `502` / `503` / `429` (+ `Retry-After`) |
+| `5xx` for a data error | WPS retries a request that will never succeed | `422` / `400` |
+| The bridge checks the key of the current hour only | `401` errors at the turn of the hour | current and previous hour |
+| `PUT` replaces the record with the sent fields | fields absent from the request are wiped | merge with the current object, as in the example |
+| `features` in `/capabilities` without a real implementation | processes fail on an unsupported request instead of `CRM_CAPABILITY_MISSING` on save / run | list only what is done |
+| A process saves the record that started it | an endless loop of events | `run_once`, a guard condition, `wps_origin` from the `X-WPS-*` headers |
+
+## 8. Checklist
 
 - [ ] Every operation your processes use is served: `GET` by id, search by field (if preload uses other fields), `PUT`, `POST`, `modules`
 - [ ] JSON:API resources `{type, id, attributes}` in `data`; `404` on a missing record; new `id` returned on `POST`
@@ -395,7 +459,7 @@ all four steps must be `success`, and the account in the CRM must have `rating =
 - [ ] `X-Auth-Key` checked for the current and the previous hour; the same key in `CRM_API_STATIC_KEY`
 - [ ] `CRM_API_BASE_URL` ends with `/api/v<N>`, `MOCK_SERVICE_URL` empty, modules cache refreshed
 - [ ] The CRM publishes events to `crm_events` with `module` and `id`; loops prevented with `run_once` or conditions
-- [ ] For contract 2.0: `GET /capabilities` lists the implemented `features`, `contract_check.sh` passes
+- [ ] For contract 1.0: `GET /capabilities` answers `404`; for 2.0 it lists the implemented `features`, `contract_check.sh` passes
 - [ ] Smoke test and one end-to-end execution pass
 - [ ] The CRM described in [CRM integration](../../04-operations/crm-integration.md) (en + ru) if it becomes a supported option
 

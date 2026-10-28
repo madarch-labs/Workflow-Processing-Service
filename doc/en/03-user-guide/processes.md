@@ -49,6 +49,12 @@ The card shows:
 
 Header buttons: **Edit**, **Clone**, **Run** (admin, editor) and **Delete** (admin).
 
+Actions that can be configured only through JSON/API are shown on the card too: calculated and template changes show the target field and the expression, other types (`delay`, `send_email`, `http_request`, …) show their configuration as JSON.
+
+![Process card with expressions](../../images/screenshots/en/25-process-detail-json-actions.png)
+
+*A process card with expressions: list functions, `regex_replace`, a template with `sys.*` and a `config.*` constant.*
+
 ## Creating a process
 
 1. Click **Create process** in the menu or above the list.
@@ -98,15 +104,75 @@ deletion. The process list is filtered with `GET /api/processes?trigger_on=delet
 
 When enabled, the first execution for a CRM record (module + record `id`) leaves a **mark**. Later events of the same record do not start the process again. The mark is taken only when the conditions are met, and stays even if the execution failed. It works only for events that carry a record `id`. Marks are listed and reset on the **Run-once records** tab — see [Manual run and run-once reset](manual-run-and-reset.md).
 
+### Process constants
+
+**Constants** are shared values declared once in the process definition. Every row of the process reads them as `config.<name>`; a threshold, address or list is changed in one place instead of every row.
+
+```json
+"definition": {
+  "constants": {
+    "vip_threshold": 100000,
+    "manager_email": "sales-head@example.com",
+    "open_stages": ["Prospecting", "Qualification"]
+  },
+  "conditions": [], "preload": [], "actions": []
+}
+```
+
+| Rule | Value |
+|---|---|
+| Name | Latin letters, digits, `_`, not starting with a digit; up to 100 constants |
+| Value | a scalar (`string`, `int`, `float`, `bool`, `null`) or a list of scalars; the constants JSON is at most 16 KB |
+| Reading | `config.vip_threshold`, `config.open_stages` — in conditions, **Calculate** expressions, templates, filters and `set_variable` |
+| Writing | forbidden: `config` is a read-only name |
+| Secrets | names containing `password`, `secret`, `token`, `api_key` are rejected — use `secret://name` for secrets (see [Process secrets](../04-operations/security.md#process-secrets)) |
+
+The field is set through the API (`definition.constants`); the editor has no separate block for it yet. Constants are part of the execution's definition snapshot, so editing them does not change running or waiting executions. A child process sees **its own** constants, not the parent's.
+
+Save errors (`422`): `Constants must be an object`, `Invalid constant name (letters, digits, "_")`, `Constant must be a scalar or a list of scalars`, `Too many constants (max 100)`, `Constants are too large (max 16 KB)`, `Constant "api_token" looks like a secret; use a secret reference (secret://name)`; an undeclared constant in a path — `Constant "x" is not defined in definition.constants`.
+
+Next to `config.*`, the process can always read the `sys.*` system variables — see [System variables and constants](change-types-and-expressions.md#system-variables-and-constants).
+
+### Process structure in the API
+
+A process is one JSON object; the editor builds the same object. Fields of `POST /api/processes` and `PUT /api/processes/{id}`
+(details — [Endpoints](../06-api-reference/endpoints.md)):
+
+| Field | Type | Default when omitted | Notes |
+|---|---|---|---|
+| `name` | string | — (required) | spaces at the ends are trimmed; up to 255 characters |
+| `object_type` | string | — (required) | `^[A-Za-z][A-Za-z0-9_]*$`, e.g. `Opportunities` |
+| `is_child` | bool | `false` | a child process is started only by `start_process`; unknown variable names are allowed in it (it inherits the parent's variables) |
+| `is_active` | bool | **`true`** | the editor sends `false` for a new process; a direct API call without the field creates an **active** process |
+| `priority` | integer | `0` | an integer or a string of digits (`"-5"`); smaller runs first |
+| `run_once` | bool | `false` | see [Run once per record](#run-once-per-record) |
+| `trigger_on` | list | `["create", "update"]` | duplicates are removed, the order is normalised to `create, update, delete` |
+| `definition.conditions` | list or group | `[]` | [Trigger conditions](triggers-and-conditions.md) |
+| `definition.preload` | list | `[]` | preload rows (they run before the actions) |
+| `definition.actions` | list | `[]` | [Actions](actions.md); nesting of blocks (`condition`, `foreach`) — up to `PROGRAM_MAX_DEPTH` (5 by default), otherwise `Nesting is too deep (max 5)` |
+| `definition.constants` | object | `{}` | [Process constants](#process-constants) |
+
+Read-only fields of the response: `id`, `version`, `created_at`, `updated_at`. The response of a save may also contain
+`warnings` — non-blocking remarks, e.g. `Variable "v2" may be undefined here: it is set only in some branches`.
+
+> **Warning**
+> `PUT` replaces the process **entirely**: an omitted field takes its default (an omitted `is_active` makes the process
+> active, an omitted `definition` empties it). The only exception is `trigger_on` — when it is omitted, the current value
+> is kept. Send the whole object you got from `GET /api/processes/{id}`.
+
 ## Editing and versions
 
 1. Open the process card and click **Edit** (or the edit icon in the list).
 2. Change what you need and click **Save** or **Save and activate**.
 
-Every save increases the version: the editor title shows `#1 · version 3`, and the success message is **Process saved (version N)**. Each execution records the version it ran with (**(version N)** on the execution page), so the audit stays readable after changes. The list of active processes is cached for up to 60 seconds (`PROCESS_CACHE_TTL`), but a save clears the cache, so the change applies to the next event.
+Every save (`PUT`) increases the version by 1, even when nothing changed; a new process and a clone start at version 1. The version is shown in the editor title (`#1 · version 3`) and in the success message **Process saved (version N)**. Each execution records the version it ran with (**(version N)** on the execution page), so the audit stays readable after changes. The list of active processes is cached for up to 60 seconds (`PROCESS_CACHE_TTL`), but a save clears the cache, so the change applies to the next event.
 
 > **Note**
 > An execution that has already started finishes with the definition it started with.
+
+Where the version is visible: `version` of the process, `process_version` of an execution, `sys.process_version` inside
+expressions and templates. The history of old definitions is not stored — only the current one and the snapshots in
+running or waiting executions (a waiting execution resumes with its snapshot even after the process is edited).
 
 ## Cloning
 
@@ -126,6 +192,10 @@ Only administrators can delete processes.
 2. Confirm **Delete process «…»? This cannot be undone.**
 
 If the process is started by other processes ("Start next process"), deletion is refused: **The process is used by other processes (start_process) and cannot be deleted** (`409 PROCESS_IN_USE`). Remove the reference from those processes first.
+
+If the process has waiting executions (`delay`, waiting for an event), deletion is refused with `409 PROCESS_HAS_WAITING_EXECUTIONS`
+and the number of waiting executions; `DELETE /api/processes/{id}?force=true` (admin) deletes the process and cancels them
+(status **Cancelled**, see [Executions and audit](executions-and-audit.md)).
 
 Deletion is "soft": the process disappears from the lists and stops running, but its executions remain in the audit.
 
@@ -161,6 +231,12 @@ WPS validates a process twice: in the browser before sending and on the server.
 | `Unknown comparison operator` / `Unknown action type` | Value not in the dictionary (possible only via the API) |
 | `Process 42 not found` / `Process 42 "…" is not a child process` | "Start next process" points to a missing or non-child process |
 | `"object" must point to a field, e.g. object.name` | A modify target is a whole variable |
+| `Definition must be an object`, `Must be an array` (`definition.preload` / `definition.actions`), `Must be an array or a condition group` (`definition.conditions`), `Unknown key "x" (allowed: conditions, preload, actions, constants)` (`definition.x`) | Wrong shape of the definition blocks or an extra key (often a typo: `constant` instead of `constants`) |
+| `Change type must be one of: set_value, …` | Unknown change type |
+| `Nesting is too deep (max 5)` | `condition` / `foreach` blocks nested deeper than `PROGRAM_MAX_DEPTH` |
+| `Name "config" is reserved`, `Variable "sys" is read-only` | The name `object`, `object_before`, `sys` or `config` is taken by a preload, `set_variable` or a change target |
+| `Must be AND or OR` | Wrong `logical_operator` of a condition group |
+| `The process is started by other processes (…) and must stay a child process` (`is_child`) | A child process that others start is switched to top level |
 
 A start cycle (A starts B, B starts A) is reported as **Process start cycle detected — a process cannot (indirectly) start itself** (`422 CYCLE_DETECTED`) with the chain of processes.
 

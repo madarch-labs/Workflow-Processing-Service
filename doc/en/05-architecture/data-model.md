@@ -6,7 +6,7 @@ PostgreSQL tables, the structure of a process definition and the Redis keys used
 🇬🇧 English | [🇷🇺 Русский](../../ru/05-architecture/data-model.md)
 <!-- /lang-switch -->
 
-The schema is created by the migrations in `back/migrations/` (`001_create_tables.sql` … `009_execution_waits.sql`), which `back/docker/entrypoint.sh` applies with `migrations/migrate.php` on every start of the
+The schema is created by the migrations in `back/migrations/` (`001_create_tables.sql` … `010_reserved_names_check.sql`; the list and order — [Deployment → Migrations](../04-operations/deployment.md#migrations)), which `back/docker/entrypoint.sh` applies with `migrations/migrate.php` on every start of the
 backend. All `TIMESTAMP` columns are stored in UTC.
 
 ## ER diagram
@@ -31,7 +31,7 @@ erDiagram
         BOOLEAN run_once
         TEXT[] trigger_on "create, update, delete"
         INT version
-        JSONB definition "conditions, preload, actions"
+        JSONB definition "conditions, preload, actions, constants"
         TIMESTAMP created_at
         TIMESTAMP updated_at
         TIMESTAMP deleted_at "soft delete"
@@ -70,7 +70,7 @@ erDiagram
         UUID execution_id FK
         INT step_index
         TEXT action_type
-        TEXT status "success, failed, skipped"
+        TEXT status "success, waiting, failed, skipped"
         INT attempts
         TIMESTAMP started_at
         INT duration_ms
@@ -124,6 +124,12 @@ holds at most one mark per process and CRM record. Its `execution_id` has no for
 written before the `executions` row exists.
 
 ## Tables
+
+### `schema_migrations`
+
+Service table of `migrate.php` (created by the script itself, not by a migration): `version TEXT PRIMARY KEY` — the file
+name without `.sql`, `applied_at TIMESTAMP` — when it was applied. The row is written in the same transaction as the
+migration itself.
 
 ### `users`
 
@@ -311,7 +317,16 @@ flowchart LR
   `{ "logical_operator": "AND" | "OR", "conditions": [...], "groups": [...] }`, prepared for OR and brackets (customer
   answer #8); the current UI does not edit it.
 - `preload` rows are executed before the actions; `preload` may also appear inside `actions`.
-- `Process::normalizeDefinition()` always produces the three keys, so a missing block is an empty list.
+- `Process::normalizeDefinition()` always produces the keys `conditions`, `preload`, `actions` and `constants`, so a
+  missing block is an empty list (object). Other top-level keys are rejected by the validator (`422 Unknown key "x"`) so that a typo does not lose data silently; the allowed list is `Process::DEFINITION_KEYS`.
+- `constants` (task 5.2.9) — an object of process constants `{name: value}`: scalars and lists of scalars only, up to 100
+  items and 16 KB, names like variable names; read in expressions, templates and conditions as `config.<name>`
+  (read-only). Secrets are not stored in constants: a name that looks like a secret (`password`, `token` …) is rejected.
+- Reserved variable names (`ExecutionContext::RESERVED`): `object` (the event object), `object_before` (old values,
+  read-only), `sys` (system values of the execution, read-only), `config` (constants, read-only). A variable with such a
+  name cannot be declared (`preload.var`, `set_variable`, `find_records.var`, `foreach.as`) — `Name "sys" is reserved`.
+  Migration 010 reports processes that used these names before 5.2.9.
+- `trigger_on`, `run_once`, `priority`, `is_child`, `is_active` are columns of `processes`, not keys of `definition`.
 - The `definition` column is `jsonb`: PostgreSQL **does not keep the order of object keys** (shorter keys come first),
   the order of array items is kept. Where the order matters the format uses lists: `actions`, `branches`, `fields` of
   `set_variable` (an object `fields` is allowed only for independent fields — otherwise a warning). The keys of an
@@ -332,6 +347,15 @@ The field-by-field meaning is described in the user guide: [Conditions](../03-us
 | `lock:exec:{uuid}` | String | Owner token of the worker that runs the execution | `EXECUTION_LOCK_TTL` (30 s) |
 | `idem:{event_id}:{process_id}` | String | Execution id or `skipped` | `IDEMPOTENCY_TTL_HOURS` (24 h) |
 | `idem:{parent_execution_id}.{step}:{child_id}` | String | Same for a child process | 24 h |
+| `exec:{uuid}:loop:{pc}` | List | Item snapshot of a `foreach` loop | as `exec:{uuid}` |
+| `crm:capabilities` | String (JSON) | CRM capabilities from `GET {base}/capabilities` | `DICT_CACHE_TTL` |
+| `side_effects:purge` | String | Mark of the hourly purge of the side-effect journal | 1 h |
+| `mail:rate:{transport hash}:{minute}`, `mail:rcpt:{sha1 of address}:{hour}` | String (counter) | Limits `MAILER_RATE_PER_MINUTE` and `MAILER_RATE_PER_RECIPIENT_HOUR` | 120 s / 2 h |
+| `oauth:token:{sha1}`, `oauth:token:{sha1}:lock` | String | OAuth2 token of `http_request` and the lock of fetching it | `expires_in` (at least 30 s) / 15 s |
+| `assign:rr:{queue_key}` | String | Last assignee of a `round_robin` queue | no TTL |
+| `assign:last:{queue_key}:{user}` | String | Time of the last assignment (`least_busy`) | 30 days |
+| `assign:decided:{execution}:{pc}:{iteration}` | String (JSON) | Decision of an `assign` step for retries | 1 day |
+| `assign:pool:{sha1}` | String (JSON) | Members of a security group | `ASSIGN_POOL_CACHE_TTL` |
 
 **redis-stream** (event bus):
 
@@ -340,6 +364,8 @@ The field-by-field meaning is described in the user guide: [Conditions](../03-us
 | `crm_events` (`REDIS_STREAM_NAME`) | Stream | CRM events; consumer group `wps_workers` (`REDIS_STREAM_CONSUMER_GROUP`) |
 | `crm_events:dlq` | Stream | Invalid and poison messages: `original_id`, `reason`, `fields`, `at`; trimmed to about 10 000 entries |
 | `mock_crm:{module}` | Hash | Objects of the mock CRM (only when the `mock` container is used) |
+| `mock_crm_rel:{module}:{id}:{link}` | Hash | Relationships of the mock CRM with link fields |
+| `mock:echo:*`, `mock:notify*`, `mock:oauth:issued` | various | Counters and last requests of the mock test endpoints |
 
 <!-- footer-nav -->
 ---

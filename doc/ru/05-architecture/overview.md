@@ -17,7 +17,9 @@ flowchart LR
 
     crm -- "публикует события «объект сохранён»<br/>(logic hook after_save / мок)" --> bus
     bus -- "XREADGROUP, группа wps_workers" --> wps
-    wps -- "REST API v8: GET / PUT / POST<br/>заголовок X-Auth-Key" --> crm
+    wps -- "REST API /api/v9 (контракт 2.0): GET / PUT / POST / DELETE,<br/>связи, X-Auth-Key, X-WPS-*" --> crm
+    ext["Внешние системы<br/>SMTP, HTTP API, Telegram / Slack / Teams"]
+    wps -- "send_email, http_request, notify<br/>(журнал побочных эффектов, SSRF-защита)" --> ext
     analyst -- "настраивает процессы,<br/>смотрит аудит (веб-интерфейс)" --> wps
 ```
 
@@ -26,6 +28,11 @@ flowchart LR
 записать изменение обратно, WPS обращается к REST API CRM (формат SuiteCRM API v8, аутентификация динамическим ключом
 `X-Auth-Key`). Люди работают только с веб-интерфейсом: настраивают процессы и просматривают аудит выполнений.
 
+Кроме CRM, процессы обращаются к внешним системам: почта (`send_email`, SMTP через `symfony/mailer`), произвольные
+HTTP API (`http_request`, проверка адресов `EgressGuard`) и мессенджеры (`notify`: Telegram, Slack, Teams; колокольчик
+CRM — через API CRM). Учётные данные для них хранятся в зашифрованном хранилище секретов WPS. Контракт API CRM 2.0
+(плагины SuiteCRM 1.2.0, мок) описан в [Интеграции с CRM](../04-operations/crm-integration.md).
+
 ## Контейнеры (C4, уровень 2)
 
 ```mermaid
@@ -33,7 +40,7 @@ flowchart TB
     user["Браузер"]
     subgraph compose["docker-compose.yml"]
         frontend["frontend<br/>nginx + SPA на Vue 3<br/>хост WPS_UI_PORT → 80"]
-        backend["backend<br/>PHP 8.3 + Swoole 6 + SwooleApp<br/>API, StreamConsumerJob, RecoveryJob<br/>хост WPS_API_PORT → 9501"]
+        backend["backend<br/>PHP 8.3 + Swoole 6 + SwooleApp<br/>API, StreamConsumerJob, RecoveryJob,<br/>WaitResumeJob<br/>хост WPS_API_PORT → 9501"]
         postgres[("postgres<br/>PostgreSQL 15<br/>хост WPS_PG_PORT → 5432")]
         rstream[("redis-stream<br/>Redis 7, шина событий<br/>хост WPS_REDIS_STREAM_PORT → 6379")]
         rdata[("redis-data<br/>Redis 7, кэш и состояние<br/>хост WPS_REDIS_DATA_PORT → 6379")]
@@ -56,7 +63,8 @@ flowchart TB
 |---|---|---|
 | `frontend` | Отдаёт собранное SPA, проксирует `/api/` на `backend:9501`, для остальных путей отдаёт `index.html` | — |
 | `backend` | REST API для интерфейса, потребитель стрима, движок выполнения, восстановление | — (без состояния: оно лежит в PostgreSQL и redis-data) |
-| `postgres` | Консистентное хранилище | пользователи, процессы, выполнения, аудит шагов, отметки однократного запуска |
+| `postgres` | Консистентное хранилище | пользователи, процессы, выполнения, аудит шагов, отметки однократного запуска, секреты (зашифрованные), журнал побочных эффектов, ожидающие выполнения |
+| `mailpit` | Тестовый SMTP стенда (`MAILER_DSN=smtp://mailpit:1025`), веб-интерфейс писем на `WPS_MAILPIT_PORT` | письма стенда (в памяти) |
 | `redis-stream` | Шина событий между CRM и WPS | стрим `crm_events`, группа `wps_workers`, стрим недоставленных сообщений `crm_events:dlq` |
 | `redis-data` | Быстрое временное состояние, отдельно от шины (ответ заказчика №4) | контекст выполнения `exec:{uuid}`, блокировки, ключи идемпотентности, кэши процессов и модулей |
 | `mock` | CRM для разработки: генерирует события и эмулирует CRM API v8 | объекты мок-CRM (в redis-stream) |
@@ -79,6 +87,10 @@ CRM — публикует события и отвечает по REST API, —
 | Метрики | Текстовый формат Prometheus, общая `Swoole\Table` | `back/src/Services/MetricsService.php` |
 | Интерфейс | Vue 3.5, TypeScript, Vite 5, Element Plus, Pinia, Vue Router, Axios, vue-i18n | `front/` |
 | Доставка интерфейса | nginx | `front/nginx.conf` |
+| Почта | `symfony/mailer` (SMTP), Mailpit на стенде | `back/src/Mail/` |
+| Точные числа | `bcmath` (`decimal`), `intl` (`format_date_locale`) | `back/Dockerfile` |
+| JSONPath | адаптер `Wps\Support\JsonPath` (RFC 9535) | `back/src/Support/JsonPath.php` |
+| Тесты | PHPUnit (стадия `test` образа), интеграционный `tests/IntegrationTest.php`, кейсы SuiteCRM 8 | `back/tests/`, `.tehnical/suiteCRM8/processes/cases/` |
 | CRM | SuiteCRM 7 / 8 с плагином WPS или мок на PHP | `.tehnical/`, `mock/` |
 
 ## Что читать дальше

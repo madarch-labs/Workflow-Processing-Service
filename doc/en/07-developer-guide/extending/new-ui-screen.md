@@ -329,7 +329,7 @@ npm ci
 npm run build        # i18n:check + vue-tsc --noEmit + vite build
 ```
 
-Verified result with the example applied:
+Check result with the example applied (key and module counts and chunk sizes are as of the check; `ru.json` currently has 394 keys, the example adds 14):
 
 ```
 ✓ i18n: 408 ключей, языки: en, ru
@@ -353,7 +353,26 @@ Manual check (steps 1–4 were verified on a separate stack, see [Development en
    shows "Error". Start it again (`docker compose start redis-data`).
 5. Sign in as a viewer: no menu item, `/system` redirects to `/processes`.
 
-## 7. Checklist
+## 7. Common pitfalls
+
+- **Cyrillic or literal text in a template.** Every UI string goes through `t('…')`; `i18n:check` fails the build on
+  Cyrillic in `.vue`/`.ts` (except comments and `src/i18n/locales.ts`).
+- **A key in one locale only.** `i18n:check` compares every file with `ru.json`: a missing key, an empty value or an
+  extra key fails the build.
+- **Dynamic keys.** The check does not see ``t(`system.check.${status}`)``; for a new value coming from the API (e.g. a
+  third check status) the key will be missing and the key itself appears on screen. For backend values use a
+  fallback, like `labelOr()` in `utils/format.ts` (the translation when the key exists, the raw value otherwise).
+- **A double error message.** The API client has already shown an `ElMessage`; do not show the same error again in
+  `catch` (or pass `{ silent: true }` and show your own).
+- **Protection in the UI only.** `meta.roles` and `v-if` in the menu only hide the page; without a rule in
+  `AccessPolicy` the data is available through the API to any role allowed by default (`GET` — everyone).
+- **A route after the catch-all.** A route added after `/:pathMatch(.*)*` never opens — the redirect to `/processes`
+  takes it.
+- **`activeMenu` not updated.** The menu item is not highlighted on the new page and its nested paths.
+- **Shared state in a module-level `ref`.** A `ref()` at module level (outside `setup` and outside a store) survives a
+  logout; keep the state in the view or in a Pinia store and clear it on logout if it depends on the user.
+
+## 8. Checklist
 
 - [ ] Types in `src/types/index.ts`, calls in `src/api/<resource>.ts` through `api/client.ts`
 - [ ] View in `src/views/`, `<script setup lang="ts">`, global `page-header` layout

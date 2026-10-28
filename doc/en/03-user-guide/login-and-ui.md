@@ -98,6 +98,65 @@ The chosen language is remembered in this browser and is also sent to the backen
 > **Note**
 > Module labels in selectors come from the CRM. The bundled mock returns Russian module names (for example `Сделки` for `Deals`) in both interface languages.
 
+## What the UI has and what only the API has
+
+| Task | UI | API |
+|---|---|---|
+| List, card, create, edit, clone, delete processes | ✓ | `/api/processes` |
+| Execution log of a process, execution page, context | ✓ | `/api/processes/{id}/executions`, `/api/executions/{id}` |
+| Executions of **all** processes, searching for waiting ones | — | `GET /api/executions?status=waiting` |
+| Side-effect journal (what was sent) | — | `GET /api/executions/{id}/side-effects` |
+| Manual run, run-once reset | ✓ | `/api/processes/{id}/run`, `/api/processes/{id}/runs` |
+| Users | ✓ (admin) | `/api/users` |
+| Secrets of external systems | — | `/api/secrets`, see [Secrets](secrets.md) |
+| Mail and notification channel check | — | `POST /api/mail/test`, `POST /api/notify/test` |
+| Service health and metrics | — | `/api/health`, `/metrics`, see [Monitoring](../04-operations/monitoring.md) |
+| Dictionaries (operators, functions, `sys.*`, date units…) | partly — in drop-down lists | `/api/dictionaries/*` |
+
+## The editor and actions set through the API
+
+The process editor can build four kinds of rows: **conditions** (block 1), **preload**, **changes** with **Save to
+CRM** and **Start next process** (block 2). Other actions — e-mails, HTTP requests, notifications, assignment, record
+search, loops, branches, pauses, `set_variable`, `stop_process` — are set by the JSON definition through the API (see
+the [Overview](../01-overview/index.md#what-is-configured-in-the-editor-and-what-through-the-api)).
+
+How such actions look in the UI:
+
+- **Process card**, **Block 3. Actions**: a row with the type tag (`send_email`, `foreach`, `http_request` …) and the
+  JSON of the step in the **Description** column — not translated or formatted. Nested steps of blocks (`branches`, the
+  loop body) are visible inside that JSON.
+- **Editor**, **Modify object / variable** section: a grey row with the type tag and a JSON summary, an ⓘ icon —
+  **This action can't be edited in the table editor and will be saved unchanged**. The row can be moved with the arrows
+  or deleted, but not changed.
+- Advanced conditions (groups, OR) are shown as a JSON block with a warning; **Replace with table conditions (AND)**
+  turns them into plain rows (a simple AND group) or clears them.
+- `trigger_on` and the `config.*` constants are not shown on the card — see them in the `GET /api/processes/{id}`
+  response.
+
+![Process card with expressions](../../images/screenshots/en/25-process-detail-json-actions.png)
+
+*The card of a process built through the API: calculations, a template with `sys.*` and a `config.*` constant.*
+
+> **Note**
+> A process built through the API can be saved from the editor: constants, row fields the form does not show (`cast`,
+> `on_error`, `retry` …) and the action order are kept. What the form cannot show (conditions with lists and
+> expressions, complex change types, non-editable actions) is shown read-only and saved unchanged. See the [FAQ](../08-faq.md#can-i-open-a-process-created-through-the-api-in-the-editor).
+
+In the English UI the labels of operators and change types other than the basic ones (**Equals**, **Contains**,
+**Set to value**, **Calculate** …) come from the server in Russian (for example **Больше**, **Шаблон**): the server
+returns dictionaries in Russian, and the UI translates only the basic values.
+
+## If you cannot sign in
+
+| Symptom | What to do |
+|---|---|
+| **The server is unavailable. Check your connection.** | The backend does not answer: `curl http://localhost:9501/api/health`, `docker compose ps backend` |
+| **Invalid email or password** | Check the keyboard layout and the e-mail; the default administrator password may have been changed — another administrator can change it on the **Users** page |
+| The sign-in page appears again and again after signing in | The browser does not keep `localStorage` (a private mode that blocks storage) or different UI addresses are used (`localhost` and `127.0.0.1` have separate storage) |
+| **Session expired, please sign in again** in the middle of work | The refresh token expired (`JWT_REFRESH_TTL`, 7 days) or `JWT_SECRET` changed on the server. Unsaved form changes are lost — save more often |
+| **You do not have permission to perform this operation** | Your role does not allow this operation; if the role was raised recently, sign out and in again |
+| A blank white page | Open the browser console (F12): usually an old frontend build is cached — reload with `Ctrl+F5` |
+
 ## Next steps
 
 - [Processes](processes.md) — the list, the card and the editor.

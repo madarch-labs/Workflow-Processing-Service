@@ -28,9 +28,49 @@
 
 - `object` — объект из события (запись, которую сохранили в CRM);
 - переменные, загруженные **Предзагрузкой**, например `v1`;
-- переменные, созданные **Изменением**, когда оно пишет в новое имя, например `task.name`.
+- переменные, созданные **Изменением**, когда оно пишет в новое имя, например `task.name`;
+- `sys` — системные переменные выполнения (`sys.execution_id`, `sys.trigger`, `sys.user_id`, `sys.now`…), только для чтения;
+- `config` — константы процесса (`config.vip_threshold`), только для чтения.
 
 К полям обращаются через точку: `object.phone`, `v1.contact_id`. Панель **Переменные** справа в редакторе показывает, что доступно в текущем месте.
+
+`object`, `object_before`, `sys` и `config` — **зарезервированные** имена: их нельзя объявить в предзагрузке, создать действием **Изменить** или записать в них через `set_variable`. Сохранение с такой записью отклоняется (`Variable "sys" is read-only`, `Name "config" is reserved`). Полная таблица полей `sys.*` — в разделе [Системные переменные и константы](change-types-and-expressions.md#системные-переменные-и-константы).
+
+### Все типы шагов
+
+Редактор показывает три раздела выше; остальные типы задаются через API (`definition.actions`), а редактор сохраняет
+такие строки без изменений. Справочник типов — `GET /api/dictionaries/action-types` (поле `kind`: `action` или `block`).
+
+| `type` | Название | Что делает | Пишет в CRM | Внешний вызов (журнал побочных эффектов) | `delivery` |
+|---|---|---|---|---|---|
+| `preload` | [Предзагрузка](#предзагрузка) | Загружает одну запись CRM в переменную | нет | нет | — |
+| `modify` | [Изменить объект / переменную](#изменить-объект--переменную) | Меняет одно поле в памяти; с `save_to_crm` — сразу сохраняет | с `save_to_crm` | нет | — |
+| `save_object` | [Сохранить в CRM](#сохранить-в-crm) | `PUT` изменённых полей или `POST` новой записи | да | нет | — |
+| `set_variable` | [Записать в переменную процесса](#записать-в-переменную-процесса) | Локальная переменная для расчётов | нет | нет | — |
+| `find_records` | [Найти записи](#найти-записи) | Список записей по фильтру или по связи | нет | нет | — |
+| `update_records` | [Изменить записи списка](#изменить-записи-списка) | Одинаковые поля у всех записей списка | да | нет | — |
+| `link_records`, `unlink_records` | [Связать / отвязать записи](#связать--отвязать-записи) | Связи через link-поле | да (связи) | нет | — |
+| `assign` | [Назначить ответственного](#назначить-ответственного) | Ответственный по правилу | с `save_to_crm` | нет | — |
+| `start_process` | [Запустить следующий процесс](#запустить-следующий-процесс) | Асинхронно запускает ведомые процессы | нет | нет | — |
+| `send_email` | [Отправить письмо](#отправить-письмо) | Письмо через SMTP | с `save_to_crm` (история) | да | `at_most_once` |
+| `http_request` | [HTTP-запрос](#http-запрос) | Вызов внешнего API | нет | да | `at_most_once` для `POST`/`PATCH`, иначе `at_least_once` |
+| `notify` | [Уведомление](#уведомление) | Колокольчик CRM, Telegram, Slack, Teams | `crm_alert` — запись `Alerts` | да (на каждую доставку) | `at_most_once` |
+| `delay` | [Пауза](#пауза-delay) | Ждать срок или дату | нет | нет | — |
+| `condition` | [Условие](#условие-если--иначе) (блок) | Ветки «если / иначе если / иначе» | — | — | — |
+| `foreach` | [Цикл](#цикл-для-каждого-элемента) (блок) | Тело для каждого элемента списка | — | — | — |
+| `stop_process` | [Завершить процесс](#завершить-процесс) (блок) | Досрочное завершение выполнения | — | — | — |
+
+Общие для всех шагов поля `id`, `name`, `on_error`, `retry` — в разделах
+[Вложенные блоки и поля шага](#вложенные-блоки-и-поля-шага) и [Ошибки шага](#ошибки-шага-on_error-и-повторы).
+Поле `delivery` допустимо только у действий с внешним вызовом; у остальных сохранение вернёт
+`Action "modify" does not support "delivery"`.
+
+**Повтор шага.** Шаг может выполниться повторно — по профилю `retry` или после восстановления упавшего воркера. Для
+записи в CRM это безопасно (`PUT` тех же значений; `link_records` идемпотентен; решение `assign` запоминается на шаг).
+Письма, HTTP-запросы и уведомления защищены журналом побочных эффектов: уже выполненный вызов не повторяется, а при
+неизвестном исходе действует политика `delivery` ([Надёжность → Побочные эффекты и повторы](../04-operations/reliability.md#побочные-эффекты-и-повторы)).
+Создание новой записи (`save_object` без `id`) при повторе после сбоя воркера может создать дубль, если CRM успела
+обработать первый запрос. Режима пробного прогона (dry-run), в котором действия не выполняются, пока нет.
 
 ## Предзагрузка
 
@@ -78,6 +118,45 @@
 | `путь должен начинаться с object.` / `For "from object field" the path must start with "object."` | Неверный путь для **Из поля объекта** |
 | `переменная «v2» должна быть объявлена выше` / `Variable "v2" is not defined at this point` | **Из поля переменной** ссылается на более позднюю или неизвестную переменную |
 | `For "from variable field" the path must reference a variable (e.g. v1.contact_id)` | **Из поля переменной** с путём `object.` |
+| `Name "config" is reserved` (сервер) | Имя `config` — константы процесса |
+| `Source must be one of: object_field, variable_field, manual` (сервер) | Неизвестный тип инициации `source` |
+| `Search field must be a non-empty string` (сервер) | Пустое или нестроковое `by_field` |
+| `Unknown load strategy` (сервер) | `strategy` не `by_id` / `by_field` |
+
+### Поля строки предзагрузки в JSON
+
+| Поле | Тип | Обязательно | По умолчанию | Описание |
+|---|---|---|---|---|
+| `var` | строка | да | — | Имя переменной: латиница, цифры, `_`, не с цифры; не `object`, `object_before`, `sys`, `config`; уникально |
+| `source` | строка | нет | `object_field` | `object_field`, `variable_field` или `manual` |
+| `value` | строка | да | — | Путь (`object.account_id`, `v1.contact_id`) или само значение для `manual` |
+| `module` | строка | да | — | Модуль CRM (`Accounts`) |
+| `by_field` | строка | нет | `id` | Поле поиска |
+| `strategy` | строка | нет | по `by_field` | `by_id` или `by_field` |
+
+**Аудит шага.** `request_data`: `var`, `module`, `strategy`, `by_field`, `source`, `value`, `lookup_value` (значение,
+по которому искали). `result_data`: `found` (`true` / `false`), `object` (загруженная запись или `null`), при пустом
+значении поиска — `reason: "Lookup value is empty"` (запроса в CRM нет). Ошибки CRM `5xx`, таймауты и сеть
+повторяются; `404` при загрузке по `id` — это «не найдено», а не ошибка.
+
+Пример: сделка загружает контрагента, а через него — основной контакт контрагента по полю:
+
+```json
+{
+  "object_type": "Opportunities",
+  "definition": {
+    "preload": [
+      { "var": "account", "source": "object_field", "module": "Accounts", "by_field": "id", "value": "object.account_id" },
+      { "var": "contact", "source": "variable_field", "module": "Contacts", "by_field": "email1", "value": "account.email1" }
+    ],
+    "conditions": [ { "field": "account.id", "operator": "is_not_empty" } ],
+    "actions": [
+      { "type": "modify", "target": "object.next_step", "change_type": "template",
+        "value": "Связаться: {{ contact.first_name | default:'контакт не найден' }} ({{ account.name }})", "save_to_crm": true }
+    ]
+  }
+}
+```
 
 ### Предзагрузка внутри действий (только через API)
 
@@ -106,7 +185,35 @@
 
 Запись в переменную, которой ещё нет (например, `task.name`), создаёт её; панель **Переменные** помечает её как **создана в процессе**. У такой переменной нет модуля — укажите его в строке **Сохранить в CRM**.
 
-Ошибки: `Действие 1: укажите поле назначения (object.поле или v1.поле)`, `Действие 1: укажите значение` (для **Равен переменной** и **Расчёт**); сервер: `"object" must point to a field, e.g. object.name`, `Change type must be one of: set_value, set_from_variable, calculate`, `Must be true or false` (`save_to_crm`), `Variable "object_before" is read-only` (цель `object_before.*`; то же для `save_object`).
+В JSON строка изменения — шаг `modify`:
+
+| Поле | Тип | Обязательно | По умолчанию | Описание |
+|---|---|---|---|---|
+| `target` | строка | да | — | Путь `<переменная>.<поле>`; вложенные поля через точку |
+| `change_type` | строка | да | — | Один из 13 типов: `set_value`, `set_from_variable`, `calculate`, `template`, `date_shift`, `increment`, `decrement`, `clear`, `append`, `prepend`, `remove`, `map`, `aggregate` (справочник `GET /api/dictionaries/change-types`). Параметры каждого типа — в [Типы изменений и выражения](change-types-and-expressions.md) |
+| `value` и параметры типа | | по типу | — | Значение, путь, выражение или шаблон |
+| `save_to_crm` | `true` / `false` | нет | `false` | Сразу сохранить переменную (как `save_object`) |
+| `module` | строка | нет | модуль переменной | Модуль для `save_to_crm`, если он неизвестен (переменная создана в процессе) |
+
+**Аудит шага.** `request_data`: `target`, `change_type`, `value` (или `expression`), при сохранении — `save`
+(`method`, `module`, `id`, `attributes`). `result_data`: `old_value`, `new_value`, дополнительные сведения типа
+изменения (например, у `aggregate` — число записей), при сохранении — `save` со статусом сохранения.
+
+Пример: создать задачу по лиду одной строкой на поле и сохранить её последней строкой с модулем:
+
+```json
+{
+  "trigger_on": ["create"],
+  "definition": { "actions": [
+    { "type": "modify", "target": "task.name", "change_type": "template", "value": "Позвонить {{ object.first_name }} {{ object.last_name }}" },
+    { "type": "modify", "target": "task.date_due", "change_type": "date_shift", "base": "today", "shift": "+1 day", "set_time": "12:00" },
+    { "type": "modify", "target": "task.parent_type", "change_type": "set_value", "value": "Leads" },
+    { "type": "modify", "target": "task.parent_id", "change_type": "set_from_variable", "value": "object.id", "save_to_crm": true, "module": "Tasks" }
+  ] }
+}
+```
+
+Ошибки: `Действие 1: укажите поле назначения (object.поле или v1.поле)`, `Действие 1: укажите значение` (для **Равен переменной** и **Расчёт**); сервер: `"object" must point to a field, e.g. object.name`, `Change type must be one of: set_value, set_from_variable, calculate, template, date_shift, increment, decrement, clear, append, prepend, remove, map, aggregate`, `Must be true or false` (`save_to_crm`), `Variable "object_before" is read-only` (цель `object_before.*`, `sys.*`, `config.*`; то же для `save_object`), `Variable "deals" is a record list; use foreach to change its records` (цель — список `find_records`), `Variable "calc" is local (set_variable) and cannot be saved to the CRM` (`save_to_crm` для локальной переменной), `The process runs only on delete: the deleted record cannot be saved` (`save_to_crm` для `object` в процессе с `trigger_on: ["delete"]`).
 
 ## Сохранить в CRM
 
@@ -126,6 +233,11 @@
 | У переменной нет `id` (создана в процессе или не найдена предзагрузкой и потом изменена) | `POST /{module}` со всеми полями — новая запись; новый `id` записывается обратно в переменную |
 | Переменная пустая (предзагрузка ничего не нашла) | Шаг **Пропущен**: `Variable "v1" is empty (object was not loaded) — nothing to save` |
 | Модуль неизвестен | Шаг **Ошибка**: `Cannot save "task": CRM module is unknown (set "module" in the save action)` |
+| `object` в событии удаления (`event_type: delete`) | Шаг **Пропущен**: `Record was deleted in the CRM — nothing to save` |
+| Переменная-список, локальная переменная или данные итерации цикла | Шаг **Ошибка** (обычно отклоняется уже при сохранении процесса) |
+
+**Аудит шага.** `request_data`: `target`, `method` (`PUT` / `POST`), `module`, `id` (для `PUT`), `attributes` —
+отправленные поля. `result_data`: `saved: true`, `response` (ответ CRM), для `POST` — `created_id`.
 
 Модуль берётся из строки, а если там пусто — из переменной: для `object` это модуль события, для переменной предзагрузки — её модуль.
 
@@ -139,15 +251,29 @@
 
 Ответы CRM: 5xx, таймауты и сетевые ошибки повторяются; 4xx (ошибка валидации в CRM, нет записи при PUT) сразу завершают шаг ошибкой.
 
-Ошибки: `Действие 2: укажите сохраняемую переменную`; сервер: `Invalid CRM module`, `Mode must be "changed" or "full"`, `Variable "x" is not defined at this point`.
+Повтор после создания записи (`POST`): если CRM ответила `5xx` или воркер упал уже после того, как CRM создала запись,
+повтор шага отправит `POST` снова и может создать вторую запись — журнала побочных эффектов у записи в CRM нет.
+Для важных созданий проверяйте дубль заранее (`find_records` по уникальному полю + `condition`).
+
+Ошибки: `Действие 2: укажите сохраняемую переменную`; сервер: `Invalid CRM module`, `Mode must be "changed" or "full"`, `Variable "x" is not defined at this point`, `Variable "sys" is read-only`, `Variable "deals" is a record list; use foreach to change its records`, `Variable "calc" is local (set_variable) and cannot be saved to the CRM`, `The process runs only on delete: the deleted record cannot be saved`.
 
 ## Запустить следующий процесс
 
-Асинхронно запускает один или несколько **ведомых** процессов; текущий процесс их не ждёт. Ведомый процесс получает то же событие и все переменные. Подробности, ограничения и примеры — в разделе [Ведомые процессы](subprocesses.md).
+Асинхронно запускает один или несколько **ведомых** процессов; текущий процесс их не ждёт. Ведомый процесс получает то же событие и копию всех переменных. Подробности, ограничения и примеры — в разделе [Ведомые процессы](subprocesses.md).
 
 ```json
 { "type": "start_process", "process_id": 4 }
 ```
+
+| Поле | Тип | Обязательно | Описание |
+|---|---|---|---|
+| `process_id` | целое | `process_id` или `process_ids` | id ведомого процесса (`is_child: true`) |
+| `process_ids` | список целых | `process_id` или `process_ids` | Несколько ведомых процессов, по порядку; повторы убираются |
+
+- Неактивный ведомый процесс пропускается, шаг успешен: `result_data.children[i] = {process_id, name, status: "skipped", reason: "Process is inactive"}`; запущенный — `status: "started"`.
+- Повтор шага после сбоя не запускает ведомый процесс второй раз; в цикле — по ведомому выполнению на итерацию.
+- Глубина цепочки — не больше `MAX_CHILD_DEPTH` (10): `Maximum child process depth (10) exceeded`.
+- Ошибки сохранения: `Child process is required`, `Process id must be an integer`, `A process cannot start itself`, `Process 42 not found`, `Process 42 "…" is not a child process`, `422 CYCLE_DETECTED`.
 
 ## Отправить письмо
 
@@ -174,7 +300,7 @@
 
 | Поле | Обязательно | Описание |
 |---|---|---|
-| `transport` | нет | Ссылка на секрет `secret://name` вида `smtp_dsn` со строкой подключения (`smtp://user:pass@host:587`, `smtps://…`). Не задано — транспорт по умолчанию `MAILER_DSN`. Нет ни того, ни другого — ошибка сохранения процесса |
+| `transport` | нет | Ссылка на секрет `secret://name` вида `smtp_dsn` (или `generic`) со строкой подключения (`smtp://user:pass@host:587`, `smtps://…`). Не задано — транспорт по умолчанию `MAILER_DSN`. Нет ни того, ни другого — ошибка сохранения процесса |
 | `from` | нет | `"crm@company.ru"` или `{ "email": …, "name": "<шаблон>" }`. По умолчанию — `MAILER_FROM` / `MAILER_FROM_NAME`. Если задан `MAILER_ALLOWED_FROM` (адреса или домены `@company.ru`), другой отправитель не сохраняется — защита от подделки |
 | `to` | да | Список получателей, хотя бы один (формы — ниже) |
 | `cc`, `bcc`, `reply_to` | нет | Списки получателей |
@@ -270,6 +396,14 @@
 Результат: `sent`, `message_id`, `recipients`, `replayed`, при необходимости `invalid_recipients`, `rate_limited`,
 `crm_history_id` / `crm_history_error`.
 
+![Шаг send_email в журнале выполнения](../../images/screenshots/ru/23-execution-detail-email.png)
+
+*Раскрытый шаг `send_email`: в «Запрос» — получатели, тема и политика доставки, в «Результат» — число получателей и Message-ID.*
+
+![Письмо в Mailpit](../../images/screenshots/ru/24-mailpit-letter.png)
+
+*То же письмо в Mailpit на стенде: шаблон темы и HTML подставлен, `{{ config.manager_email }}` взят из констант процесса.*
+
 ### Пример: приветственное письмо новому лиду
 
 ```json
@@ -305,17 +439,23 @@
 | Ошибка | Поле |
 |---|---|
 | `At least one recipient is required` | `…to` |
+| `Must be a list of recipients` | `…cc`, `…bcc`, `…reply_to` |
 | `Recipient must be an email, a template or {"path": ...}`, `Invalid email address "abc"` | `…to[i]`, `…cc[i]`, … |
 | `Variable "owner" is not defined at this point` | `…to[i].path` |
 | `Subject is required` | `…subject` |
 | `Email body is required (text or html)` | шаг |
+| `Template must be a string` | `…text`, `…html`, `…headers.<имя>`, `…save_to_crm.fields.<поле>` |
 | `Unknown template filter "foo"` и другие ошибки шаблона | `…subject`, `…text`, `…html`, `…headers.*` |
 | `Sender must be an email or {"email": ..., "name": ...}`, `Sender address is not allowed`, `Sender is required (set "from" or MAILER_FROM)` | `…from` |
 | `Transport must be a secret reference (secret://name)`, `No mail transport configured (set MAILER_DSN or "transport")`, `Secret must be of kind smtp_dsn, got …`, `Secret "x" does not exist` | `…transport` |
+| `Must be an object of header => template` | `…headers` |
 | `Header "From" cannot be set here`, `Invalid header name` | `…headers.<имя>` |
 | `Must be "skip" or "fail"` | `…on_empty_recipients` |
 | `Attachments are not supported yet`, `CRM e-mail templates are not supported yet` | `…attachments`, `…template` |
-| `Invalid CRM module`, `Variable "x" is not defined at this point` | `…save_to_crm.module`, `…save_to_crm.parent` |
+| `Must be an object {"module": ..., "parent": ...}` | `…save_to_crm` |
+| `Invalid CRM module`, `Must be a variable name`, `Variable "x" is not defined at this point` | `…save_to_crm.module`, `…save_to_crm.parent` |
+| `Must be an object of field => template` | `…save_to_crm.fields` |
+| `Delivery must be "at_most_once" or "at_least_once"` | `…delivery` |
 
 Ошибки выполнения: `Email body is empty`, `No valid recipients` (при `on_empty_recipients: fail`),
 `Too many recipients (N > 50)`, ошибки транспорта из таблицы выше.
@@ -412,6 +552,8 @@ OAuth2) маскируются в аудите, журнале и **в пере�
 - Поля `extract` — на верхнем уровне: `erp.order_id`. JSONPath в синтаксисе Гёсснера (`$.data.id`, `$.items[0]`,
   `$..id`, фильтры `[?(@.qty > 3)]`): ничего не нашлось → `null`, одно совпадение → значение, несколько → список.
   Нельзя называть поля `status`, `ok`, `headers`, `body`, `body_text`, `body_truncated`.
+- Тот же разбор JSONPath используют функции выражений `json_get` / `json_get_all` (см. [JSON](change-types-and-expressions.md#json)) —
+  ими можно достать значение из `erp.body` позже, в `calculate`.
 - Вложенные поля читаются обычным путём: `erp.body.data.items`.
 - У переменной нет модуля CRM; чтобы сохранить её в CRM, укажите `module` в `save_object`.
 
@@ -438,6 +580,10 @@ OAuth2) маскируются в аудите, журнале и **в пере�
 Запрос шага: `method`, `url` (с query; секреты маскируются), список имён заголовков, `body_size`, `body_preview`
 (500 символов), `delivery`. Результат: `status`, `duration_ms`, `var`, `replayed`, `response` (переменная; тело длиннее
 2000 символов — превью `body_preview`).
+
+![Шаг http_request в журнале выполнения](../../images/screenshots/ru/22-execution-detail-http.png)
+
+*Раскрытый шаг `http_request`: запрос (URL, метод, имена заголовков, превью тела) и ответ с извлечёнными значениями; следующий шаг `modify` использует `erp.*`.*
 
 ### Пример: лид в ERP и номер заказа обратно в CRM
 
@@ -470,17 +616,19 @@ OAuth2) маскируются в аудите, журнале и **в пере�
 |---|---|
 | `Method must be one of: GET, HEAD, POST, PUT, PATCH, DELETE` | `…method` |
 | `URL is required`, `Scheme and host of the URL must be literal (https://host/...)`, `Plain http is not allowed (HTTP_ALLOW_PLAIN_HTTP=false)`, `Secret must be of kind webhook_url, got …`, ошибки шаблона, `Variable "v9" is not defined at this point` | `…url` |
-| `Must be an object of name => template`, `Header "Host" cannot be set here` | `…query`, `…headers.<имя>` |
-| `Must be one of: none, bearer, basic, api_key, oauth2_client_credentials`, `Credentials must reference a secret (secret://name)`, `Must be "header" or "query"` | `…auth.*` |
-| `A body is not allowed for GET`, `Must be one of: json, form, raw`, `Content type is required for a raw body`, `Multipart body is not supported yet` | `…body.*` |
-| `Must be one of: auto, json, text, none`, `Invalid field name (reserved: …)`, `JSONPath must start with "$"`, `Invalid JSONPath: …` | `…response.*` |
+| `Must be an object of name => template`, `Header "Host" cannot be set here`, `Template must be a string` | `…query`, `…headers`, `…query.<имя>`, `…headers.<имя>` |
+| `Must be an object {"type": ...}`, `Must be one of: none, bearer, basic, api_key, oauth2_client_credentials`, `Credentials must reference a secret (secret://name)`, `Must be "header" or "query"`, `Invalid header or parameter name`, `Must be "header" or "body"` | `…auth`, `…auth.*` |
+| `A body is not allowed for GET`, `Must be an object {"type": "json" \| "form" \| "raw", "value": ...}`, `Must be one of: json, form, raw`, `Content type is required for a raw body`, `Multipart body is not supported yet` | `…body.*` |
+| `Must be an object {"type": ..., "extract": {...}}`, `Must be one of: auto, json, text, none`, `Must be an object of field => JSONPath`, `Invalid field name (reserved: …)`, `JSONPath must start with "$"`, `Invalid JSONPath: …` | `…response.*` |
 | `Must be "2xx" or a list of codes and ranges (200, "2xx")` | `…success_codes` |
 | `Must be an integer between 1 and 30` / `… 0 and 5` | `…timeout`, `…connect_timeout`, `…follow_redirects` |
 | `Must be a header name or null` | `…idempotency_header` |
-| `Variable name is required (letters, digits, "_"; not object, object_before, sys)` | `…var` |
+| `Variable name is required (letters, digits, "_"; not object, object_before, sys)` (также для `config`) | `…var` |
+| `Delivery must be "at_most_once" or "at_least_once"` | `…delivery` |
 
 Ошибки выполнения: `Destination address is not allowed (private network)`, `Host "x" is not allowed`,
-`Port N is not allowed`, `DNS lookup failed for "x"`, `Secret "x" is not allowed for host "y"`, `Response is too large`,
+`Port N is not allowed`, `DNS lookup failed for "x"`, `Secret "x" is not allowed for host "y"` (`SECRET_HOST`),
+`Request body is too large (more than 1048576 bytes)`, `Secret "x" has no field "y"`, `Response is too large`,
 `Response is not valid JSON`, `HTTP 4xx from host`, `UNKNOWN_OUTCOME` — см. [Решение проблем](../04-operations/troubleshooting.md).
 
 ## Уведомление
@@ -594,6 +742,7 @@ CRM получает относительную ссылку, мессендже
 | `Chat id is required` | `…channels[i].chat_id` |
 | `Must be adaptive_card or message_card` | `…channels[i].format` |
 | `Must be "any" or "all"` | `…fail_on` |
+| `Delivery must be "at_most_once" or "at_least_once"` | `…delivery` |
 
 ## Записать в переменную процесса
 
@@ -684,6 +833,7 @@ CRM получает относительную ссылку, мессендже
 | неизвестный тип изменения | `Change type must be one of: …` (путь `…fields[k].change_type` / `…fields.<имя>.change_type`) |
 | ошибки значения | как у типа изменения, с путём поля |
 | `save_object` / `save_to_crm` для локальной переменной | `Variable "calc" is local (set_variable) and cannot be saved to the CRM` |
+| элемент `fields`-объекта не объект | `Must be an object {"change_type": ..., "value": ...}` |
 
 ## Связать / отвязать записи
 
@@ -784,6 +934,10 @@ CRM получает относительную ссылку, мессендже
 | `Relationship fields must be an object of scalar values`, `Fields are not used when unlinking` | `…fields` |
 | `Must be "warn" or "error"`, `Must be "skip" or "error"` | `…on_not_found`, `…on_missing_record` |
 
+**Ошибки выполнения:** `Cannot link "meeting": CRM module is unknown (set "module")`,
+`Too many related ids (612 > 500)`, `Related records not found in the CRM: id1, id2` (при `on_not_found: error`; в
+`details.result` — полный ответ), `CRM_CAPABILITY_MISSING` (плагин без возможности `relationships`).
+
 ## Назначить ответственного
 
 Действие `assign` ставит в поле пользователя записи (по умолчанию `assigned_user_id`) сотрудника, выбранного **по
@@ -878,7 +1032,7 @@ u3 назначено u3 (`counts`: u1 = 2, u3 = 0). Обращение u3 пе�
 | `Must be true or false` | `…only_active`, `…save_to_crm` |
 
 **Ошибки выполнения:** `assign: pool is empty` и другие причины при `fallback: error`, `Security group "x" not found in
-CRM`, `assign: pool is too large (N > 200)`, `Pool is too large for least_busy (N > 50)`.
+CRM`, `assign: security group id is empty` (путь `security_group.path` дал пустое значение), `assign: pool is too large (N > 200)`, `Pool is too large for least_busy (N > 50)`.
 
 ## Найти записи
 
@@ -1031,6 +1185,10 @@ CRM`, `assign: pool is too large (N > 200)`, `Pool is too large for least_busy (
 | `Must be one of: truncate, error`, `Must be one of: empty_result, ignore_condition, error` | `…on_limit`, `…on_empty_value` |
 | `Variable "deals" is a record list; use foreach to change its records` | `…target` у `modify` / `save_object` |
 
+**Ошибки выполнения:** `find_records: CRM module of "x" is unknown (set related_to.module)`,
+`find_records: more than N records match (on_limit=error)`, `find_records: result is too large (…)`,
+`CRM_CAPABILITY_MISSING`, ошибка пустого значения при `on_empty_value: error`.
+
 ## Изменить записи списка
 
 Действие `update_records` меняет **одни и те же поля у всех записей** списка, найденного шагом
@@ -1144,6 +1302,10 @@ error}`, где `status` — `updated`, `unchanged`, `skipped_no_id` или `err
 [Найти записи](#найти-записи), связанных записей или значений, которые вернуло выражение. Это аналог «Итератора»
 Битрикс24 и изменения связанных записей в AOW. Без цикла массовые операции невозможны: «сменить ответственного у всех
 открытых сделок контрагента», «каждому участнику встречи — письмо», «сумма по строкам, кроме отменённых».
+
+![Шаги find_records и foreach](../../images/screenshots/ru/21-execution-detail-foreach.png)
+
+*Выполнение с `find_records` и `foreach`: итоговая запись цикла (`count`, `processed`, `failed_items`) и шаги тела цикла для каждого найденного контакта.*
 
 ### Формат
 
@@ -1440,6 +1602,10 @@ on_item_error, has_where}`, `result_data = {count, truncated, source_missing}`; 
 { "id": "remind", "type": "delay", "mode": "until", "until": "object.end_date", "cast": "date", "time": "09:00", "offset": "-P30D" }
 ```
 
+![Выполнение в статусе «Ожидает»](../../images/screenshots/ru/20-execution-detail-waiting.png)
+
+*Выполнение, остановленное на `delay`: статус «Ожидает», шаги до паузы уже выполнены, остальные выполнятся после пробуждения.*
+
 ### Поля
 
 | Поле | Обязательно | Описание |
@@ -1519,6 +1685,7 @@ on_item_error, has_where}`, `result_data = {count, truncated, source_missing}`; 
 | Срок дальше предела | `delay: wait of 500 days exceeds the limit P400D` |
 | Момент прошёл при `if_past: fail` | `delay: the moment 2026-01-01T00:00:00+00:00 has already passed` |
 | Выражение вернуло неверную длительность | `delay: invalid duration "soon"` |
+| Неверный сдвиг при выполнении | `delay: invalid offset "…"` |
 | Снимок выполнения слишком большой для парковки | `Execution state is too large to wait (N bytes, limit M)` |
 
 Ошибки даты при `on_invalid: continue` не останавливают выполнение: шаг `skipped` с `Delay skipped: …`.
@@ -1549,9 +1716,10 @@ on_item_error, has_where}`, `result_data = {count, truncated, source_missing}`; 
 Предупреждение не мешает сохранению: в выполнении такая переменная ведёт себя как ненайденная (условие по ней ложно,
 выражение получает пустое значение, `save_object` даёт `skipped`).
 
-Ошибки сохранения: `Step id must match ^[a-z][a-z0-9_]{0,63}$`, `Step id "x" is already used at …`,
+Ошибки сохранения: `Action must be an object`, `Row must be an object` (строка `definition.preload`), `Step id must match ^[a-z][a-z0-9_]{0,63}$`, `Step id "x" is already used at …`,
 `Step name must be a string up to 255 characters`, `Nesting is too deep (max 5)`, `Unknown action type` (для
-неизвестного типа во вложенном списке); ошибки самого блока — в разделе [Условие](#ошибки-и-предупреждения-при-сохранении).
+неизвестного типа во вложенном списке), `Action "modify" does not support "delivery"` (поле `delivery` у действия без
+внешнего вызова), `Delivery must be "at_most_once" or "at_least_once"`; ошибки самого блока — в разделе [Условие](#ошибки-и-предупреждения-при-сохранении).
 
 ## Ошибки шага: on_error и повторы
 

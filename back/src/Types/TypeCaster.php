@@ -75,6 +75,35 @@ final class TypeCaster
     }
 
     /**
+     * Value → list for list functions (md/tasks_list/done/5.2.5-expr-lists.md §4.1): unlike cast(List) it keeps the
+     * element types, so lists of CRM records survive. An array stays as is, null / '' → [], a JSON array in a string is
+     * decoded, any other string is one element or is split by separator (wrapper cuts the multienum frame).
+     *
+     * @return list<mixed>
+     */
+    public function toList(mixed $value, ?string $separator = null, ?string $wrapper = null): array
+    {
+        if (is_array($value)) {
+            return array_values($value);
+        }
+        if ($value === null) {
+            return [];
+        }
+        if (is_string($value)) {
+            if (trim($value) === '') {
+                return [];
+            }
+            $trimmed = trim($value);
+            if ($separator === null) {
+                $decoded = str_starts_with($trimmed, '[') ? json_decode($trimmed, true) : null;
+                return is_array($decoded) && array_is_list($decoded) ? $decoded : [$value];
+            }
+            return self::splitListItems($trimmed, $separator, $wrapper);
+        }
+        return [$value];
+    }
+
+    /**
      * Equality of two values cast with the same options.
      */
     public function equals(mixed $a, mixed $b, CastOptions $options): bool
@@ -313,6 +342,34 @@ final class TypeCaster
             $value = substr($value, 0, -strlen($wrapper));
         }
         return explode($wrapper . $options->separator . $wrapper, $value);
+    }
+
+    /**
+     * Splits a string for to_list(): items are trimmed, empty ones dropped, an outer wrapper is removed.
+     *
+     * @return list<string>
+     */
+    private static function splitListItems(string $value, string $separator, ?string $wrapper): array
+    {
+        if ($wrapper === null || $wrapper === '') {
+            $parts = explode($separator, $value);
+        } else {
+            if (str_starts_with($value, $wrapper)) {
+                $value = substr($value, strlen($wrapper));
+            }
+            if (str_ends_with($value, $wrapper)) {
+                $value = substr($value, 0, -strlen($wrapper));
+            }
+            $parts = explode($wrapper . $separator . $wrapper, $value);
+        }
+        $result = [];
+        foreach ($parts as $part) {
+            $item = self::trimUnicode($part);
+            if ($item !== '') {
+                $result[] = $item;
+            }
+        }
+        return $result;
     }
 
     /**

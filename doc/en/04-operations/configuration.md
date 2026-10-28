@@ -24,6 +24,26 @@ empty one. Values are read once at start: restart the backend after a change.
 > `back/.env` is excluded from the Docker build context (`.dockerignore`), so the container always starts from a copy of
 > `back/.env.example`. Configure a containerised backend through `docker-compose.yml` / `./.env`, not through `back/.env`.
 
+### How values are parsed
+
+`Wps\Kernel\Env` and `AppConfig::fromEnv()` parse environment strings with the same rules:
+
+| Kind of value | Rule | Example |
+|---|---|---|
+| Line of `back/.env` | `KEY=value`; lines starting with `#` and lines without `=` are skipped; `"…"` / `'…'` quotes around the value are removed | `MAILER_FROM_NAME="WPS bot"` |
+| Integer (`Env::int`) | not a number or empty — the default; then the bounds (`max(…)`, `min(…)`) of `AppConfig` are applied | `WAIT_POLL_INTERVAL_MS=50` → `100` |
+| Float (`Env::float`) | the same | `CRM_API_TIMEOUT=2.5` |
+| Boolean (`Env::bool`) | `1`, `true`, `yes`, `on` (case-insensitive) — true, any other non-empty value — false | `APP_DEBUG=on` |
+| Flags `HTTP_ALLOW_PLAIN_HTTP`, `HTTP_TLS_VERIFY` | switched off **only** by the string `false`; any other value keeps them on | `HTTP_TLS_VERIFY=0` — verification **stays on** |
+| Lists (`HTTP_*_HOSTS`, `HTTP_*_PORTS`, `HTTP_ALLOW_PRIVATE_CIDRS`, `MAILER_ALLOWED_FROM`) | comma separated, trimmed, lower-cased, empty items dropped; non-numeric items of port lists are ignored | `HTTP_ALLOW_HOSTS=api.example.com, *.erp.local` |
+| Enumerations (`ACTION_RETRY_JITTER`, `CRM_ALERT_PROFILE`) | an unknown value is silently replaced by the default | `ACTION_RETRY_JITTER=random` → `full` |
+| Durations (`ACTION_RETRY_MAX_DELAY`, `DELAY_MAX`) | short form (`500ms`, `30s`, `10m`, `1h`, `2d`, `1w`, combinable: `1h30m`) or ISO 8601 (`PT5M`, `P400D`); for `ACTION_RETRY_MAX_DELAY` a bare number means milliseconds, months and years are not allowed, an unparsable value gives `1h` | `ACTION_RETRY_MAX_DELAY=15m` |
+| `DB_POSTGRES_*` and the `DB_*` synonyms | the first **non-empty** value of the pair is taken | `DB_HOST=db` works when `DB_POSTGRES_HOST` is not set |
+
+Values validated at start that stop the service: `WPS_TIMEZONE` (unknown zone) and `WPS_SECRETS_KEY` /
+`WPS_SECRETS_KEY_PREVIOUS` (not base64 of 32 bytes). Other mistakes are silently corrected by the bounds — check the
+effective values with the commands of [Checking the effective configuration](#checking-the-effective-configuration).
+
 ## Root `./.env` (Docker Compose)
 
 | Variable | Default in `docker-compose.yml` | Description |
@@ -34,9 +54,18 @@ empty one. Values are read once at start: restart the backend after a change.
 | `WPS_PG_PORT` | `5432` | Host port of PostgreSQL (this repo sets `55432`) |
 | `WPS_REDIS_STREAM_PORT` | `6379` | Host port of the event-bus Redis |
 | `WPS_REDIS_DATA_PORT` | `6380` | Host port of the data Redis |
+| `WPS_MAILPIT_PORT` | `8025` | Host port of the Mailpit web UI and API |
 | `CRM_API_BASE_URL` | `http://mock:9502` | Passed to the backend; CRM API base URL |
 | `CRM_API_STATIC_KEY` | `mySecretKey` | Passed to the backend; CRM API key prefix |
 | `MOCK_SERVICE_URL` | `http://mock:9502` | Passed to the backend; set it to an **empty** value to load the modules dictionary from the CRM |
+
+Besides these, `docker-compose.yml` passes the following to the backend from `./.env` or the command line (default after
+`:-`): `WPS_TIMEZONE` (`UTC`), `WPS_SECRETS_KEY` (a test key), `WPS_SECRETS_KEY_PREVIOUS` (empty), `MAILER_DSN`
+(`smtp://mailpit:1025`), `MAILER_FROM` (`wps@wps.local`), `MAILER_FROM_NAME` (`WPS`), `HTTP_ALLOW_PRIVATE_CIDRS`
+(`172.16.0.0/12,192.168.0.0/16`), `HTTP_DENY_HOSTS` (`localhost,metadata.google.internal,postgres,redis-stream,redis-data`),
+`RECOVERY_STALE_SECONDS` (`300`), `TELEGRAM_API_BASE` (`https://api.telegram.org`), `CRM_UI_BASE_URL` (empty),
+`CRM_ALERT_PROFILE` (`suitecrm8`). Add any other backend variable to the `environment:` section (or to
+`docker-compose.override.yml`) — a variable of `./.env` does not reach the container by itself.
 
 > **Warning**
 > This repository's `./.env` currently points the backend to a local SuiteCRM 8 (`CRM_API_BASE_URL=http://suitecrm8/api/v9`,
@@ -259,6 +288,8 @@ Details — [Reliability → Waiting executions](reliability.md#waiting-executio
 | `MOCK_REDIS_PASSWORD` | empty | Password |
 | `MOCK_REDIS_STREAM` | `crm_events` | Stream name |
 | `MOCK_CRM_STATIC_KEY` | empty (compose: `mySecretKey`) | Expected key prefix of `X-Auth-Key`; empty disables the check. Must equal `CRM_API_STATIC_KEY` |
+| `MOCK_CRM_CONTRACT` | `2.0` (compose) | API contract version of the mock: `2.0` or `1.0` (emulates an old plugin: `404` on `capabilities`, equality search only, no relationships or delete). Switchable at runtime: `PUT http://localhost:9502/mock/config {"contract": "1.0"}` |
+| `MOCK_PUBLISH_ON_WRITE` | `0` (compose) | `1` — the mock publishes a v2 event (with `before` and `wps_origin`) on every `POST`, `PUT`, `DELETE` through the API, like a CRM plugin. At runtime: `PUT /mock/config {"publish_on_write": true}` |
 
 ## PostgreSQL container
 
@@ -290,6 +321,32 @@ SwooleApp configuration. `server.php` overrides `server.*` and `SWOOLE.*` from t
 | `cyclic_jobs.monitoring_interval` | `60` | Interval of the framework health check of cyclic jobs, seconds (with `APP_DEBUG` it also logs job statistics) |
 | `StateContainerInitiation` | `["Wps\\State\\StateInitiation"]` | Builds `AppConfig` and the shared metrics table before workers fork |
 | `events` | `[]` | Framework events (not used) |
+
+## Checking the effective configuration
+
+```bash
+# what compose will pass to the containers (after ./.env and command-line variables)
+docker compose config | sed -n '/backend:/,/ports:/p'
+
+# environment of the running backend
+docker compose exec backend env | sort | grep -E '^(CRM_|MOCK_|WPS_|HTTP_|MAILER_|REDIS_|DB_)'
+
+# business time zone logged at start
+docker compose logs backend | grep 'Business time zone'
+# {"level":"info","message":"Business time zone","context":{"WPS_TIMEZONE":"UTC"},...}
+
+# capabilities of the CRM as the backend sees them (token of any role)
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:9501/api/dictionaries/crm-capabilities
+```
+
+Configuration errors at start (the service does not come up; the text is in `docker compose logs backend`):
+
+| Message | Cause |
+|---|---|
+| `WPS_TIMEZONE: unknown time zone "MSK" (use an IANA name, e.g. Europe/Moscow)` | Unknown time-zone name |
+| `WPS_SECRETS_KEY: expected base64 of 32 bytes (generate with: php bin/secrets-key.php)` | The secrets key is not base64 or not 32 bytes (the same for `WPS_SECRETS_KEY_PREVIOUS`) |
+| `[migrate] database is not reachable: …` | PostgreSQL unreachable for longer than `DB_WAIT_SECONDS` or wrong `DB_POSTGRES_*` |
+| `[migrate] 0NN_… failed: …` | A migration failed; its transaction is rolled back, the next start tries again |
 
 ## Example: production overrides
 

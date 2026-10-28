@@ -23,13 +23,19 @@ final class DefinitionScope
     public const CONDITIONAL = 'conditional';
 
     /** @var array<string, string> variable => kind (event|preload|created|conditional|...) */
-    private array $variables = [ExecutionContext::OBJECT => 'event', ExecutionContext::OBJECT_BEFORE => 'event_before', ExecutionContext::SYS => 'system'];
+    private array $variables = [
+        ExecutionContext::OBJECT => 'event',
+        ExecutionContext::OBJECT_BEFORE => 'event_before',
+        ExecutionContext::SYS => 'system',
+        ExecutionContext::CONFIG => 'system',
+    ];
 
     private ValidationLog $log;
 
     /**
      * @param bool $inheritsVariables child processes receive all variables of the parent,
      *                                so unknown variable names are allowed there
+     * @param list<string> $constants names of definition.constants (5.2.9): allowed config.* keys
      */
     public function __construct(
         public readonly ?int $processId = null,
@@ -37,6 +43,7 @@ final class DefinitionScope
         ?ValidationLog $log = null,
         /** @var list<string> event types of the process (6.2): saving "object" is pointless when it only runs on delete */
         public readonly array $triggerOn = Process::DEFAULT_TRIGGER_ON,
+        private readonly array $constants = [],
     ) {
         $this->log = $log ?? new ValidationLog();
     }
@@ -87,6 +94,9 @@ final class DefinitionScope
 
     public function declare(string $variable, string $kind): void
     {
+        if (in_array($variable, ExecutionContext::RESERVED, true)) {
+            return;
+        }
         if (!isset($this->variables[$variable]) || $this->variables[$variable] === self::CONDITIONAL) {
             $this->variables[$variable] = $kind;
         }
@@ -134,7 +144,7 @@ final class DefinitionScope
      */
     public function fork(): self
     {
-        $fork = new self($this->processId, $this->inheritsVariables, $this->log, $this->triggerOn);
+        $fork = new self($this->processId, $this->inheritsVariables, $this->log, $this->triggerOn, $this->constants);
         $fork->variables = $this->variables;
         return $fork;
     }
@@ -214,6 +224,29 @@ final class DefinitionScope
         if ($name === null && !$allowWholeVariable) {
             $this->error($field, "\"{$path}\" must point to a field, e.g. {$var}.name");
             return false;
+        }
+        if ($var === ExecutionContext::SYS) {
+            if ($name === null) {
+                return true;
+            }
+            $sysField = explode('.', $name)[0];
+            if (!in_array($sysField, ExecutionContext::SYS_FIELDS, true)) {
+                $available = implode(', ', array_map(static fn (string $f) => ExecutionContext::SYS . ".{$f}", ExecutionContext::SYS_FIELDS));
+                $this->error($field, "Unknown system variable \"{$var}.{$sysField}\"; available: {$available}");
+                return false;
+            }
+            return true;
+        }
+        if ($var === ExecutionContext::CONFIG) {
+            if ($name === null) {
+                return true;
+            }
+            $constant = explode('.', $name)[0];
+            if (!in_array($constant, $this->constants, true)) {
+                $this->error($field, "Constant \"{$constant}\" is not defined in definition.constants");
+                return false;
+            }
+            return true;
         }
         if (!$this->isDeclared($var) && !$this->inheritsVariables) {
             $this->error($field, "Variable \"{$var}\" is not defined at this point");

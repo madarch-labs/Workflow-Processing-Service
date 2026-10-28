@@ -15,11 +15,39 @@ How the PHP/Swoole backend is organised: layers, components, the process model a
 | HTTP | `Wps\Controllers\*`, `BaseController`, `Wps\Http\*` | One controller class per endpoint, response envelope, `ApiException` |
 | Security | `Wps\Middleware\AuthMiddleware`, `Wps\Auth\AccessPolicy`, `JwtService` | JWT check and role rules for every route |
 | Services | `Wps\Services\*` | Event processing, condition engine, execution engine, validation, CRM adapter, dictionaries, metrics |
-| Extension registries | `Wps\Actions`, `Wps\Comparators`, `Wps\Actions\ChangeTypes`, `Wps\LoadStrategies`, `Wps\Expression` | Pluggable action types, operators, change types, load strategies, expression functions |
-| Background jobs | `Wps\CyclicJobs\StreamConsumerJob`, `RecoveryJob` | Reading the stream; recovery of pending messages and interrupted executions |
+| Extension registries | `Wps\Actions`, `Wps\Comparators`, `Wps\Actions\ChangeTypes`, `Wps\LoadStrategies`, `Wps\Program\Blocks`, `Wps\Notify\Channels`, `Wps\Expression` | Pluggable action types, operators, change types, load strategies, blocks, notification channels, expression functions |
+| Background jobs | `Wps\CyclicJobs\StreamConsumerJob`, `RecoveryJob`, `WaitResumeJob` | Reading the stream (0.5 s); recovery of pending messages and interrupted executions, purge of the side-effect journal (30 s, first run 15 s after start); waking waiting executions (`WAIT_POLL_INTERVAL_MS`, first run 5 s after start) |
 | Persistence | `Wps\Persistence\*Repository`, `Process` | SQL access to PostgreSQL |
 | Infrastructure | `Wps\Infrastructure\Database`, `RedisConnection` | Coroutine connection pools (PDO pgsql, phpredis) |
 | Shared state | `Wps\State\StateInitiation`, `WpsState` | `AppConfig` and the shared metrics table, created once in the master process |
+
+### `back/src` directories
+
+| Directory | Content |
+|---|---|
+| `Kernel/` | `Container` (builds every service and registry), `Env`, `WpsApplication`, `WpsRoutesCollectionBuilder` |
+| `Config/`, `State/` | `AppConfig` (every environment variable with bounds), `StateInitiation` / `WpsState` (shared master-process state) |
+| `Controllers/` | REST endpoints (`#[Route]` attribute), dictionaries in `Controllers/Dictionaries/` (23 endpoints `/api/dictionaries/*`) |
+| `Auth/`, `Middleware/`, `Http/` | JWT, `AccessPolicy`, `AuthMiddleware`, `ApiException`, `JsonResponder` |
+| `Http/Outbound/` | Outgoing HTTP of `http_request` and messengers: `OutboundHttpClient`, `EgressGuard` (SSRF), `CidrList`, `JsonPathExtractor`, `Auth/OAuth2TokenProvider` |
+| `Services/` | Engine, conditions, stream, events, processes, validation (`Validation/DefinitionScope`), errors (`Errors/`), assignment (`Assign/`), `WaitService`, `MetricsService`, CRM adapter |
+| `Program/` | Flat-program compiler and interpreter, blocks, loops |
+| `Actions/` | Action handlers, `ChangeTypes/` (change types), `Support/RelatedIdsResolver` |
+| `Comparators/`, `Types/` | Condition operators; `TypeCaster`, `CastOptions`, `RelativeDate` |
+| `Expression/` | `ExpressionLexer` / `Parser` / `Engine`, `Decimal`, `SafeRegex`, functions `Functions/{Text,Number,Logic,Date,List,Type}Functions` |
+| `Template/` | `TemplateEngine`, parser, `TemplateValidator`, `EscapeMode`, `MissingPolicy` |
+| `Crm/` | `CrmFilter`, `FilterTranslator`, `FilterRulesValidator`, `CrmPage`, `CrmCapabilities*`, `CrmCallOrigin` |
+| `Events/`, `Context/` | `EventEnvelope`; `ExecutionContext`, `EventInfo` |
+| `Mail/` | `MailerFactory` (symfony/mailer), `MailRateLimiter`, recipients, SMTP error classification |
+| `Notify/` | `ChannelRegistry`, channels `crm_alert`, `telegram`, `slack`, `teams`, `RecordLinks` |
+| `Secrets/` | `SecretCipher` (XChaCha20-Poly1305), `SecretService`, `SecretResolver`, `SecretMasker`, `SecretUsageScanner` |
+| `SideEffects/` | `SideEffectLedger`, `DeliveryPolicy`, `UnknownOutcomeException` |
+| `Time/` | `Clock` (`SystemClock`, `FrozenClock`), `DateMath`, `Duration` |
+| `Persistence/` | PostgreSQL repositories, `Process` (definition normalisation) |
+| `Infrastructure/` | `Database` (PDO pgsql) and `RedisConnection` pools |
+| `CyclicJobs/` | `StreamConsumerJob`, `RecoveryJob`, `WaitResumeJob` |
+| `Support/` | `Logger` (JSON lines), `JsonPath`, `Transliterator`, `Uuid`, `Json` |
+| `Exceptions/` | `RecoverableException`, `NonRecoverableException`, `ConfigurationException`, `CrmApiException` … |
 
 ## Components
 
@@ -38,6 +66,7 @@ flowchart TB
     subgraph jobs["CyclicJobs"]
         consumer["StreamConsumerJob<br/>every 0.5 s"]
         recovery["RecoveryJob<br/>every 30 s"]
+        waitjob["WaitResumeJob<br/>every WAIT_POLL_INTERVAL_MS"]
     end
     subgraph services["Services"]
         stream["StreamService"]
@@ -72,6 +101,7 @@ flowchart TB
     events --> engine
     recovery --> stream
     recovery --> engine
+    waitjob --> engine
     engine --> cond --> comparators
     engine --> actions
     engine --> audit
@@ -221,11 +251,17 @@ restart of the service (customer answers #25, #26). Step-by-step guides are in t
 
 | Extension point | Interface | Built-in | Registered in |
 |---|---|---|---|
-| Action type | `ActionHandlerInterface` | `preload`, `modify`, `save_object`, `start_process` | `Container::actions()` |
-| Comparison operator | `ComparatorInterface` | `equals`, `not_equals`, `contains`, `not_contains` | `ComparatorRegistry::default()` |
-| Change type | `ChangeTypeInterface` | `set_value`, `set_from_variable`, `calculate` | `Container::changeTypes()` |
+| Action type | `ActionHandlerInterface` | `preload`, `modify`, `save_object`, `set_variable`, `find_records`, `update_records`, `delay`, `send_email`, `http_request`, `assign`, `notify`, `link_records`, `unlink_records`, `start_process` (14) | `Container::actions()` |
+| Block | `BlockTypeInterface` | `condition`, `foreach`, `stop_process` | `Container::blocks()` (`BlockTypeRegistry`) |
+| Comparison operator | `ComparatorInterface` | 25: `equals`, `not_equals`, `greater_than`, `greater_or_equal`, `less_than`, `less_or_equal`, `between`, `not_between`, `in`, `not_in`, `contains`, `not_contains`, `starts_with`, `ends_with`, `contains_any`, `contains_all`, `contains_none`, `is_empty`, `is_not_empty`, `is_null`, `is_not_null`, `changed`, `not_changed`, `changed_to`, `changed_from` | `ComparatorRegistry::default()` |
+| Change type | `ChangeTypeInterface` | 13: `set_value`, `set_from_variable`, `calculate`, `template`, `date_shift`, `increment`, `decrement`, `clear`, `append`, `prepend`, `remove`, `map`, `aggregate` | `Container::changeTypes()` |
 | Load strategy | `LoadStrategyInterface` | `by_id`, `by_field` | `LoadStrategyRegistry::default()` |
-| Expression function | `callable` | `concat`, `upper`, `lower`, `trim`, `len`, `substr`, `round`, `abs`, `min`, `max` | `ExpressionEngine::registerDefaultFunctions()` / `Container::expressions()` |
+| Notification channel | `ChannelInterface` | `crm_alert`, `telegram`, `slack`, `teams` | `Container::notifyChannels()` (`ChannelRegistry`) |
+| Expression function | `callable` + dictionary description | 121 functions in the groups `string` (35), `number` (14), `logic` (5), `date` (32), `list` (18), `type` (17); the same functions are template filters (plus `raw`) | `ExpressionEngine::registerFunction()`: built-ins, `DateFunctions::register()`, `TypeFunctions::register()` in `Container::expressions()` |
+
+The class diagram above shows the design with the original implementations; the full current lists are served by the
+dictionaries `GET /api/dictionaries/action-types`, `operators`, `change-types`, `notify-channels`, `functions`,
+`template-filters`.
 
 ## Errors
 

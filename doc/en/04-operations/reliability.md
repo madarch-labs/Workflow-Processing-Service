@@ -104,6 +104,34 @@ When a step fails finally, its `on_error` applies. By default (`stop`) the remai
 snapshot is saved. With `continue` / `goto` the error is handled: the step audit has `handled`, the execution's
 `handled_errors` grows, metric `wps_step_errors_handled_total`.
 
+The `retry` profile of a step and the bounds of its fields:
+
+| `retry` field | Default | Bound / format |
+|---|---|---|
+| `max_attempts` | `ACTION_RETRY_MAX + 1` (4) | at most 20 attempts (including the first) |
+| `base_delay` | `ACTION_RETRY_BASE_DELAY_MS` (1 s) | duration (`500ms`, `2s`, `PT1M`) |
+| `backoff` | `ACTION_RETRY_BACKOFF` (2) | number ≥ 1 |
+| `max_delay` | `ACTION_RETRY_MAX_DELAY` (1 h) | at most 7 days |
+| `jitter` | `ACTION_RETRY_JITTER` (`full`) | `none`, `full`, `equal` |
+| `retry_on` | `["transient"]` | `transient`, `5xx`, `4xx`, `any` or specific HTTP codes (`"409"`) |
+| `respect_retry_after` | `true` | honour `Retry-After` of `429` / `503` answers |
+
+Errors marked permanent (`CONFIG`, `CRM_CAPABILITY_MISSING`, `UNKNOWN_OUTCOME`) are never retried, even with
+`retry_on: ["any"]`.
+
+**Handling a final error (`on_error`).**
+
+| `on_error` | Where the execution goes | Step audit | Execution |
+|---|---|---|---|
+| `stop` (default) | nowhere; inside a `foreach` with `on_item_error: continue` — to the next item (`handled = item_continue`) | `failed` | `failed` (or the loop goes on) |
+| `continue` | the next instruction; for a failed `condition` block — past the whole block | `failed`, `handled = continue` | goes on, `handled_errors + 1` |
+| `{"goto": "<step id>"}` | only **forward** to a top-level step with this `id`; open loops are closed (`left_by: goto`) | `failed`, `handled = goto` | goes on, `handled_errors + 1` |
+
+A handled error is kept in `sys.last_error` (`step_id`, `step_path`, `action_type`, `code`, `message`, `http_status`,
+`attempts`, `at`, `iteration`), the counter in `sys.errors_count`; later steps can use them (for example, send an error
+notification). `stop_process` with `failed` is an intended end, not a step error: `on_error` does not catch it. An
+execution whose errors are all handled ends as `completed`.
+
 > **Warning**
 > A retry repeats the whole step. If the CRM applied a `PUT`/`POST` but the answer was lost (timeout), the request is sent
 > again. `PUT` is naturally idempotent; a `POST` (creating a new record) can create a duplicate.
@@ -234,6 +262,25 @@ through `GET /api/executions/{id}/side-effects`.
 **Retention.** Rows are deleted together with their execution (cascade) and hourly when older than
 `SIDE_EFFECTS_RETENTION_DAYS` (30 days; `RecoveryJob` purges them, one worker per hour thanks to the Redis key
 `side_effects:purge`). A dry run (task 7.6) does not use the journal and makes no external calls.
+
+## Restarts and loss of components
+
+What happens to the work when a component stops or is lost:
+
+| Event | Running executions | Waiting (`waiting`) | Stream messages | Other |
+|---|---|---|---|---|
+| `docker compose restart backend` / `SIGTERM` | Stay `running` with the state in Redis; `RECOVERY_STALE_SECONDS` after start `RecoveryJob` continues them from the interrupted instruction (the interrupted step runs again) | Not affected: the state is in PostgreSQL, woken after the start | Unacknowledged ones stay pending; `XAUTOCLAIM` takes them after `REDIS_STREAM_CLAIM_IDLE_MS` | Metrics are reset; new consumers `{hostname}-{pid}` appear in the group |
+| `SIGKILL` of a worker / container in the middle of a step | The same; for `send_email`, `notify`, `http_request` with `at_most_once` the interrupted call gives `UNKNOWN_OUTCOME` instead of a repeat | Not affected | The same | — |
+| A retry pause inside the worker (≤ `WAIT_INLINE_MAX_SECONDS`) is interrupted | Status `retrying`; recovered as `running` | — | — | The attempt count continues from Redis |
+| Loss of `redis-data` (no AOF or flushed) | Executions in `running`/`retrying` are marked `failed` ("Execution context expired or lost") | Not affected (except `assign` queues and caches) | A re-delivered event whose `idem:*` key is lost starts the process again | Caches, idempotency keys, mail limits, `assign` queues, OAuth2 tokens are recreated |
+| Loss of `redis-stream` | Not affected | Not affected | Unacknowledged and unread events are lost; the group is recreated with id `0` | The CRM plugin logs `[WPS] publish failed` while Redis is down |
+| PostgreSQL unavailable | The step fails with the transient error `DATABASE` and is retried; the stream message stays pending | Waking is postponed until the database is back | Stay pending | `/api/health` → `503` |
+| CRM unavailable | CRM steps are retried per `retry`, then `failed` (or `on_error`) | Woken on time, the step behaves the same | Acknowledged (a step error is not an infrastructure error) | — |
+
+Upgrading the backend with a changed program compiler: executions whose `program_hash` does not match end as `failed`
+("Program changed after an upgrade; the execution cannot be resumed safely", metric `wps_program_resume_mismatch_total`).
+Before an upgrade wait until there are no `running` and `retrying` executions; waiting executions continue with the
+snapshot of their definition.
 
 ## Run once per record
 

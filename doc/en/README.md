@@ -8,7 +8,7 @@ Start with [Quick start](02-getting-started/quick-start.md) if you want to see W
 
 ## 1. Overview
 
-- [Overview](01-overview/index.md) — What Workflow Processing Service (WPS) is, what problems it solves and where to start reading.
+- [Overview](01-overview/index.md) — What Workflow Processing Service (WPS) is, what problems it solves, the full feature list, what is configured in the editor and what through the API, and where to start reading.
 - [Glossary](01-overview/glossary.md) — Terms used across the WPS documentation and UI, with their Russian equivalents and the names used in code.
 
 ## 2. Getting started
@@ -26,10 +26,10 @@ Start with [Quick start](02-getting-started/quick-start.md) if you want to see W
 - [Change types and expressions](03-user-guide/change-types-and-expressions.md) — How a **Modify object / variable** row computes the new value: a fixed value, a copy of another field, or a calculated expression.
 - [Child processes](03-user-guide/subprocesses.md) — How to split a scenario into a parent and child processes, what a child receives and how it is started.
 - [Secrets](03-user-guide/secrets.md) — How an administrator stores credentials of external systems in WPS and how a process refers to them without seeing the value.
-- [Executions and audit](03-user-guide/executions-and-audit.md) — Where to see every run of a process, how to read an execution page and how to find the cause of an error.
+- [Executions and audit](03-user-guide/executions-and-audit.md) — Where to see every run of a process, what the statuses mean, how to read an execution page, the side-effect journal and how to find the cause of an error.
 - [Manual run and run-once reset](03-user-guide/manual-run-and-reset.md) — How to run a process with a test object without the CRM, and how to lift the "run once per record" restriction.
 - [Users and roles](03-user-guide/users-and-roles.md) — Who can do what in WPS, how an administrator manages users and why to change the default password first.
-- [Recipes](03-user-guide/recipes.md) — Eight ready-made end-to-end scenarios: what each process does, how to set it up, its JSON and how to test it with the mock CRM.
+- [Recipes](03-user-guide/recipes.md) — 59 ready-made end-to-end scenarios: what each process does, its complete JSON and how to check it — from a simple "deal → VIP account" to loops, pauses, e-mails, HTTP requests, list and JSON functions, constants and system variables.
 
 ## 4. Operations
 
@@ -81,7 +81,7 @@ Start with [Quick start](02-getting-started/quick-start.md) if you want to see W
 
 ## 8. FAQ
 
-- [FAQ](08-faq.md) — Short answers to frequent questions about WPS, with links to the detailed pages.
+- [FAQ](08-faq.md) — Short answers to frequent questions about WPS: triggering and conditions, the editor and the API, expressions, e-mails and integrations, waits and errors, reliability, administration.
 
 ---
 

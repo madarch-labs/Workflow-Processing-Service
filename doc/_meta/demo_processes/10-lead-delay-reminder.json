@@ -1,0 +1,6 @@
+{"name":"Lead → reminder in 2 days (delay)","object_type":"Leads","is_child":false,"is_active":true,"priority":0,"run_once":false,
+ "definition":{"conditions":[{"field":"object.status","operator":"equals","value_type":"static","value":"Assigned"}],
+  "preload":[],
+  "actions":[{"type":"modify","target":"object.description","change_type":"set_value","value":"Waiting for the first contact","save_to_crm":true},
+             {"type":"delay","id":"pause","mode":"duration","duration":"2d"},
+             {"type":"modify","target":"object.status","change_type":"set_value","value":"Reminder sent","save_to_crm":true}]}}

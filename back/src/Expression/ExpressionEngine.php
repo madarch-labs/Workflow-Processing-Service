@@ -6,6 +6,7 @@ namespace Wps\Expression;
 
 use Wps\Exceptions\ConfigurationException;
 use Wps\Exceptions\NonRecoverableException;
+use Wps\Expression\Functions\ListFunctions;
 use Wps\Expression\Functions\LogicFunctions;
 use Wps\Expression\Functions\NumberFunctions;
 use Wps\Expression\Functions\TextFunctions;
@@ -50,6 +51,7 @@ final class ExpressionEngine
         LogicFunctions::register($this);
         NumberFunctions::register($this);
         TextFunctions::register($this);
+        ListFunctions::register($this);
     }
 
     public function caster(): TypeCaster

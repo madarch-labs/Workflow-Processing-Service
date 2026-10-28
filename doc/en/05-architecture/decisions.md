@@ -169,6 +169,153 @@ execution wakes up exactly once, waiting executions are visible via `GET /api/ex
 precision is limited by `WAIT_POLL_INTERVAL_MS`; the snapshot size by `WAIT_STATE_MAX_BYTES`. See
 [Reliability → Waiting executions](../04-operations/reliability.md#waiting-executions).
 
+## ADR-13. A flat program instead of walking the tree
+
+**Context.** Branches, loops, early stop and `on_error: goto` do not fit a linear step list, while crash recovery and the
+audit were built on one integer cursor `current_step` (`md/tasks_list/00-architecture.md`, section A).
+
+**Decision.** The definition stays a tree (as the user writes it) and is compiled before execution into a flat list of
+instructions (`action`, `branch`, `jump`, `jump_if_false`, `loop_begin`, `loop_next`, `halt`) with `step_path` paths.
+The cursor is the integer `pc`; the loop stack is `frames`; the audit record number is `seq`. `if / else-if / else` is
+one `branch` instruction (one audit record per block, Q3). Blocks have their own registry `BlockTypeRegistry`.
+
+**Consequences.** A linear process compiles one-to-one (`seq == pc == the old step_index`) — old executions and the audit
+stay compatible. Crash recovery is the same for any block. Compilation is deterministic and cached by the definition
+hash; if the program hash differs after an upgrade, the execution is not continued (`Program changed after an upgrade`).
+See [Execution engine](execution-engine.md#program-and-instructions).
+
+## ADR-14. Our own CRM contract 2.0 and two separate plugins
+
+**Context.** New actions need filter operators, sorting, a cursor, counting, delete, relationships and old field values
+in the event (section F, Q1). The built-in SuiteCRM V8 API uses OAuth2 and another format.
+
+**Decision.** WPS defines **its own** contract (`/api/v9`, [CRM integration](../04-operations/crm-integration.md)) — an
+extension of contract 1.0 without breaking it; the CRM declares its capabilities at `GET /capabilities`, WPS checks them
+at run time (`CRM_CAPABILITY_MISSING`). The SuiteCRM 7 and SuiteCRM 8 plugins are two separate packages outside the
+repository, each changed and tested separately (`bin/contract_check.sh`). Event v2: `event_type`, `before` of the
+**changed** fields only (after type normalisation), `changed_fields`, `wps_origin` (section C). Filters are AND only
+(`in` / `nin` for "or", Q28), sorting — up to 2 fields + `id` (Q27), aggregates are computed by WPS (Q29).
+
+**Consequences.** Any CRM can be connected by implementing the contract (or a bridge adapter). An old plugin keeps
+working within contract 1.0. An event without `event_type` is handled as before (`legacy`). No aggregate endpoint means
+reading records page by page (see `AGGREGATE_MAX_RECORDS`).
+
+## ADR-15. Side-effect journal and delivery policy
+
+**Context.** A step runs "at least once": after a worker crash `resume()` repeats it. That is safe for a CRM `PUT`, not
+for a letter or a webhook (section H).
+
+**Decision.** Table `step_side_effects` keyed by the call position (`{pc}@{iteration}#{sub}`): `started` before the call,
+`done` with the answer after it. A repeated step with a `done` record returns the stored answer; a "foreign" `started`
+record is an unknown outcome which, by the `delivery` policy, either fails with `UNKNOWN_OUTCOME` (`at_most_once`, the
+default for letters, notifications, `POST`/`PATCH`) or repeats the call with the same `Idempotency-Key` / `Message-ID`
+(`at_least_once`).
+
+**Consequences.** Duplicate letters and orders after crashes are excluded at the price of rare `UNKNOWN_OUTCOME` errors
+that an operator checks by hand. CRM actions (relationships, saves) are idempotent and do not use the journal.
+
+## ADR-16. Secrets: application-level encryption and `secret://` references
+
+**Context.** Actions need SMTP passwords, API and bot tokens. Keeping them in the process definition exposes them in the
+JSON, the audit, Redis and history.
+
+**Decision.** Table `secrets` encrypted with XChaCha20-Poly1305 (libsodium) and the key `WPS_SECRETS_KEY`, associated
+data `wps-secret|name|version`, `kek_id` for rotation (`WPS_SECRETS_KEY_PREVIOUS` + `POST /api/secrets/rotate`). The
+definition holds only a reference `secret://name[.field]`, and only in credential fields; values are masked by
+`SecretMasker` in the audit and logs; a decrypted value lives in worker memory for `SECRETS_CACHE_TTL`.
+
+**Consequences.** No API returns a secret value. Losing the key means re-entering the secrets (processes need no change).
+Without the key the service runs, but actions using secrets fail.
+
+## ADR-17. Outgoing requests: open outwards, closed inwards
+
+**Context.** `http_request` calls a URL from the process definition; a process editor must not reach the internal
+network (databases, Redis, cloud metadata) — Q20, Q21.
+
+**Decision.** `EgressGuard`: any public host is allowed, private and service networks are closed by checking **all** DNS
+addresses, the connection goes to the already checked IP (protection against DNS rebinding), redirects are checked again;
+the URL host is a literal only; `http://` is allowed by default (`HTTP_ALLOW_PLAIN_HTTP=false` forbids it). User regular
+expressions are limited by `SafeRegex` (length, PCRE backtracking limits).
+
+**Consequences.** Internal systems are opened explicitly (`HTTP_ALLOW_PRIVATE_CIDRS`); the development stand opens the
+docker network and is not copied to production. See [Security](../04-operations/security.md#outgoing-http-requests-ssrf-protection).
+
+## ADR-18. Comparisons: explicit type, a missing field is always "false"
+
+**Context.** All CRM values arrive as strings; the engine does not read CRM field metadata (section E). Customer rule #10:
+a missing field never satisfies a condition.
+
+**Decision.** The comparison type is set by the condition row (`cast`: `string`, `int`, `decimal`, `date`, `datetime`,
+`bool`, `list`); one `TypeCaster` serves conditions, expressions and templates; a cast error is "false" with a trace (or
+a `failed` execution with a `conditions` step under `on_cast_error: error`, Q8). `is_empty` of a missing field is false;
+absence is checked by the separate operators `is_null` / `is_not_null` (Q7, customer decision). `decimal` and
+`calculate` arithmetic use `bcmath` (Q15).
+
+**Consequences.** Conditions behave predictably and independently of the CRM; an empty string and a missing field differ.
+
+## ADR-19. Time: business time zone and calendar units only
+
+**Context.** "Today", the start of a month, `date_shift` and pauses depend on the zone; the customer excluded working days
+and a production calendar from the scope (sections J, O).
+
+**Decision.** `WPS_TIMEZONE` (IANA, default UTC) for calendar operations; CRM dates are UTC; hours and minutes are exact
+time (`+1d` ≠ `+24h` across a DST change). Time is taken only through `Wps\Time\Clock` (`FrozenClock` in tests). New
+tables use `TIMESTAMPTZ`, wait deadlines are compared with PostgreSQL `now()`.
+
+**Consequences.** No `workday` / `add_workdays`; the extension point is a new unit in `DateMath` and expression functions.
+A wrong zone stops the service at start.
+
+## ADR-20. Own template engine with escaping chosen by the field
+
+**Context.** Letter, HTTP body and notification texts are built from CRM data; Twig is too broad for business users
+(section G).
+
+**Decision.** `TemplateEngine`: `{{ path | filter }}`, `{{= expression }}`; filters are the expression functions. The
+escaping mode is chosen by the **consumer field** (`text`, `header`, `html`, `url`, `json`), not by the template author;
+the URL host cannot be templated; a missing value follows the field policy (`empty`, `error`, `keep`).
+
+**Consequences.** One function set for expressions and templates; header injection and host substitution are excluded by
+construction.
+
+## ADR-21. Handled errors keep the `completed` status
+
+**Context.** `on_error: continue / goto` and `on_item_error: continue` let a process reach the end after a step error
+(Q4); a process-level error handler block is postponed (Q5).
+
+**Decision.** An execution with handled errors is `completed`; the error count is `executions.handled_errors`, the metric
+`wps_step_errors_handled_total`, the last error — `sys.last_error`. `goto` goes only forward to a top-level step; steps
+it skips are not audited (Q6). `stop_process` with `failed` is not a step error and `on_error` does not catch it.
+
+**Consequences.** Statuses stay simple; "successful with errors" executions are visible through the counter and metric.
+
+## ADR-22. Reserved names and ordered lists in the definition
+
+**Context.** System values (`sys`), constants (`config`) and old values (`object_before`) are read as variables
+(section I); `definition` is stored in `jsonb`, which does not keep the order of object keys (L.14).
+
+**Decision.** The names `object`, `object_before`, `sys`, `config` are reserved (`ExecutionContext::RESERVED`), the last
+three are read-only, `sys` and `config` are computed on read. Migration 010 reports processes that used these names as
+variables. Wherever order matters (`actions`, `branches`, `set_variable` fields, `update_records` rules, `map` entries),
+the format uses lists.
+
+**Consequences.** The evaluation order does not depend on storage. Processes with the old names keep running after the
+upgrade but cannot be saved until the variables are renamed.
+
+## ADR-23. What is deliberately not done
+
+| What | Decision | Where |
+|---|---|---|
+| Scheduled start (cron), trigger by a date in a record | Outside P1/P2 (customer decision) | `md/tasks_list/_excluded/` |
+| Working days, working hours, production calendar | Excluded | ADR-19 |
+| Outbox in the CRM plugin | None: when Redis is down the event is lost, the CRM save succeeds | [Reliability](../04-operations/reliability.md#what-is-not-guaranteed) |
+| OR and brackets of conditions in the UI | The engine accepts a tree, the UI a flat list | ADR-6 |
+| E-mail channel of `notify` | Not done — there is `send_email` (Q23) | — |
+
+> **Note**
+> Deviation from the plan: section B of `00-architecture.md` proposed an `executions.updated_at` column as the
+> `RecoveryJob` criterion. The implementation kept the `started_at` criterion: a freshly woken execution is protected by the
+> `lock:exec:{uuid}` lock, so the column was not needed.
+
 <!-- footer-nav -->
 ---
 

@@ -28,13 +28,24 @@ and so on — are set through the API: the editor keeps only `target`, `change_t
 
 The same change types work in the [Set a process variable](actions.md#set-a-process-variable) action (`set_variable`) —
 for intermediate values that are not saved to the CRM — and in the rules of
-[Update list records](actions.md#update-list-records) (`update_records`).
+[Update list records](actions.md#update-list-records) (`update_records`). An unknown code is rejected on save:
+`Change type must be one of: set_value, set_from_variable, calculate, template, date_shift, increment, decrement, clear, append, prepend, remove, map, aggregate`
+(the list is returned by [`GET /api/dictionaries/change-types`](../06-api-reference/endpoints.md)).
+
+Where the expression language is used:
+
+| Place | How it is written | Result |
+|---|---|---|
+| **Calculate** (`calculate`) in `modify`, `set_variable`, `update_records` | the whole `value` (or `expression`) is an expression | a value of any type: number, text, boolean, list |
+| Right side of a condition (`value_type: expression`) | `value` (or a pair for `between`) | cast with the row's `cast` before comparison |
+| Template tag `{{= … }}` | an expression inside the tag | converted to text |
+| Template filters `{{ x \| f:a }}` | a function call `f(x, a)` | converted to text |
 
 ## Set to value
 
 Writes the text from **New value** into the target field as is.
 
-- Allowed values: any text or number; an empty value writes an empty string.
+- Allowed values: any text or number (via the API also `true` / `false` and `null`); an empty value writes an empty string.
 - Example: target `v1.rating`, value `VIP`.
 - Server error: `Value must be a string or a number` (possible only via the API, e.g. an array as value).
 
@@ -60,12 +71,15 @@ concat('Discount applied, new amount: ', object.amount)
 upper(trim(object.name))
 ```
 
+Via the API the expression is passed in `value`; the key `expression` is a synonym (it wins when both are given).
+An empty expression is a save error `Expression is required`.
+
 ### Syntax
 
 | Element | Syntax | Examples |
 |---|---|---|
 | Number | digits with an optional decimal point | `10`, `0.9`, `.5` |
-| String | in single or double quotes; `\` escapes the next character | `'abc'`, `"Call back: "`, `'it\'s'` |
+| String | in single or double quotes; `\` escapes only a quote and itself, any other sequence (`\d`, `\p{Lu}`) is kept as written | `'abc'`, `"Call back: "`, `'it\'s'`, `'^\d{10}$'`, `'\\'` (a single `\`) |
 | Field path | `object.<field>` or `<variable>.<field>`; nested fields with more dots | `object.amount`, `v1.price`, `v1.address.city` |
 | Literals | `true`, `false`, `null` | `object.is_active == true` |
 | List | `[a, b, …]` | `[object.a, object.b] == [1, 2]` |
@@ -77,6 +91,17 @@ upper(trim(object.name))
 | Function call | `name(arg, …)`, names are case-insensitive | `round(object.amount, 2)` |
 
 **Synonyms:** `=` is the same as `==`; `<>` is the same as `!=`; `&&`, `||`, `!` are the same as `and`, `or`, `not`.
+
+**Literals in more detail.**
+
+- A number is digits and a point only: `1e3`, `1 000`, `1,5` are not literals (`1,5` is two arguments separated by a
+  comma). A negative number is a unary minus: `-5`. A literal longer than 100 digits is a save error `Number is too large at position …`.
+- Strings have no escape sequences such as `\n` or `\t`: `'a\nb'` is four characters `a`, `\`, `n`, `b`.
+  `\'` (or `\"` inside double quotes) is a quote, `\\` is one backslash; any other `\` is kept as is, so regular
+  expressions are written without doubling: `'^\d{10}$'` gives the pattern `^\d{10}$`.
+- Spaces and line breaks between the elements of an expression do not matter.
+- A path starts with a letter or `_` and consists of letters, digits, `_` and dots; a field with a hyphen or a space in its
+  name cannot be written as a path.
 
 **Operator precedence** (top to bottom — from weakest to strongest; operators of the same level are evaluated left to right):
 
@@ -96,10 +121,77 @@ The order is the same as in SQL and Python. When in doubt, add parentheses: `(a 
 is always a path: `object.or`, `object.and`, `v1.null` are fields, not operators. A word without a dot that is not
 followed by `(` is an error — write `object.amount`, not `amount`.
 
+### System variables and constants
+
+Besides `object`, `object_before` and process variables, two virtual variables are available wherever a path is allowed —
+in conditions, **Calculate** expressions, templates, filters and `set_variable`:
+
+- **`sys` — system variables of the execution.** The values are not stored in the context; they are computed on read, so
+  `sys.now` is the current moment, not the start time. `sys` is read-only.
+- **`config` — process constants.** Declared in `definition.constants` (see [Process constants](processes.md#process-constants));
+  read-only, and their names are checked when the process is saved.
+
+| Field | Type | Value | Example |
+|---|---|---|---|
+| `sys.execution_id` | string | Execution UUID | `f270393e-8d59-4142-8a46-9084b6d0149f` |
+| `sys.parent_execution_id` | string | UUID of the parent execution; `''` at the top level | `''` |
+| `sys.process_id` | integer | Process ID | `508` |
+| `sys.process_name` | string | Process name | `VIP accounts` |
+| `sys.process_version` | integer | Definition version the execution runs with | `3` |
+| `sys.event_id` | string | CRM event ID (`manual-<uuid>` for a manual run) | `1792043807117-0` |
+| `sys.trigger` | string | Start source: `stream`, `manual`, `child` | `stream` |
+| `sys.depth` | integer | Nesting depth: `0` — top level | `1` |
+| `sys.module` | string | Module of the event object | `Accounts` |
+| `sys.record_id` | string | `id` of the CRM record from the event | `9185c76a-…` |
+| `sys.event_type` | string | `create`, `update` or `delete` | `update` |
+| `sys.changed_fields` | list | List of changed fields; `[]` when the event did not provide it | `["phone_office"]` |
+| `sys.user_id` | string | ID of the CRM user who saved the record; otherwise `''` | `1` |
+| `sys.now` | datetime | Current moment, UTC `Y-m-d H:i:s`; computed on every read | `2026-10-26 20:03:37` |
+| `sys.started_at` | datetime | Execution start, UTC `Y-m-d H:i:s` | `2026-10-26 20:03:37` |
+| `sys.errors_count` | integer | How many step errors were handled by `on_error` / a loop | `0` |
+| `sys.last_error` | object | The last handled error — an object with the fields `step_id`, `step_path`, `action_type`, `code`, `message`, `http_status`, `attempts`, `at` (and `iteration` inside a loop); absent until an error is handled. Read a field: `sys.last_error.code`, `sys.last_error.message`; see [Step errors](actions.md#the-sys-variable-the-last-error) | `sys.last_error.code` → `HTTP_503` |
+
+The list with types is returned by [`GET /api/dictionaries/system-variables`](../06-api-reference/endpoints.md);
+a finished execution keeps a snapshot of the values in `context.system` (see [Executions and audit](executions-and-audit.md)).
+
+![sys.* values in a step result](../../images/screenshots/en/26-execution-context-system.png)
+
+*A step with the template `{{ sys.trigger }} run of «{{ sys.process_name }}» v{{ sys.process_version }} at {{ sys.now }}`: "Result (result_data)" shows the substituted values. The `context.system` snapshot is returned by the API (`GET /api/executions/{id}`); the UI context tabs do not show it.*
+
+Examples:
+
+```text
+object.processed_at   = sys.now
+object.correlation_id = sys.execution_id
+object.segment        = if(object.annual_revenue >= config.vip_threshold, 'VIP', 'Regular')
+object.stages         = join(config.open_stages, ', ')
+```
+
+Details:
+
+- **Before the execution exists** (`sys.execution_id`, `sys.started_at`) the values are empty: conditions are checked
+  before the execution row is created. In the snapshot of a finished execution both fields are filled.
+- **Manual run**: `sys.trigger = manual`; `sys.user_id` comes from `object.user_id` when it is passed.
+- **Stream event**: `sys.user_id` comes from `wps_user_id` (the user who saved the record), `sys.changed_fields` from the
+  contract 2.0 event; an old plugin does not send the list — it will be `[]`.
+- **A child process** gets its own `sys.execution_id`, `sys.depth` (`+1`), `sys.trigger = child`, `sys.process_*`, the
+  parent's `sys.parent_execution_id` and **its own** constants.
+- **`sys.now` is not frozen**: two reads in a row may return different times. For a single timestamp, save it to a
+  variable (`set_variable`) and use that.
+- `sys` and `config` without a field are not available in expressions — name a field (`sys.trigger`, `config.threshold`).
+  Nested fields are read with a dot: `sys.last_error.code`; an item of a list constant — with list functions
+  (`first(config.open_stages)`, `in(object.sales_stage, config.open_stages)`).
+- **In conditions** `sys.*` and `config.*` are known at once and never trigger the [lazy preload](triggers-and-conditions.md#conditions-on-preloaded-variables-lazy-preload):
+  the row `sys.trigger` **equals** `manual` or a right-hand expression `config.vip_threshold` is checked in the first pass.
+- **Value types are kept**: `config.vip_threshold` from `100000` is a number, `config.open_stages` is a list, `sys.depth` is
+  an integer. In a template a list is substituted as JSON — use the `join` filter.
+- **Save errors**: `Unknown system variable "sys.x"; available: …`, `Constant "x" is not defined in
+  definition.constants`, `Variable "sys" is read-only`, `Name "config" is reserved`.
+
 ### Values and types
 
 - **A missing field gives an empty string** (it never stops the calculation).
-- `+` **adds** when both operands are numbers in strict format (a number or text such as `"10"`, `"-0.5"`, `" 3 "`), and **concatenates** otherwise: `'10' + 5` → `15`, `object.name + 5` → `Deal5`. Text like `'1 234,56'` (space, comma) or `'1e3'` is not a number — without `to_number()` it is concatenated. `'' + 5` → `5` (concatenation).
+- `+` **adds** when both operands are numbers in strict format (a number or text such as `"10"`, `"-0.5"`, `" 3 "`), and **concatenates** otherwise: `'10' + 5` → `15`, `object.name + 5` → `Deal5`. Text like `'1 234,56'` (space, comma) or `'1e3'` is not a number — without `to_number()` it is concatenated. `'' + 5` → the text `'5'` (concatenation: an empty string is not a number).
 - `-` `*` `/` `%` require numbers. An empty value counts as `0`. Text that is not a number fails the step: `Operator "*" requires numbers, got "abc"`.
 - Division or modulo by zero fails the step: `Division by zero in expression`, `Modulo by zero in expression`. The remainder has the sign of the dividend: `-7 % 3` → `-1`.
 - **Arithmetic is exact decimal** (bcmath), not floating point: `0.1 + 0.2` → `0.3`, `19.99 * 3` → `59.97`, `0.1 + 0.2 == 0.3` → `true`. Intermediate results keep 10 decimals; division is rounded to 10 decimals, half away from zero (`1 / 3` → `0.3333333333`, `2 / 3` → `0.6666666667`).
@@ -116,7 +208,7 @@ The rules are applied in order — the first matching one wins:
 |---|---|---|---|
 | 1 | Empty values | `null` and `''` are equal (a missing field is `''` too) | `object.missing == ''` → `true`, `null == ''` → `true` |
 | 2 | `<` `<=` `>` `>=` with at least one empty operand | always `false` | `object.missing > 5` → `false`, `object.missing < 5` → `false` |
-| 3 | One operand is `true` / `false` | the other is converted to a boolean (`1`, `yes`, `да` → `true`; `0`, `no`, `нет` → `false`) | `'yes' == true` → `true`, `'abc' == true` → `false` |
+| 3 | One operand is `true` / `false` | the other is converted to a boolean by the [truthiness](#truthiness-of-conditions) table (`1`, `yes`, `да` → `true`; `0`, `no`, `нет` → `false`) | `'yes' == true` → `true`, `'abc' == true` → `false` |
 | 4 | Both operands are strictly formatted numbers | exact decimal comparison (no float noise) | `'100' == 100.00` → `true`, `'9' < '10'` → `true` |
 | 5 | Both are lists | `==` / `!=` element by element; `<` and the others are an error | `[1, 2] == ['1', '2']` → `true` |
 | 6 | Anything else | as strings, byte by byte; **case matters** | `'abc' == 'ABC'` → `false`, `'b' > 'a'` → `true` |
@@ -138,9 +230,10 @@ The rules are applied in order — the first matching one wins:
 
 | Treated as true | Treated as false |
 |---|---|
-| `true`, `1`, `yes`, `on`, `да` | `false`, `0`, `no`, `off`, `нет`, `''`, `null` (and a missing field) |
+| `true`, `1`, `t`, `yes`, `y`, `on`, `да` | `false`, `0`, `f`, `no`, `n`, `off`, `нет`, `''`, a blank string, `null` (and a missing field) |
 
-Any other value fails the step with `Condition must be boolean, got "abc"` — a typo in a condition never silently turns
+Text is compared case-insensitively and with surrounding spaces ignored (`' YES '`, `'Да'` are true). Of numbers only `1`
+and `0` are allowed: `if(2, …)` is an error. Any other value fails the step with `Condition must be boolean, got "abc"` — a typo in a condition never silently turns
 into “false”. Usually a condition is a comparison: not `if(object.status, …)` but `if(object.status == 'Active', …)`.
 
 `and` and `or` evaluate the right side only when it is needed (`false and …` → `false` without evaluating the right side)
@@ -173,39 +266,141 @@ if(object.amount > 0, round(object.discount / object.amount * 100, 1), 0)
 
 ### Functions
 
+The expression language has 121 functions. A function name is case-insensitive (`ROUND(…)` = `round(…)`). The number
+of arguments is checked **when the process is saved**: `substr(object.name)` is rejected with
+`Function "substr" expects 2..3 arguments, got 1`. Literal arguments that can be checked in advance (rounding
+precision, regex flags and pattern, JSONPath, the `date_diff` unit, a time zone, the `sort` order, the `pad_*` /
+`repeat` length) are checked at save time as well; computed ones are checked at run time. Arguments of ordinary
+functions are evaluated up front, arguments of [conditional functions](#conditional-functions) lazily.
+
+Every function is described once, in the section of its category:
+
+| Category | Functions | Section |
+|---|---|---|
+| Conditional (5) | `if`, `coalesce`, `ifempty`, `ifs`, `switch` | [Conditional functions](#conditional-functions) |
+| Strings (32) | `concat`, `upper`, `lower`, `trim`, `len`, `substr`, `left`, `right`, `capitalize`, `title_case`, `truncate`, `pad_left`, `pad_right`, `repeat`, `contains`, `starts_with`, `ends_with`, `index_of`, `before`, `after`, `replace`, `replace_ci`, `split`, `join`, `strip_tags`, `nl2br`, `urlencode`, `json`, `translit`, `slug`, `default`, `number` | [Strings](#strings) |
+| Regular expressions (3) | `regex_match`, `regex_extract`, `regex_replace` | [Regular expressions](#regular-expressions) |
+| Numbers (14) | `round`, `floor`, `ceil`, `trunc`, `abs`, `sign`, `min`, `max`, `pow`, `sqrt`, `percent`, `to_number`, `to_int`, `number_format` | [Numbers](#numbers) |
+| Lists (18) | `list`, `to_list`, `count`, `in`, `first`, `last`, `nth`, `slice`, `unique`, `sort`, `reverse`, `concat_lists`, `without`, `sum`, `avg`, `pluck`, `where`, `index_of_item` | [Lists](#lists) |
+| Checks and conversions (13) | `is_empty`, `is_not_empty`, `is_number`, `is_numeric_text`, `is_int`, `is_date`, `is_bool`, `is_list`, `is_object`, `to_string`, `to_bool`, `to_date`, `to_datetime` (plus `to_number`, `to_int`, `to_list` from their own sections) | [Type checks and conversions](#type-checks-and-conversions) |
+| JSON (4) | `json_encode`, `json_decode`, `json_get`, `json_get_all` | [JSON](#json) |
+| Dates and time (32) | `now`, `today`, `date`, `datetime`, `add_minutes`, `add_hours`, `add_days`, `add_weeks`, `add_months`, `add_years`, `date_diff`, `year`, `month`, `day`, `hour`, `minute`, `weekday`, `week`, `quarter`, `start_of_*` / `end_of_*` (day, week, month, quarter, year), `is_weekend`, `format_date`, `format_date_locale` | [Dates and time](#dates-and-time) |
+
+The full list with signatures, descriptions and examples is returned by
+[`GET /api/dictionaries/functions`](../06-api-reference/endpoints.md#get-apidictionariesfunctions) (fields `name`,
+`category`, `signature`, `min_args`, `max_args`, `returns`, `description`, `example`). New functions can be added by a
+developer: [Expression functions](../07-developer-guide/extending/expression-functions.md).
+
+#### Strings
+
+String functions work with Unicode characters (a Cyrillic letter is one character, not two bytes). An argument of any
+type is first turned into text: `null` and a missing field → `''`, `true` / `false` → `true` / `false`, a list or a
+record → JSON. Substring matching is **case-sensitive**, except `replace_ci`. The examples were checked on a running WPS.
+
 | Function | Result | Example | Result of the example |
 |---|---|---|---|
-| `if(cond, then[, else])` | see [Conditional functions](#conditional-functions) | `if(object.amount > 100, 'VIP', 'Regular')` | `VIP` |
-| `coalesce(a, b, …)` | the first non-empty value | `coalesce(object.missing, object.name)` | `Deal` |
-| `ifempty(a, default)` | `a` or the default | `ifempty(object.missing, 'none')` | `none` |
-| `ifs(cond1, value1, …[, default])` | the value of the first true pair | `ifs(object.amount > 1000, 'B', 'C')` | `C` |
-| `switch(x, key1, value1, …[, default])` | the value for the matching key | `switch(object.name, 'Deal', 1, 0)` | `1` |
-| `concat(a, b, …)` | all arguments joined as text | `concat('Call back: ', object.name)` | `Call back: Ivan Petrov` |
-| `upper(s)` | upper case | `upper('hello')` | `HELLO` |
-| `lower(s)` | lower case | `lower('ABC')` | `abc` |
-| `trim(s)` | text without leading/trailing spaces | `trim('  x  ')` | `x` |
-| `len(s)` | length in characters | `len('Привет')` | `6` |
-| `substr(s, start[, length])` | part of the text; `start` counts from 0, negative counts from the end | `substr('hello world', 0, 5)` | `hello` |
-| `round(x[, digits])` | rounded number, `digits` decimals (default 0) | `round(10.456, 2)` | `10.46` |
-| `abs(x)` | absolute value | `abs(-5)` | `5` |
-| `min(a, b, …)` | smallest number | `min(object.amount, 1000)` | e.g. `500` |
-| `max(a, b, …)` | largest number | `max(object.amount, 0)` | e.g. `500` |
-| `default(a, fallback)` | `a` if it is not empty, otherwise `fallback` (like `ifempty`; handy as a template filter) | `default(object.missing, '—')` | `—` |
-| `number(x[, decimals[, dec_sep[, thousands_sep]]])` | alias of `number_format` | `number(1234.5, 2, ',', ' ')` | `1 234,50` |
-| `capitalize(s)` | first letter upper-case | `capitalize('ivan')` | `Ivan` |
-| `truncate(s, length[, suffix])` | text no longer than `length` characters including `suffix` (default `…`) | `truncate('Big deal', 5)` | `Big …` |
-| `nl2br(s)` | line breaks → `<br>` (for HTML e-mails) | `nl2br(object.description)` | `line1<br>line2` |
-| `json(v)` | the value as JSON | `json([1, 'a'])` | `[1,"a"]` |
-| `urlencode(s)` | text encoded for a URL (RFC 3986) | `urlencode('a b&c')` | `a%20b%26c` |
-| `join(list[, separator])` | list items joined with `separator` (default `, `); accepts an array, a JSON array and a multienum `^a^,^b^` | `join('^Banking^,^Retail^')` | `Banking, Retail` |
+| `concat(a, b, …)` | all arguments joined as text (at least one argument) | `concat('Call back: ', object.name)` with `name = Deal`; `concat(1, true, null, [1,2])` | `Call back: Deal`; `1true[1,2]` |
+| `upper(s)`, `lower(s)` | upper / lower case | `upper('привет')`, `lower('ABC')` | `ПРИВЕТ`, `abc` |
+| `trim(s)` | text without leading/trailing spaces and line breaks | `trim('  x  ')` | `x` |
+| `len(s)` | length in characters; an empty value — `0` | `len('Привет')`, `len(object.missing)` | `6`, `0` |
+| `substr(s, start[, length])` | part of the text; `start` from 0, negative counts from the end; `length` — how many characters (negative — how many to drop from the end). Arguments are converted to integers without a check (`'x'` → `0`) | `substr('hello world', 0, 5)`, `substr('hello world', -5)` | `hello`, `world` |
+| `left(s, n)`, `right(s, n)` | the first / last `n` characters; `n` larger than the length — the whole text | `left('+79991234567', 2)`, `right('+79991234567', 10)` | `+7`, `9991234567` |
+| `capitalize(s)` | the first letter upper-cased, the rest unchanged | `capitalize('иван')`, `capitalize('иВАН')` | `Иван`, `ИВАН` |
+| `title_case(s)` | each word capitalised, the other letters lower-cased | `title_case('иван петров')`, `title_case('IVAN PETROV')` | `Иван Петров`, `Ivan Petrov` |
+| `truncate(s, length[, suffix])` | text no longer than `length` characters **including** `suffix` (default `…`); short text is unchanged | `truncate('Big deal', 5)`, `truncate('Big deal', 5, '...')`, `truncate('Big deal', 20)` | `Big …`, `Bi...`, `Big deal` |
+| `pad_left(s, length[, char])`, `pad_right(…)` | pads to `length` characters on the left / right; `char` is exactly one character (a space by default); longer text is not cut | `pad_left('42', 5, '0')`, `pad_right('42', 5, '.')`, `pad_left('12345', 3, '0')` | `00042`, `42...`, `12345` |
+| `repeat(s, count)` | the string repeated `count` times (`0…1000`, result ≤ 1 MB) | `repeat('-', 3)`, `repeat('ab', 0)` | `---`, `''` |
+| `contains(s, part)` | whether the substring is present | `contains('ivan@gmail.com', '@')`, `contains('ABC', 'b')` | `true`, `false` |
+| `starts_with(s, part)`, `ends_with(s, part)` | whether the string starts / ends with the substring | `starts_with('A-1', 'A-')`, `ends_with('ivan@gmail.com', '@gmail.com')` | `true`, `true` |
+| `index_of(s, part)` | position of the first occurrence (in characters, from 0) or `-1` | `index_of('a@b.c', '@')`, `index_of('Привет', 'в')`, `index_of('abc', 'z')` | `1`, `3`, `-1` |
+| `before(s, sep)` | the part before the first occurrence; no occurrence — the whole string | `before('a@b.c', '@')`, `before('abc', '@')` | `a`, `abc` |
+| `after(s, sep)` | the part after the first occurrence; no occurrence — `''` | `after('a@b.c', '@')`, `after('abc', '@')` | `b.c`, `''` |
+| `replace(s, search, replacement)` | replaces all occurrences; an empty `search` changes nothing | `replace('999-123-45-67', '-', '')`, `replace('abc', '', 'x')` | `9991234567`, `abc` |
+| `replace_ci(s, search, replacement)` | the same, case-insensitive (Unicode); the rest of the text keeps its case | `replace_ci('Активен', 'активен', 'Active')`, `replace_ci('AaAa', 'a', '-')` | `Active`, `----` |
+| `split(s, separator[, wrapper])` | a list: splits the string, trims items, drops empty ones; `wrapper` strips the frame (multienum) | `split('^vip^,^partner^', ',', '^')`, `split(' a , ,b ', ',')`, `split('', ',')` | `["vip","partner"]`, `["a","b"]`, `[]` |
+| `join(list[, separator[, wrapper]])` | list items joined with `separator` (default `, `); accepts an array, a JSON array in a string and a multienum `^a^,^b^`; any other string is one item; `wrapper` wraps each item | `join(['vip', 'partner'], ',', '^')`, `join('^vip^,^partner^', '; ')`, `join('["a","b"]', '\|')`, `join(object.missing)` | `^vip^,^partner^`, `vip; partner`, `a\|b`, `''` |
+| `strip_tags(s)` | removes HTML tags; HTML entities (`&amp;`) stay | `strip_tags('<p>Привет</p>')`, `strip_tags('<b>a</b> &amp; <br/>b')` | `Привет`, `a &amp; b` |
+| `nl2br(s)` | inserts `<br>` before every line break (the break itself stays) — for HTML e-mails | `nl2br(object.description)` with `"line1\nline2"` | `line1<br>` + a line break + `line2` |
+| `urlencode(s)` | encoding for a URL per RFC 3986 (space → `%20`, Cyrillic → UTF-8) | `urlencode('a b&c')`, `urlencode('Привет')` | `a%20b%26c`, `%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82` |
+| `json(v)` | the value as JSON (like `json_encode`, but without an error on invalid data); handy as a template filter | `json([1, 'a'])`, `json('a/b')` | `[1,"a"]`, `"a/b"` |
+| `translit(s)` | Cyrillic → Latin (GOST 7.79-2000, system B); other characters are unchanged | `translit('Щука')`, `translit('Йошкар-Ола, Юрий, Цой, Ёлка')` | `Shchuka`, `Yoshkar-Ola, Yuriy, Tsoy, Yolka` |
+| `slug(s)` | transliteration, lower case, everything except `a-z` and `0-9` → `-` (runs collapse), no `-` at the ends | `slug('Заказ №42')`, `slug('  Привет, Мир! 2026 ')` | `zakaz-42`, `privet-mir-2026` |
+| `default(a, fallback)` | `a` if it is neither `null` nor `''`, otherwise `fallback` (like `ifempty`, but both arguments are evaluated; handy as the filter `{{ x \| default:'—' }}`) | `default(object.missing, '—')`, `default(' ', '—')`, `default(0, '—')` | `—`, `' '`, `0` |
+| `number(x[, decimals[, dec_sep[, thousands_sep]]])` | alias of [`number_format`](#numbers) | `number(1234.5, 2, ',', ' ')` | `1 234,50` |
 
-Text functions work with any language (Cyrillic included). The number of arguments is checked **when the process is
-saved**: `substr(object.name)` is rejected with `Function "substr" expects 2..3 arguments, got 1`.
-Numeric functions are described in [Numbers](#numbers).
+**Details and errors of string functions** (run-time errors fail the step):
 
-The full list of functions with signatures and descriptions is returned by [`GET /api/dictionaries/functions`](../06-api-reference/endpoints.md#get-apidictionariesfunctions).
-New functions can be added by a developer: [Expression functions](../07-developer-guide/extending/expression-functions.md).
-Date functions (`today`, `add_days`, `date_diff`, `format_date` …) are described in [Dates and time](#dates-and-time).
+- `translit` renders an upper-case multi-letter character as `Shch`, `Zh`, `Kh`…, so an all-caps word comes out mixed:
+  `translit('ЩУКА')` → `ShchUKA`. If you need upper case, use `upper(translit(…))`.
+- `truncate`: the length is a non-negative integer, otherwise `Function "truncate": length must be a non-negative integer, got "x"`.
+  When `suffix` is longer than `length`, only `suffix` remains: `truncate('Big deal', 2, '...')` → `...`.
+- `left` / `right`: `Function "left": count must be a non-negative integer, got "-1"` (a fraction gives the same error).
+- `pad_left` / `pad_right` and `repeat`: length 0…1000 — `Function "pad_left": length must be an integer between 0 and 1000, got "1001"`,
+  `Function "repeat": count must be an integer between 0 and 1000, got "1001"` (for a literal — at save time);
+  a `char` that is not one character — `pad_left(): pad character must be exactly one character`.
+- `split`: an empty separator — `split(): separator must not be empty`; more than 10,000 items —
+  `List is too large (max 10000 items)`.
+- Strings have no escape sequences: `'a\nb'` is four characters `a`, `\`, `n`, `b`, not a line break (see
+  [Syntax](#syntax)). A line break comes only from data (a CRM field, a template).
+
+### Regular expressions
+
+`regex_match`, `regex_extract` and `regex_replace` take a pattern **without delimiters**: the engine wraps it in
+`~…~u` (Unicode is always on) and escapes `~` inside. So a pattern is written as an ordinary string, without doubling
+backslashes: `'^\d{10}$'` (see [Syntax](#syntax)).
+
+| Function | Result | Example |
+|---|---|---|
+| `regex_match(s, pattern[, flags])` | `true` when there is at least one match | `regex_match(object.inn, '^\d{10}(\d{2})?$')` |
+| `regex_extract(s, pattern[, group[, flags]])` | the first match or the given group (`0` — the whole match); no match — `''` | `regex_extract(object.subject, '#(\d+)', 1)` |
+| `regex_replace(s, pattern, replacement[, flags])` | replaces all matches; the replacement may refer to groups as `$1`, `$2` … | `regex_replace(object.phone, '[^0-9+]', '')` |
+
+Flags are an optional argument: `i` (case-insensitive, Unicode), `m` (`^` and `$` on every line), `s` (the dot matches a
+newline too). Flags can be combined: `'im'`. Other flags (`u`, `e` …) are not needed and are rejected.
+
+```text
+regex_replace(object.phone, '[^0-9+]', '')                          '+7 (999) 123-45-67' → '+79991234567'
+regex_match(object.inn, '^\d{10}(\d{2})?$')                        a 10- or 12-digit tax ID
+regex_extract(object.subject, '#(\d+)', 1)                          'Order #42' → '42'
+regex_replace(object.date, '^(\d{4})-(\d{2})-(\d{2})$', '$3.$2.$1')  '2026-10-26' → '26.10.2026'
+```
+
+**Limits.** They protect the worker from catastrophic patterns: the pattern is at most 500 characters, the subject at
+most 100 000 characters, backtracking 100 000, recursion 10 000. When exceeded, the step fails with
+`Regular expression failed: backtrack limit exceeded` instead of hanging. A literal pattern and literal flags are
+validated **when the process is saved**:
+
+| Expression | Error on save |
+|---|---|
+| `regex_match(object.x, '(')` | `Invalid regular expression in regex_match(): missing closing parenthesis` |
+| `regex_match(object.x, 'a', 'x')` | `Function "regex_match": flags may contain only i, m, s, got "x"` |
+| a pattern longer than 500 characters | `Regular expression in regex_match() is too long (max 500 characters)` |
+| `regex_extract(object.x, 'a', -1)` | `Function "regex_extract": group must be a non-negative integer, got "-1"` |
+
+When the pattern, the flags or the group number are **computed** (taken from a field or built with `concat`), the same
+checks run when the step executes, and an error fails the step. Run-time errors:
+
+| Situation | Message |
+|---|---|
+| A computed pattern does not compile | `Invalid regular expression in regex_match(): missing closing parenthesis` |
+| The subject is longer than 100,000 characters | `Regular expression input in regex_match() is too long (max 100000 characters)` |
+| The backtracking limit is exceeded (`regex_match('aaaa…ab', '(a+)+$')`) | `Regular expression failed: backtrack limit exceeded` |
+| The recursion limit is exceeded | `Regular expression failed: recursion limit exceeded` |
+| A negative or fractional group | `Function "regex_extract": group must be a non-negative integer, got "…"` |
+
+Edge behaviour (checked on a running WPS):
+
+| Expression | Result | Why |
+|---|---|---|
+| `regex_match('ABC', 'abc', 'i')` | `true` | the `i` flag |
+| `regex_match('a~b', 'a~b')` | `true` | `~` is escaped by the engine |
+| `regex_extract('order #42', '#(\d+)')` | `#42` | no group — the whole match |
+| `regex_extract('order #42', '#(\d+)', 5)` | `''` | there is no group with this number |
+| `regex_replace('Привет Мир', '\p{Lu}', '_')` | `_ривет _ир` | Unicode classes always work |
+| `regex_match('ab', 'a.b', 's')` | `false` | `s` only affects line breaks; there is no character between `a` and `b` |
+
+A multienum (`^vip^,^partner^`) needs no regular expression — use `split`/`join` with the `wrapper` argument (see
+[Lists](#lists)): `join(split(object.tags_c, ',', '^'), '; ')` → `vip; partner`.
 
 ### Numbers
 
@@ -244,6 +439,204 @@ function errors read `Function "round" requires a number, got "…"` (previously
 integer, otherwise the process is not saved: `Function "round": precision must be an integer`,
 `Function "number_format": decimals must be an integer`. A computed fractional precision is a run-time error.
 
+**Number edge cases and errors** (checked on a running WPS):
+
+| Expression | Result |
+|---|---|
+| `round(object.missing)`, `sign(object.missing)` | `0`, `0` — an empty value counts as zero |
+| `round('abc')` | error `Function "round" requires a number, got "abc"` |
+| `round(1.5, 0.5)` | save error `Function "round": precision must be an integer` |
+| `ceil(-1.5)`, `trunc(10.459, 2)` | `-1`, `10.45` |
+| `max(['1 000', 2])` | error `Function "max" requires a number, got "1 000"` — numbers with spaces go through `to_number` first |
+| `min([])` | `''` |
+| `pow(2, 10)`, `pow(2, -1)` | `1024`, `0.5` |
+| `pow(-8, 0.5)` | error `Expression result is not a finite number` |
+| `sqrt(16)`, `sqrt(-1)` | `4`, error `sqrt() of a negative number` |
+| `percent(object.amount, 12.5)` with `amount = 500` | `62.5` |
+| `to_number('-0,5')`, `to_number(' 42 ')`, `to_number('')` | `-0.5`, `42`, `''` |
+| `to_number('1,234.56')` | error `Cannot convert "1,234.56" to a number` — both separators are ambiguous |
+| `to_number('1e3')`, `to_number(true)` | error `Cannot convert "1e3" to a number`, `Cannot convert "true" to a number` |
+| `to_int('100.00')`, `to_int('1 200')`, `to_int('1.5')` | `100`, `1200`, error `Cannot convert "1.5" to an integer` |
+| `number_format(1234567.891)` | `1 234 568` (0 decimals and a space between thousands by default) |
+| `number_format(-1234.5, 1)` | `-1 234.5` |
+| `number_format(1234.5, -1)` | run-time error `Function "number_format": decimals must not be negative` |
+
+### Lists
+
+A list is an ordinary expression value: `[a, b, …]` (empty `[]`, items may be nested) or the function `list(a, …)`.
+Lists come from three sources:
+
+- **a multienum CRM field** — the string `^vip^,^partner^` is parsed by `to_list(s, ',', '^')`; the CRM format is never
+  recognised automatically;
+- **the result of `find_records`** — the variable `deals.items` (a list of records) and `deals.count`;
+- **a JSON array in a string** — for example a list field value or an HTTP response.
+
+Conversion to a list: an array stays as is, `''` and a missing value give `[]`, a JSON array is decoded, any other
+string is one element. That is why `in('a', 'abc')` is `false` (an element check, not a substring one). Iterating over
+a list is the job of the [`foreach` loop](actions.md#loop-for-each-item), not of the expression language.
+
+| Function | Result | Example | Example result |
+|---|---|---|---|
+| `list(a, …)` | a list of the arguments | `list('vip', 'partner')` | `["vip","partner"]` |
+| `to_list(s[, separator[, wrapper]])` | conversion to a list; with `separator` it splits the string, `wrapper` strips the frame of every item (multienum `^a^,^b^`) | `to_list('^a^,^b^', ',', '^')` | `["a","b"]` |
+| `count(list)` | number of items; empty → `0`, a scalar → `1` | `count(object.missing)` | `0` |
+| `in(x, list)` | whether `x` is in the list (compared by `==`, `'1' == 1`) | `in('vip', ['vip', 'x'])` | `true` |
+| `first(list)`, `last(list)` | first / last item; an empty list → `''` | `first(tasks.items)` | the first record |
+| `nth(list, i)` | the item with index `i` (0-based); negative — from the end; out of range → `''` | `nth(['a', 'b'], -1)` | `b` |
+| `slice(list, start[, length])` | a sublist (like `array_slice`: a negative `start` counts from the end) | `slice([1, 2, 3, 4], 1, 2)` | `[2,3]` |
+| `unique(list)` | without duplicates (compared by `==`), first-occurrence order | `unique([1, '1', 2])` | `[1,2]` |
+| `sort(list[, 'asc'\|'desc'])` | numbers — decimal, strings — byte-wise; in a mixed list numbers come before strings | `sort([10, 2, 1])` | `[1,2,10]` |
+| `reverse(list)` | reverse order | `reverse([1, 2, 3])` | `[3,2,1]` |
+| `concat_lists(a, b, …)` | concatenation of lists (not the string `concat`) | `concat_lists([1], [2, 3])` | `[1,2,3]` |
+| `without(list, x)` | the list without all items equal to `x` | `without(['spam', 'vip'], 'spam')` | `["vip"]` |
+| `sum(list)`, `avg(list)` | sum / average; empty items are skipped, `avg([])` — `''`; a non-numeric item is an error | `sum(['0.1', '0.2'])` | `0.3` |
+| `min(list)`, `max(list)` | minimum / maximum over the items (the same functions as in [Numbers](#numbers)) | `max([5, 2, 9])` | `9` |
+| `pluck(list, field)` | field values from a list of records; a missing field — `''`, nested — `'address.city'`; scalars are skipped | `pluck(tasks.items, 'name')` | `["Call back","Send offer"]` |
+| `where(list, field, value)` | records whose field equals `value` (rules of `==`) — filtering without lambdas | `count(where(tasks.items, 'status', 'Not Started'))` | `2` |
+| `index_of_item(list, x)` | index of the first item equal to `x`, or `-1` | `index_of_item(['a', 'b'], 'b')` | `1` |
+
+Typical scenarios:
+
+```text
+in('vip', to_list(object.tags_c, ',', '^'))                                  is the VIP tag present
+count(deals.items)                                                           how many deals find_records found
+sum(pluck(deals.items, 'amount'))                                            total over the found deals
+join(sort(unique(to_list(object.tags_c, ',', '^'))), ', ')                   tags without duplicates, sorted
+where(tasks.items, 'status', 'Not Started')                                  open tasks for update_records/foreach
+```
+
+**Edge cases.**
+
+| Expression | Result | Why |
+|---|---|---|
+| `in('a', 'abc')` | `false` | a string is a one-item list, not a substring |
+| `in('1', [1, 2])` | `true` | `==` compares a number and a string |
+| `sum(['1 234,56'])` | error `sum(): element 1 is not a number: "1 234,56"` | strict number check; parse text numbers with `to_number` |
+| `pluck('abc', 'x')` | `[]` | a scalar is not a record |
+| `first([])`, `avg([])` | `''` | an empty list |
+| `[1] + 1` | `'[1]1'` | `+` concatenates anything that is not a number; use `concat_lists` for lists |
+| `[1, 2] == [2, 1]` | `false` | lists are compared element by element, order matters |
+| `sort([1], 'up')` | save error `Function "sort": order must be "asc" or "desc"` | the order is only `asc` or `desc` |
+| `sort([3, 1], concat('u', 'p'))` | `[1,3]` | a computed order other than `desc` sorts ascending without an error |
+| `sort(['b', 10, 'a', 2])`, `sort(['b', 'B', 'a'])` | `[2,10,"a","b"]`, `["B","a","b"]` | numbers before strings; strings byte-wise — capitals first |
+| `unique(['a', 'A'])` | `["a","A"]` | `==` is case-sensitive |
+| `count('abc')`, `count('[1,2]')` | `1`, `2` | a string is one item, a JSON array in a string is decoded |
+| `to_list('a, b ,,c', ',')`, `to_list(5)` | `["a","b","c"]`, `[5]` | items are trimmed, empty ones dropped; a scalar is one item |
+| `to_list('a', '', '^')` | error `to_list(): separator is required when wrapper is given` | a wrapper without a separator makes no sense |
+| `nth(['a', 'b'], 5)`, `nth(['a', 'b'], 1.5)` | `''`, error `nth(): index must be an integer, got "1.5"` | out of range — empty; the index is an integer |
+| `slice([1, 2, 3, 4], -2)`, `slice([1, 2, 3, 4], 1, -1)` | `[3,4]`, `[2,3]` | a negative length drops items from the end |
+| `sum([1, '', null, 2])`, `sum([])` | `3`, `0` | empty items are skipped; the sum of an empty list is `0` |
+| `avg([1, 2, 2])` | `1.6666666667` | 10 decimals |
+| `without([1, '1', 2], 1)` | `[2]` | all items equal by `==` are removed |
+| `concat_lists([1], 'a', '')` | `[1,"a"]` | a string is one item, `''` is an empty list |
+| `pluck(list, 'address.city')` for three records where only the first has the field | `["Msk","",""]` | a nested field; records without it give `''` |
+
+**Limits and errors.** A list function accepts at most 10 000 items — otherwise a run-time error
+`List is too large (max 10000 items)`. Numeric arguments (`nth`, `slice`) must be integers: `nth(): index must be an
+integer, got "x"`. A list written into a CRM field is stored as a JSON array; to get a multienum, build the string with
+`join`/`concat` instead of writing the list directly. List variables produced by `find_records` are read-only.
+
+### Type checks and conversions
+
+Checks (`is_*`) always return `true`/`false` and never fail a step. Emptiness is the same as the "Empty" condition
+operator (see [Operators](triggers-and-conditions.md#operators)): `null`, an empty string or a string of spaces, an
+empty list; `0` and `'0'` are **not** empty.
+
+| Function | True when | Example | Result |
+|---|---|---|---|
+| `is_empty(x)` | `null`, `''`, a blank string or `[]` | `is_empty(object.phone_mobile)` | `true` |
+| `is_not_empty(x)` | the value is not empty | `is_not_empty(object.name)` | `true` |
+| `is_number(x)` | a strict number: `int`, `float` or text like `'12.5'`, `' 12 '`; `'1 234,56'` and `'1e3'` are not | `is_number(object.discount_c)` | `false` |
+| `is_numeric_text(x)` | the value converts to a number like `to_number` | `is_numeric_text('1 234,56')` | `true` |
+| `is_int(x)` | the value converts to an integer by the `int` cast rules | `is_int(object.qty)` | `true` |
+| `is_date(x)` | the value parses as a date or a datetime (`date`, `datetime`) | `is_date(object.date_closed)` | `true` |
+| `is_bool(x)` | the value converts to `bool` without an error (`true`/`1`/`t`/`yes`/`y`/`on`/`да`, `false`/`0`/`f`/`no`/`n`/`off`/`нет`, case-insensitive) | `is_bool(object.do_not_call)` | `true` |
+| `is_list(x)` | a list (indices `0…n`) | `is_list(object.tags)` | `true` |
+| `is_object(x)` | a record — an associative array | `is_object(resp.body)` | `true` |
+
+Conversions use the same `TypeCaster` as conditions, so the result matches `cast`:
+
+| Function | Result | Example | Result of the example |
+|---|---|---|---|
+| `to_string(x)` | text: `true`/`false`, a list or a record becomes JSON | `to_string([1, 2])` | `[1,2]` |
+| `to_bool(x)` | `bool`; empty → `false`, an invalid value — error `Cannot convert "abc" to boolean` | `to_bool(object.do_not_call)` | `true` |
+| `to_date(x[, format])`, `to_datetime(x[, format[, tz]])` | synonyms of `date()` / `datetime()` — see [Dates and time](#dates-and-time) | `to_date('16.10.2026')` | `2026-10-16` |
+| `to_number(x)`, `to_int(x)` | see [Numbers](#numbers) | `to_number('1 234,56')` | `1234.56` |
+| `to_list(x[, sep[, wrapper]])` | see [Lists](#lists) | `to_list('^a^,^b^', ',', '^')` | `["a","b"]` |
+
+Scenarios:
+
+```text
+if(is_empty(object.phone_mobile), object.phone_work, object.phone_mobile)   mobile or work phone
+if(is_number(object.discount_c), object.amount * (1 - object.discount_c / 100), object.amount)
+if(to_bool(object.do_not_call), 'Do not call', 'May call')
+```
+
+Edge cases of checks and conversions (checked on a running WPS):
+
+| Expression | Result | Why |
+|---|---|---|
+| `is_empty(' ')`, `is_empty('0')`, `is_empty(false)` | `true`, `false`, `false` | spaces are empty; `'0'` and `false` are values |
+| `is_number('')`, `is_number(true)`, `is_number('1e3')` | `false`, `false`, `false` | strict numeric format only |
+| `is_int('100.00')`, `is_int(' 1 200 ')`, `is_int('1.5')` | `true`, `true`, `false` | a zero fraction and space separators are allowed |
+| `is_date('2026-02-30')`, `is_date('2026-10-16T07:30:00Z')` | `false`, `true` | a non-existent date is not a date; ISO 8601 is understood |
+| `is_bool('t')`, `is_bool(2)` | `true`, `false` | of numbers only `0` and `1` |
+| `is_list('[1,2]')`, `is_list([])` | `false`, `true` | a string with JSON is text, not a list; parse it with `to_list` |
+| `is_object([])`, `is_object(tasks.items)` | `false`, `false` | an empty array and a list of records are not a record |
+| `to_string(null)`, `to_string(1.50)` | `''`, `1.5` | |
+| `to_bool(' ')`, `to_bool('Y')`, `to_bool(0)` | `false`, `true`, `false` | |
+
+`is_number` checks the **format** (like a comparison with `cast: decimal`), `is_numeric_text` checks
+**convertibility** (like `to_number`). For `'1 234,56'` the first gives `false`, the second `true`. An empty string is
+`false` for every check except `is_empty`.
+
+### JSON
+
+JSON functions work with an already decoded value (`resp.body` after an [HTTP request](actions.md#http-request)) and
+with a JSON string (a CRM field, `body_text`). `json_get` and `json_get_all` accept both forms. The path is JSONPath in
+Goessner syntax: `$.data.id`, `$.items[0]`, `$..id`, `$.items[*].id`, filters `$.items[?(@.qty > 3)]`.
+
+| Function | Result | Example | Result of the example |
+|---|---|---|---|
+| `json_encode(x)` | the value as JSON; Cyrillic and `/` are not escaped, the string `'42'` stays a string | `json_encode(list(1, 'a'))` | `[1,"a"]` |
+| `json_decode(s)` | a string → a value; an object becomes an associative array, an empty string → `''` | `json_decode('[1, 2]')` | `[1,2]` |
+| `json_get(json, path[, default])` | the first match; nothing found — `default` (`''` by default) | `json_get(resp.body, '$.data.customer.id')` | `42` |
+| `json_get_all(json, path)` | a list of all matches; nothing found — `[]` | `json_get_all(resp.body, '$.items[*].id')` | `[1,2]` |
+
+```text
+json_get(object.payload, '$.customer.id')                    an id from JSON in a text field
+json_get(resp.body, '$.order.status', 'unknown')             a status from a webhook response
+json_get_all(resp.body, '$.items[*].id')                     all ids from a response
+join(json_get_all(object.payload, '$.tags[*]'), ', ')        tags from JSON
+json_encode(list(object.id, object.name))                    ['id', 'name'] for an external system
+```
+
+**Limits and errors.** A JSON string is at most 1 MB, nesting depth 64. Invalid JSON gives the error
+`json_decode(): Syntax error` in `json_decode` and `json_get(): invalid JSON` / `json_get_all(): invalid JSON` in `json_get`/`json_get_all`; a string longer than 1 MB —
+`json_decode(): JSON is too long (max 1048576 bytes)` (the same for `json_get`); data that cannot be encoded (for
+example invalid UTF-8) — `json_encode(): …`. A literal
+JSONPath is validated **when the process is saved**:
+
+| Expression | Error on save |
+|---|---|
+| `json_get(object.x, 'data.id')` | `json_get(): JSONPath must start with "$"` |
+| `json_get(object.x, '$.items[?(@.id')` | `json_get(): Invalid JSONPath: …` |
+
+Edge cases (checked on a running WPS; `resp.body` = `{"data":{"customer":{"id":42}},"items":[{"id":1,"qty":2},{"id":2,"qty":5}]}`):
+
+| Expression | Result | Why |
+|---|---|---|
+| `json_encode('42')`, `json_encode(null)` | `"42"`, `null` | a string stays a quoted string |
+| `json_decode('"x"')`, `json_decode('42')`, `json_decode('')` | `x`, `42`, `''` | scalar JSON is allowed; an empty string is empty |
+| `json_get(resp.body, '$.items[0]')` | `{"id":1,"qty":2}` | a match may be a record |
+| `json_get_all(resp.body, '$..id')` | `[42,1,2]` | recursive descent |
+| `json_get_all(resp.body, '$.items[?(@.qty > 3)].id')` | `[2]` | a filter |
+| `json_get('', '$.a')`, `json_get(object.missing, '$.a', 'd')` | `''`, `d` | no document — the default |
+| `json_get('42', '$.a', 'd')` | `d` | scalar JSON is not a document |
+| `json_get('{bad', '$.a')` | error `json_get(): invalid JSON` | invalid JSON is always an error, not the default |
+
+When the response is already decoded by `http_request`, a plain path works without JSONPath: `resp.body.data.id`.
+
 ### Dates and time
 
 **Value format.** Date functions return strings in a canonical format — they can be written to the CRM as is and
@@ -274,12 +667,12 @@ Functions with a `tz` argument accept `'local'` (= `WPS_TIMEZONE`), `'UTC'` or a
 | `now()` | current moment, UTC | `now()` | `2026-10-16 07:30:00` |
 | `today([tz])` | today's date in `tz` (local by default) | `today()` | `2026-10-16` |
 | `date(value[, format])` | calendar date; from a datetime — the day in local; `format` is a PHP format for non-standard input | `date('2026-10-15 22:30:00')`, `date('16/10/2026', 'd/m/Y')` | `2026-10-16`, `2026-10-16` |
-| `datetime(value[, format[, tz]])` | datetime in UTC; `tz` is the zone an input without an offset is written in (UTC by default); a date without a time is midnight in `tz`, or in local without `tz` | `datetime('2026-10-17 10:00', 'Y-m-d H:i', 'local')` | `2026-10-17 07:00:00` |
+| `datetime(value[, format[, tz]])` | datetime in UTC; `tz` is the zone an input without an offset is written in (UTC by default); a date without a time is midnight in `tz`, or in local without `tz` | `datetime('2026-10-17 10:00', 'Y-m-d H:i', 'local')`, `datetime('2026-10-17')`, `datetime('2026-10-16T10:30:00+03:00')` | `2026-10-17 07:00:00`, `2026-10-16 21:00:00`, `2026-10-16 07:30:00` |
 | `add_minutes(d, n)`, `add_hours(d, n)` | absolute time; a date becomes a datetime (from local midnight) | `add_hours('2026-10-16', 2)` | `2026-10-15 23:00:00` |
 | `add_days(d, n)`, `add_weeks(d, n)` | calendar days; a datetime keeps its local time | `add_days(today(), 3)` | `2026-10-19` |
 | `add_months(d, n)`, `add_years(d, n)` | months, clipped to the end of the month | `add_months('2026-01-31', 1)`, `add_years('2024-02-29', 1)` | `2026-02-28`, `2025-02-28` |
 | `date_diff(from, to, unit)` | `to − from` in whole units, truncated toward zero; `unit`: `minutes`, `hours`, `days`, `weeks`, `months`, `years` | `date_diff('2026-10-16', '2026-10-15', 'days')` | `-1` |
-| `year(d[, tz])`, `month`, `day`, `hour`, `minute` | part of the date in local or `tz` | `hour('2026-10-16 07:30:00')`, `hour('2026-10-16 07:30:00', 'UTC')` | `10`, `7` |
+| `year(d[, tz])`, `month`, `day`, `hour`, `minute` | part of the date as a number in local or `tz` | `hour('2026-10-16 07:30:00')`, `hour('2026-10-16 07:30:00', 'UTC')`, `minute('2026-10-16 07:30:00', 'Asia/Kolkata')` | `10`, `7`, `0` |
 | `weekday(d[, tz])` | ISO day of the week: 1 — Monday … 7 — Sunday | `weekday('2026-10-16')` | `5` |
 | `week(d[, tz])`, `quarter(d[, tz])` | ISO week number, quarter 1–4 | `week('2026-10-16')`, `quarter('2026-10-16')` | `42`, `4` |
 | `start_of_day(d)`, `end_of_day(d)` | start (`00:00:00`) / end (`23:59:59`) of the day | `end_of_day('2026-10-16 07:30:00')` | `2026-10-16 20:59:59` |
@@ -334,8 +727,18 @@ that does not exist.
 | Expression size | 500 nodes (numbers, paths, operators, calls) | `Expression is too complex (max 500 nodes)` |
 | Nesting | 32 levels of parentheses and calls | `Expression is nested too deeply (max 32 levels)` |
 | Result length | 1 MB | `Expression result is too long` |
+| Right-hand expression of a condition (`value_type: expression`) | 1000 characters | `Expression is too long (max 1000 characters)` |
+| Items in a list (any list function, `split`, `list`) | 10,000 | `List is too large (max 10000 items)` |
+| `pad_left` / `pad_right` length, `repeat` count | 0…1000 | `Function "repeat": count must be an integer between 0 and 1000, got "…"` |
+| Regular expression pattern | 500 characters | `Regular expression in regex_match() is too long (max 500 characters)` |
+| Regular expression subject | 100,000 characters | `Regular expression input in regex_match() is too long (max 100000 characters)` |
+| Regex backtracking / recursion | 100,000 / 10,000 | `Regular expression failed: backtrack limit exceeded` |
+| JSON string / JSON depth | 1 MB / 64 levels | `json_decode(): JSON is too long (max 1048576 bytes)` |
+| Digits in a number | 100 | `Number is too large` |
+| Precision of division, `avg`, `sqrt` | 10 decimals | — (rounded half away from zero) |
 
-The first three are checked on save, the result length at run time.
+Expression length, size and nesting are checked on save, the rest at run time (for literal arguments — on save as
+well).
 
 ### Edge cases
 
@@ -388,6 +791,9 @@ Checked when the process is saved (the step never runs with a broken expression)
 | `Unexpected character "#" at position …` | A character that is not part of the syntax |
 | `Expression is too long …`, `Expression is too complex …`, `Expression is nested too deeply …` | A [limit](#limits) is exceeded |
 | `Variable "v3" is not defined at this point` | The expression uses a variable that is not declared before this row |
+| `Unknown system variable "sys.x"; available: …` | An unknown `sys.*` field |
+| `Constant "x" is not defined in definition.constants` | The constant in the `config.x` path is not declared |
+| `Variable "sys" is read-only` / `Name "config" is reserved` | An attempt to write to a system variable or constants |
 | `Function "round": precision must be an integer`, `Function "number_format": decimals must be an integer` | A fractional literal precision |
 | `Number is too large at position …` | A numeric literal longer than 100 digits |
 
@@ -398,6 +804,13 @@ division by zero, a non-boolean condition (`Condition must be boolean, got "…"
 finite number (`Expression result is not a finite number`), a number longer than 100 digits (`Number is too large`), a
 non-numeric argument of a numeric function (`Function "floor" requires a number, got "abc"`), unparseable text in
 `to_number` / `to_int` (`Cannot convert "abc" to a number`).
+
+Errors of specific functions (strings, regular expressions, lists, JSON, dates) are listed in their sections:
+[Strings](#strings), [Regular expressions](#regular-expressions), [Numbers](#numbers), [Lists](#lists),
+[Type checks and conversions](#type-checks-and-conversions), [JSON](#json), [Dates and time](#dates-and-time).
+Literal arguments are checked on save as well: regex flags and pattern, JSONPath (`json_get(): JSONPath must start with "$"`),
+the sort order (`Function "sort": order must be "asc" or "desc"`), the `pad_*` / `repeat` length, the `date_diff` unit
+and the time zone (`Unknown timezone "Mars/Base"`).
 
 ## Template
 

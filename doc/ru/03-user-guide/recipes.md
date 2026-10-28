@@ -6,8 +6,16 @@
 [🇬🇧 English](../../en/03-user-guide/recipes.md) | 🇷🇺 Русский
 <!-- /lang-switch -->
 
-Все сценарии проверены на встроенном моке CRM (см. [Быстрый старт](../02-getting-started/quick-start.md)): мок публикует
-тестовые события в стрим и эмулирует API CRM, поэтому всё можно попробовать без настоящей CRM.
+Определение каждого сценария проверено сохранением на текущей версии WPS. Сценарии проверены выполнением на встроенном
+моке CRM (см. [Быстрый старт](../02-getting-started/quick-start.md)) или на стенде SuiteCRM 8 — в разделе «Как
+проверить» каждого сценария сказано, где. Мок публикует тестовые события в стрим и эмулирует API CRM, поэтому
+большинство сценариев можно попробовать без настоящей CRM.
+
+> **Примечание**
+> Сценарии 1–8 собираются в визуальном редакторе. Остальные используют возможности, которых в редакторе нет (`cast`,
+> списки значений, письма, HTTP-запросы, циклы, константы…), — создавайте их через API. В редакторе такой процесс можно
+> открыть и сохранить без потерь, но эти части показываются только для чтения (см. [Обзор](../01-overview/index.md#что-настраивается-в-редакторе-а-что-через-api)).
+> Пользовательские поля с суффиксом `_c` (`interests_c`, `form_payload_c` …) нужно создать в CRM или заменить своими.
 
 ## Как пользоваться сценарием
 
@@ -50,6 +58,7 @@
 | 6 | [Новый лид → звонок, один раз на лид](#6-новый-лид--звонок-один-раз-на-лид) | Leads | **Включает**, **Запустить следующий процесс**, **Однократный запуск для записи** |
 | 7 | [Заказ: контрагент по ИНН](#7-заказ-контрагент-по-инн) | Orders | предзагрузка по полю, отличному от id |
 | 8 | [Обращение: заметка у контакта контрагента](#8-обращение-заметка-у-контакта-контрагента) | Tickets | цепочка предзагрузки **Из поля переменной**, защитное условие |
+| 9 | [Условия по типу, пустоте и спискам](#9-условия-по-типу-пустоте-и-спискам-через-api) | Leads | **Входит в**, **Пусто**, **Данные отсутствуют** по предзагруженной переменной, `cast: decimal` |
 | 10 | [Категория сделки](#10-категория-сделки-ifs-if) | Deals | **Расчёт**, условные функции `ifs`, `if`, сравнения и `and` |
 | 11 | [Лучший телефон для звонка](#11-лучший-телефон-для-звонка-coalesce) | Leads | **Расчёт**, `coalesce` — первое непустое значение |
 | 12 | [Звонок за 3 дня до закрытия сделки в 10:00 по местному времени](#12-звонок-за-3-дня-до-закрытия-сделки-в-1000-по-местному-времени) | Deals | функции дат `add_days`, `datetime` с поясом, `format_date`, создание звонка |
@@ -94,6 +103,12 @@
 | 51 | [Сделка в коридоре ±10 % от плана](#51-сделка-в-коридоре-10--от-плана-between-с-выражениями) | Opportunities | **В диапазоне** с парой выражений |
 | 52 | [Карточка контрагента: счётчик, история, рейтинг по отрасли](#52-карточка-контрагента-счётчик-история-рейтинг-по-отрасли-increment-append-clear-map) | Accounts | **Увеличить на**, **Дописать в конец**, **Очистить**, **По таблице соответствия** |
 | 53 | [Приоритет обращения по рейтингу контрагента](#53-приоритет-обращения-по-рейтингу-контрагента-map) | Cases | **По таблице соответствия** с ключом `""` и `default` |
+| 54 | [Нормализовать телефон в E.164](#54-нормализовать-телефон-в-e164-regex_replace-right) | Leads | Регулярное выражение, `set_variable`, `if`/`right`/`starts_with`, защита от повторного запуска |
+| 55 | [Интересы лида: порядок и метка VIP](#55-интересы-лида-порядок-и-метка-vip-функции-списков) | Leads | Функции списков для мультисписка: `to_list`, `unique`, `without`, `sort`, `in`, `count`, `first`, `join` с обрамлением `^` |
+| 56 | [Чистка контакта: ФИО и e-mail](#56-чистка-контакта-фио-и-e-mail-регулярные-выражения-строки) | Contacts | Нормализация строк: `regex_replace`, `trim`, `title_case`, `lower`, `regex_match`, `translit`; группа OR из `changed` |
+| 57 | [Лид в ERP: разбор JSON-ответа](#57-лид-в-erp-разбор-json-ответа-http_request-json_get) | Leads | `json_get` / `json_get_all` по JSON из поля CRM и из ответа `http_request`, фильтр JSONPath `[?(@.qty > 3)]`, `response.extract` |
+| 58 | [Сегмент и скидка сделки по константам](#58-сегмент-и-скидка-сделки-по-константам-config) | Deals | Константы `config.*` в условиях (`value_type: expression`), выражениях и шаблонах |
+| 59 | [Крупная сделка: уведомление с данными выполнения](#59-крупная-сделка-уведомление-с-данными-выполнения-sys-config) | Deals | `sys.*` в тексте `notify` и `send_email`: процесс, версия, выполнение, источник, изменённые поля, пользователь |
 
 ---
 
@@ -525,38 +540,55 @@ curl -sg "http://localhost:9502/test-event?module=Tickets&set[status]=New"      
 
 ## 9. Условия по типу, пустоте и спискам (через API)
 
-Четыре коротких условия из задач 3.1, 3.2, 3.4. Редактор пока строит только операторы **Равен** / **Не равен** /
-**Включает** / **Не включает**, поэтому такие строки задаются через API (`POST` / `PUT /api/processes`); редактор
-сохраняет их без изменений. Подробности — [Условия запуска](triggers-and-conditions.md#операторы).
+**Что делает.** Лид в статусе `New`, `Assigned` или `In Process` без мобильного телефона, компания которого не найдена
+в CRM, получает в описании пометку «проверить». Сценарий собирает в одном процессе условия из задач 3.1, 3.2, 3.4.
+Редактор строит из формы только операторы с одним текстовым значением, поэтому такие строки задаются через API
+(`POST` / `PUT /api/processes`); на карточке процесса они показываются как есть. Подробности —
+[Условия запуска](triggers-and-conditions.md#операторы).
 
-**Крупная сделка.** Сумма больше миллиона — сравнение как десятичных чисел (`"1500000"`, `"1 500 000,00"` и
-`1500000` одинаковы):
+```json
+{
+  "name": "Лид без мобильного и без компании в CRM",
+  "object_type": "Leads",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": ["create", "update"],
+  "definition": {
+    "conditions": [
+      { "field": "object.status", "operator": "in", "value_type": "static", "value": ["New", "Assigned", "In Process"] },
+      { "field": "object.phone_mobile", "operator": "is_empty" },
+      { "field": "company.id", "operator": "is_null" }
+    ],
+    "preload": [
+      { "var": "company", "source": "object_field", "module": "Accounts", "by_field": "name", "value": "object.account_name" }
+    ],
+    "actions": [
+      { "type": "modify", "target": "object.description", "change_type": "template",
+        "value": "Проверить лид: нет мобильного телефона, компании «{{ object.account_name | default:'—' }}» нет в CRM", "save_to_crm": true }
+    ]
+  }
+}
+```
+
+- **Статус из списка** (`in`): вместо трёх групп OR — один оператор со списком значений.
+- **Нет мобильного телефона** (`is_empty`): CRM присылает незаполненное поле пустой строкой — это «пусто». Значения у
+  строки нет.
+- **Компания не найдена в CRM** (`is_null`): предзагрузка `company` ищет контрагента по названию; если его нет,
+  переменная пустая и данных у `company.id` нет. Предзагрузка выполняется лениво — только когда первые две строки уже
+  истинны.
+
+**Ещё одно условие — крупная сделка.** Для процесса по сделкам: сумма больше миллиона, сравнение как десятичных чисел
+(`"1500000"`, `"1 500 000,00"` и `1500000` одинаковы):
 
 ```json
 { "field": "object.amount", "operator": "greater_than", "cast": "decimal", "value_type": "static", "value": "1 000 000" }
 ```
 
-**Нет мобильного телефона.** CRM присылает незаполненное поле пустой строкой — это «пусто»:
-
-```json
-{ "field": "object.phone_mobile", "operator": "is_empty" }
-```
-
-**Компания не найдена в CRM.** Предзагрузка `company` (модуль `Accounts`, поле поиска `name`, значение
-`object.account_name`); если компании нет, переменная пустая и данных у `company.id` нет:
-
-```json
-{ "field": "company.id", "operator": "is_null" }
-```
-
-**Статус из списка.** Вместо трёх групп OR — один оператор:
-
-```json
-{ "field": "object.status", "operator": "in", "value_type": "static", "value": ["New", "Assigned", "In Process"] }
-```
-
-**Как проверить.** Ручной запуск (`POST /api/processes/{id}/run`) показывает в трассе условий `actual_cast` /
-`expected_cast`, для `is_null` — `found: false`, для `in` — список элементов `expected_cast`.
+**Как проверить.** Ручной запуск (`POST /api/processes/{id}/run`) с объектом
+`{"id": "<id лида>", "module": "Leads", "status": "New", "phone_mobile": "", "account_name": "Нет такой ООО"}`: в трассе
+условий у `in` — список `expected_cast`, у `is_empty` — `found: true`, у `is_null` — `found: false`,
+`missing: "actual"`; описание лида получает пометку. С `"phone_mobile": "+7999…"` вторая строка ложна, третья —
+**не проверено** (`result: null`), предзагрузка не выполняется. Проверено на моке CRM.
 
 ---
 
@@ -1561,16 +1593,51 @@ SuiteCRM — до 50 символов, лишнее CRM обрезает, поэ
 шаг «Клиент подтверждён: согласовать КП», сумма открытых сделок копится в переменной процесса и пишется в описание
 контрагента.
 
-Определение — в разделе [Цикл (для каждого элемента)](actions.md#пример-сделки-нового-клиента). Главное:
+```json
+{
+  "name": "Новый клиент: следующий шаг открытых сделок",
+  "object_type": "Accounts",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": ["update"],
+  "definition": {
+    "conditions": [ { "field": "object.account_type", "operator": "changed_to", "value_type": "static", "value": "Customer" } ],
+    "preload": [],
+    "actions": [
+      { "type": "find_records", "var": "deals", "related_to": { "record": "object", "link": "opportunities" } },
+      { "type": "set_variable", "var": "sum", "fields": [
+        { "name": "total", "change_type": "set_value", "value": "0" },
+        { "name": "n", "change_type": "set_value", "value": "0" } ] },
+      { "id": "each_deal", "type": "foreach", "source": "deals.items", "as": "deal",
+        "where": [ { "field": "deal.sales_stage", "operator": "not_in", "value_type": "static", "value": ["Closed Won", "Closed Lost"] } ],
+        "actions": [
+          { "type": "modify", "target": "deal.next_step", "change_type": "template", "value": "Клиент подтверждён: согласовать КП ({{ object.name | truncate:20 }})" },
+          { "type": "save_object", "target": "deal" },
+          { "type": "set_variable", "var": "sum", "fields": [
+            { "name": "total", "change_type": "calculate", "value": "sum.total + deal.amount" },
+            { "name": "n", "change_type": "calculate", "value": "sum.n + 1" } ] }
+        ] },
+      { "type": "modify", "target": "object.description", "change_type": "template", "value": "Открытых сделок: {{ sum.n }} на сумму {{ sum.total }}" },
+      { "type": "save_object", "target": "object", "module": "Accounts" }
+    ]
+  }
+}
+```
 
+- `find_records` по связи `opportunities` загружает все сделки контрагента в переменную-список `deals`;
 - накопитель `sum` инициализируется **до** цикла (`set_variable` со значением `0`) и увеличивается в теле
   (`calculate`: `sum.total + deal.amount`) — переменные тела сохраняются между итерациями и после цикла;
 - закрытые сделки отсеивает `where` цикла, поэтому итог показывает `skipped_by_where`;
+- `save_object deal` без `module`: модуль `Opportunities` известен из списка «Найти записи»;
 - после цикла `deal` и `deal_loop` недоступны, `sum` — доступна.
 
-Проверено на SuiteCRM 8: кейс `.tehnical/suiteCRM8/processes/cases/4.11-foreach.json` — у двух открытых сделок
-следующий шаг заполнен, выигранная не изменена, описание контрагента «Открытых сделок: 2 на сумму 3500.5».
+Подробности цикла — [Действия → Цикл](actions.md#пример-сделки-нового-клиента).
 
+**Как проверить.** Проверено на SuiteCRM 8: кейс `.tehnical/suiteCRM8/processes/cases/4.11-foreach.json` — у двух
+открытых сделок следующий шаг заполнен, выигранная не изменена, описание контрагента «Открытых сделок: 2 на сумму
+3500.5»; итог цикла `processed: 2`, `skipped_by_where: 1`.
+
+---
 
 ## 33. Сделка проиграна → отложить все открытые задачи (`update_records`)
 
@@ -2403,6 +2470,441 @@ no manager»). Уведомление идёт новому ответствен
 
 **Как проверить.** Создайте обращение для контрагента с рейтингом Hot — приоритет P1; без рейтинга — P3. В журнале шага
 `modify` видны `old_value` и `new_value`. Рецепт на стенде не запускался; `map` проверен кейсом 5.1.3.
+
+## 54. Нормализовать телефон в E.164 (`regex_replace`, `right`)
+
+**Что делает.** При изменении рабочего телефона лида процесс оставляет в номере только цифры, приводит российский
+номер к виду `+7XXXXXXXXXX` и записывает результат в `phone_mobile`. Некорректный номер не затирается: в мобильное
+поле попадает исходное значение.
+
+```json
+{
+  "name": "Нормализация телефона",
+  "object_type": "Leads",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": ["update"],
+  "definition": {
+    "conditions": [ { "field": "object.phone_work", "operator": "changed" } ],
+    "preload": [],
+    "actions": [
+      { "type": "set_variable", "var": "norm", "fields": [
+        { "name": "digits", "change_type": "calculate", "value": "regex_replace(object.phone_work, '[^0-9]', '')" }
+      ] },
+      { "type": "set_variable", "target": "norm.e164", "change_type": "calculate",
+        "value": "if(len(norm.digits) == 11 and starts_with(norm.digits, '8'), concat('+7', right(norm.digits, 10)), if(len(norm.digits) == 10, concat('+7', norm.digits), concat('+', norm.digits)))" },
+      { "type": "set_variable", "target": "norm.ok", "change_type": "calculate",
+        "value": "regex_match(norm.e164, '^\\+7\\d{10}$')" },
+      { "type": "modify", "target": "object.phone_mobile", "change_type": "calculate",
+        "value": "if(norm.ok, norm.e164, object.phone_work)" },
+      { "type": "save_object", "target": "object", "module": "Leads" }
+    ]
+  }
+}
+```
+
+`regex_replace` с шаблоном `[^0-9]` убирает пробелы, скобки и дефисы. Восемь в начале заменяется на `+7`, десятизначный
+номер получает `+7`, остальные значения — `+` и все цифры. `regex_match` проверяет итог; если номер не похож на
+российский, в `phone_mobile` остаётся исходное значение. Условие `phone_work changed` не даёт процессу запуститься
+повторно после `save_object` (он меняет только `phone_mobile`).
+
+**Как проверить.** Сохраните лид с `phone_work = 8 (999) 123-45-67`, затем измените телефон на `+7 999 123-45-67`:
+в `phone_mobile` будет `+79991234567`. Для `123` в `phone_mobile` останется `123`, а в журнале шага `modify` будет
+`new_value = 123`. Выражения рецепта проверены сохранением процесса на стенде; строковые функции — юнит- и
+интеграционными тестами.
+
+---
+
+## 55. Интересы лида: порядок и метка VIP (функции списков)
+
+**Что делает.** В пользовательском поле-мультисписке лида `interests_c` (создаётся в Студии CRM; формат значения —
+`^a^,^b^`) менеджеры отмечают интересы клиента. Процесс приводит значение к порядку: убирает повторы и метку `spam`,
+переводит в нижний регистр, сортирует по алфавиту и записывает обратно. В описание лида попадает сводка: сколько
+интересов, главный (первый по алфавиту) и признак VIP — есть метка `vip` или интересов три и больше.
+
+```json
+{
+  "name": "Интересы лида: порядок и метка VIP",
+  "object_type": "Leads",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": [
+    "create",
+    "update"
+  ],
+  "definition": {
+    "conditions": [
+      {
+        "field": "object.interests_c",
+        "operator": "changed"
+      }
+    ],
+    "preload": [],
+    "actions": [
+      {
+        "type": "set_variable",
+        "var": "tags",
+        "fields": [
+          {
+            "name": "raw",
+            "change_type": "calculate",
+            "value": "to_list(lower(object.interests_c), ',', '^')"
+          }
+        ]
+      },
+      {
+        "type": "set_variable",
+        "target": "tags.clean",
+        "change_type": "calculate",
+        "value": "sort(unique(without(tags.raw, 'spam')))"
+      },
+      {
+        "type": "set_variable",
+        "target": "tags.vip",
+        "change_type": "calculate",
+        "value": "in('vip', tags.clean) or count(tags.clean) >= 3"
+      },
+      {
+        "type": "modify",
+        "target": "object.interests_c",
+        "change_type": "calculate",
+        "value": "join(tags.clean, ',', '^')"
+      },
+      {
+        "type": "modify",
+        "target": "object.description",
+        "change_type": "template",
+        "value": "Интересы ({{= count(tags.clean) }}): {{= join(tags.clean, ', ') }}. Главный: {{= first(tags.clean) }}. VIP: {{= if(tags.vip, 'да', 'нет') }}"
+      },
+      {
+        "type": "save_object",
+        "target": "object",
+        "module": "Leads"
+      }
+    ]
+  }
+}
+```
+
+- `to_list(lower(…), ',', '^')` разбирает мультисписок в список, снимая обрамление `^`; регистр приводится **до**
+  разбора, поэтому `VIP` и `vip` становятся одним значением.
+- `without` убирает все `spam`, `unique` — повторы, `sort` — сортирует. Порядок вызовов важен: функции списков
+  вкладываются друг в друга, а не вызываются цепочкой.
+- `join(tags.clean, ',', '^')` собирает список обратно в формат мультисписка CRM. Список, записанный в поле
+  напрямую, сохранился бы как JSON-массив — CRM его не поймёт.
+- В шаблоне выражения пишутся в `{{= … }}`: `{{= count(tags.clean) }}`, `{{= first(tags.clean) }}`.
+- Условие `interests_c` **Изменилось** защищает от зацикливания: после сохранения нормализованное значение уже не
+  меняется, и следующее событие процесс не запускает.
+
+**Как проверить.** Ручной запуск с объектом `{"id": "<id лида>", "module": "Leads", "interests_c":
+"^Partner^,^vip^,^spam^,^VIP^,^cloud^", "event_type": "create", "changed_fields": ["interests_c"]}`. В шагах:
+`set_variable` `tags.raw` = `["partner","vip","spam","vip","cloud"]`, `tags.clean` = `["cloud","partner","vip"]`,
+`tags.vip` = `true`; `interests_c` = `^cloud^,^partner^,^vip^`; описание «Интересы (3): cloud, partner, vip. Главный:
+cloud. VIP: да». Без `changed_fields` условие ложно (`change_info: "missing"`). Проверено на моке CRM; для SuiteCRM
+создайте поле `interests_c` (или замените его на стандартный мультисписок `AOS_Quotes.template_ddown_c`, как в
+рецепте 49).
+
+---
+
+## 56. Чистка контакта: ФИО и e-mail (регулярные выражения, строки)
+
+**Что делает.** Когда у контакта меняются имя, фамилия или e-mail, процесс убирает лишние пробелы, приводит ФИО к виду
+«Иван», «Петров - Сидоров», e-mail — к нижнему регистру без пробелов, а в описание пишет ФИО латиницей. E-mail, который
+после чистки не похож на адрес, не трогается — в описании появляется предупреждение.
+
+```json
+{
+  "name": "Чистка контакта: ФИО и e-mail",
+  "object_type": "Contacts",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": ["create", "update"],
+  "definition": {
+    "conditions": {
+      "logical_operator": "OR",
+      "conditions": [
+        { "field": "object.first_name", "operator": "changed" },
+        { "field": "object.last_name", "operator": "changed" },
+        { "field": "object.email1", "operator": "changed" }
+      ]
+    },
+    "preload": [],
+    "actions": [
+      { "type": "set_variable", "var": "clean", "fields": [
+        { "name": "first", "change_type": "calculate", "value": "title_case(lower(regex_replace(trim(object.first_name), '\\s+', ' ')))" },
+        { "name": "last", "change_type": "calculate", "value": "title_case(lower(regex_replace(trim(object.last_name), '\\s+', ' ')))" },
+        { "name": "email", "change_type": "calculate", "value": "lower(regex_replace(object.email1, '\\s', ''))" }
+      ] },
+      { "type": "set_variable", "target": "clean.email_ok", "change_type": "calculate",
+        "value": "regex_match(clean.email, '^[^@]+@[^@]+\\.[a-z]{2,}$')" },
+      { "type": "modify", "target": "object.first_name", "change_type": "calculate", "value": "clean.first" },
+      { "type": "modify", "target": "object.last_name", "change_type": "calculate", "value": "clean.last" },
+      { "type": "modify", "target": "object.email1", "change_type": "calculate",
+        "value": "if(clean.email_ok, clean.email, object.email1)" },
+      { "type": "modify", "target": "object.description", "change_type": "calculate",
+        "value": "concat('Латиницей: ', translit(concat(clean.first, ' ', clean.last)), if(clean.email_ok, '', '; e-mail не похож на адрес'))" },
+      { "type": "save_object", "target": "object", "module": "Contacts" }
+    ]
+  }
+}
+```
+
+- Условия — группа **ИЛИ** (`logical_operator: "OR"`) из трёх строк **Изменилось**: процесс срабатывает, если
+  изменилось хотя бы одно из полей. Такая группа задаётся только через API.
+- `regex_replace(trim(x), '\s+', ' ')` схлопывает любые пробельные символы (несколько пробелов, табуляцию) в один пробел;
+  в JSON обратный слэш удваивается (`'\\s+'`), в самом выражении это `'\s+'`.
+- `title_case(lower(…))` — сначала всё в нижний регистр, затем каждое слово с заглавной: `ПЕТРОВ  -  сидоров` →
+  `Петров - Сидоров`.
+- `regex_match(clean.email, '^[^@]+@[^@]+\.[a-z]{2,}$')` — простая проверка формата; шаблон проверяется при сохранении
+  процесса, неверный шаблон не сохранится.
+- `translit` — транслитерация по ГОСТ 7.79-2000 (система Б): `Иван Петров - Сидоров` → `Ivan Petrov - Sidorov`.
+- Повторного зацикливания нет: после сохранения поля уже нормализованы, и CRM не сообщает их как изменённые.
+
+**Как проверить.** Ручной запуск с объектом `{"id": "<id контакта>", "module": "Contacts", "first_name": "  иван   ",
+"last_name": "ПЕТРОВ  -  сидоров", "email1": " Ivan.Petrov@Example.COM ", "event_type": "update", "changed_fields":
+["first_name", "email1"], "before": {"first_name": "", "email1": ""}}`. Результат: `first_name` = `Иван`,
+`last_name` = `Петров - Сидоров`, `email1` = `ivan.petrov@example.com`, описание «Латиницей: Ivan Petrov - Sidorov».
+Проверено на моке CRM.
+
+---
+
+## 57. Лид в ERP: разбор JSON-ответа (`http_request`, `json_get`)
+
+**Что делает.** Сайт кладёт в текстовое поле лида `form_payload_c` JSON формы: метки UTM и корзину
+(`{"utm": {"source": "google", "campaign": "autumn"}, "cart": [{"sku": "CRM-START", "qty": 1}, {"sku": "SEAT",
+"qty": 10}]}`). При создании лида процесс достаёт из JSON источник и кампанию, отправляет лид с позициями корзины в ERP,
+разбирает JSON-ответ ERP (номер заказа, статус, позиции, оптовые позиции с количеством больше 3) и пишет сводку в
+описание лида.
+
+```json
+{
+  "name": "Лид в ERP: разбор JSON-ответа",
+  "object_type": "Leads",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": ["create"],
+  "definition": {
+    "conditions": [],
+    "preload": [],
+    "actions": [
+      { "type": "set_variable", "var": "utm", "fields": [
+        { "name": "source", "change_type": "calculate", "value": "json_get(object.form_payload_c, '$.utm.source', 'direct')" },
+        { "name": "campaign", "change_type": "calculate", "value": "json_get(object.form_payload_c, '$.utm.campaign', '')" },
+        { "name": "products", "change_type": "calculate", "value": "json_get_all(object.form_payload_c, '$.cart[*].sku')" }
+      ] },
+      { "id": "to_erp", "type": "http_request", "var": "erp", "method": "POST",
+        "url": "http://mock:9502/mock/echo/erp-leads",
+        "body": { "type": "json", "value": {
+          "crm_id": "{{ object.id }}",
+          "name": "{{ object.first_name }} {{ object.last_name }}",
+          "source": "{{ utm.source }}",
+          "lines": "{{= json_get_all(object.form_payload_c, '$.cart[*]') }}" } },
+        "response": { "type": "json", "extract": { "order_id": "$.data.order_id" } },
+        "timeout": 10 },
+      { "type": "set_variable", "var": "order", "fields": [
+        { "name": "status", "change_type": "calculate", "value": "json_get(erp.body, '$.data.status', 'new')" },
+        { "name": "skus", "change_type": "calculate", "value": "json_get_all(erp.body, '$.data.json.lines[*].sku')" },
+        { "name": "bulk", "change_type": "calculate", "value": "json_get_all(erp.body, '$.data.json.lines[?(@.qty > 3)].sku')" }
+      ] },
+      { "type": "modify", "target": "object.description", "change_type": "template",
+        "value": "ERP: заказ {{ erp.order_id }} ({{ order.status }}, HTTP {{ erp.status }}); товары: {{= join(order.skus, ', ') }}; оптом: {{= ifempty(join(order.bulk, ', '), 'нет') }}; источник: {{ utm.source }}{{= if(is_empty(utm.campaign), '', concat(' / ', utm.campaign)) }}" },
+      { "type": "save_object", "target": "object", "module": "Leads" }
+    ]
+  }
+}
+```
+
+- `json_get(object.form_payload_c, '$.utm.source', 'direct')` читает JSON прямо из строки поля CRM; третий аргумент —
+  значение, если пути нет. `json_get_all(…, '$.cart[*].sku')` возвращает список всех совпадений.
+- В теле запроса лист `"lines": "{{= json_get_all(…, '$.cart[*]') }}"` состоит целиком из одной подстановки, поэтому
+  уходит в ERP **массивом объектов**, а не строкой.
+- `response.extract` кладёт `order_id` на верхний уровень переменной ответа (`erp.order_id`); остальные значения
+  берутся из разобранного тела `erp.body` функциями `json_get` / `json_get_all`. Фильтр JSONPath
+  `$.data.json.lines[?(@.qty > 3)].sku` отбирает позиции по условию.
+- **Адрес.** В рецепте — эхо-сервис мока `http://mock:9502/mock/echo/erp-leads`: он возвращает
+  `{"data": {"order_id": "A-1001", "json": <тело запроса>, …}}`, поэтому пути вида `$.data.json.lines[*].sku` читают
+  отправленные позиции. Для настоящей ERP укажите её адрес (`https://erp.company.ru/api/leads`), авторизацию
+  `"auth": {"type": "bearer", "token": "secret://erp_token"}` и пути из её ответа. Хост должен быть разрешён
+  SSRF-защитой (на стенде `mock` разрешён через `HTTP_ALLOW_PRIVATE_CIDRS`).
+- Запрос `POST` отправляется не более одного раза (`delivery: at_most_once` по умолчанию) с заголовком
+  `Idempotency-Key`.
+
+**Как проверить.** Ручной запуск с объектом `{"id": "<id лида>", "module": "Leads", "first_name": "Олег", "last_name":
+"Ким", "form_payload_c": "<JSON выше строкой>", "event_type": "create"}`. Описание лида: «ERP: заказ A-1034 (new, HTTP
+200); товары: CRM-START, SEAT; оптом: SEAT; источник: google / autumn» (номер заказа зависит от счётчика мока). Шаг
+`http_request` в аудите — `status: 200`, `response.body.data.json.lines` — две позиции. Проверено на моке CRM.
+
+---
+
+## 58. Сегмент и скидка сделки по константам (`config`)
+
+**Что делает.** Когда меняется сумма открытой сделки (не меньше минимальной), процесс определяет сегмент — VIP от
+порога или обычный — и считает скидку VIP в процентах. Все пороги, проценты, список открытых стадий и подписи
+сегментов вынесены в **константы процесса**: чтобы поменять порог, правится одно место, а не каждое выражение.
+
+```json
+{
+  "name": "Сегмент и скидка сделки по константам",
+  "object_type": "Deals",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": [
+    "create",
+    "update"
+  ],
+  "definition": {
+    "constants": {
+      "min_amount": 10000,
+      "vip_threshold": 1000000,
+      "vip_discount_pct": 5,
+      "open_stages": [
+        "New",
+        "Active",
+        "Negotiation"
+      ],
+      "segment_vip": "VIP",
+      "segment_regular": "Regular"
+    },
+    "conditions": [
+      {
+        "field": "object.amount",
+        "operator": "changed",
+        "cast": "decimal"
+      },
+      {
+        "field": "object.amount",
+        "operator": "greater_or_equal",
+        "cast": "decimal",
+        "value_type": "expression",
+        "value": "config.min_amount"
+      },
+      {
+        "field": "object.status",
+        "operator": "in",
+        "value_type": "expression",
+        "value": "config.open_stages"
+      }
+    ],
+    "preload": [],
+    "actions": [
+      {
+        "type": "set_variable",
+        "var": "deal",
+        "fields": [
+          {
+            "name": "vip",
+            "change_type": "calculate",
+            "value": "to_number(object.amount) >= config.vip_threshold"
+          }
+        ]
+      },
+      {
+        "type": "modify",
+        "target": "object.segment",
+        "change_type": "calculate",
+        "value": "if(deal.vip, config.segment_vip, config.segment_regular)"
+      },
+      {
+        "type": "modify",
+        "target": "object.discount",
+        "change_type": "calculate",
+        "value": "if(deal.vip, percent(object.amount, config.vip_discount_pct), 0)"
+      },
+      {
+        "type": "modify",
+        "target": "object.description",
+        "change_type": "template",
+        "value": "Сегмент {{ object.segment }}: порог {{ config.vip_threshold | number:0:'':' ' }}, скидка {{= if(deal.vip, config.vip_discount_pct, 0) }} % = {{ object.discount }}. Открытые стадии: {{= join(config.open_stages, ', ') }}"
+      },
+      {
+        "type": "save_object",
+        "target": "object",
+        "module": "Deals"
+      }
+    ]
+  }
+}
+```
+
+- Константы объявлены в `definition.constants` и читаются как `config.<имя>` — в условиях, выражениях и шаблонах.
+- В условиях константа — правая часть-**выражение** (`"value_type": "expression"`): `config.min_amount` с
+  `cast: decimal`, `config.open_stages` — список для `in`.
+- `to_number(object.amount) >= config.vip_threshold` — сравнение чисел; `percent(object.amount,
+  config.vip_discount_pct)` — 5 % от суммы.
+- `{{ config.vip_threshold | number:0:'':' ' }}` — константа в шаблоне с фильтром форматирования: `1 000 000`.
+- Константы на карточке процесса и в редакторе не показываются, но при сохранении из редактора сохраняются. Менять их —
+  через `PUT /api/processes/{id}`. Правка констант не влияет на уже идущие и ожидающие выполнения.
+- Поля `segment` и `discount` — поля мока; в SuiteCRM используйте свои пользовательские поля (`segment_c`,
+  `discount_c`).
+
+**Как проверить.** Ручной запуск с объектом `{"id": "<id сделки>", "module": "Deals", "amount": "1500000", "status":
+"Active", "event_type": "update", "changed_fields": ["amount"], "before": {"amount": "5000"}}`: в трассе условий
+`expected_cast` = `10000` и список стадий; `segment` = `VIP`, `discount` = `75000`, описание «Сегмент VIP: порог
+1 000 000, скидка 5 % = 75000. Открытые стадии: New, Active, Negotiation». Со статусом `Closed` третья строка условий
+ложна, выполнение не создаётся. Проверено на моке CRM.
+
+---
+
+## 59. Крупная сделка: уведомление с данными выполнения (`sys`, `config`)
+
+**Что делает.** Когда сумма сделки меняется и становится не меньше порога, ответственный получает уведомление в
+колокольчик CRM и в Slack, а аудиторский ящик — письмо. В текстах — системные переменные `sys.*`: кто и что изменил,
+какой процесс и какой версии отправил сообщение, id выполнения для поиска в аудите.
+
+```json
+{
+  "name": "Крупная сделка: уведомление с данными выполнения",
+  "object_type": "Deals",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": ["update"],
+  "definition": {
+    "constants": { "big_amount": 500000, "audit_email": "sales-audit@company.ru" },
+    "conditions": [
+      { "field": "object.amount", "operator": "changed", "cast": "decimal" },
+      { "field": "object.amount", "operator": "greater_or_equal", "cast": "decimal", "value_type": "expression", "value": "config.big_amount" }
+    ],
+    "preload": [],
+    "actions": [
+      { "type": "notify", "id": "notify_big", "title": "Крупная сделка: {{ object.name }}",
+        "message": "Сумма {{ object_before.amount | default:'—' }} → {{ object.amount }}. Изменил пользователь {{ sys.user_id | default:'—' }} ({{ sys.event_type }}: {{= join(sys.changed_fields, ', ') }}). Процесс «{{ sys.process_name }}» v{{ sys.process_version }}, запуск {{ sys.trigger }}, выполнение {{ sys.execution_id }}",
+        "link": { "record": "object" },
+        "channels": [
+          { "channel": "crm_alert", "users": ["{{ object.assigned_user_id }}"] },
+          { "channel": "slack", "connection": "secret://slack_sales" }
+        ],
+        "fail_on": "all" },
+      { "id": "audit_mail", "type": "send_email",
+        "to": ["{{ config.audit_email }}"],
+        "subject": "[WPS] {{ sys.module }} {{ sys.record_id }}: сумма {{ object.amount }}",
+        "text": "Сделка: {{ object.name }}\nСумма: {{ object_before.amount | default:'—' }} → {{ object.amount }}\n\n--\nПроцесс: {{ sys.process_name }} (id {{ sys.process_id }}, версия {{ sys.process_version }})\nВыполнение: {{ sys.execution_id }}, событие {{ sys.event_id }}, источник {{ sys.trigger }}\nОтправлено: {{ sys.now }} UTC" }
+    ]
+  }
+}
+```
+
+- `sys.user_id` — пользователь CRM, сохранивший запись; `sys.event_type` и `sys.changed_fields` — тип события и
+  изменённые поля; `sys.process_name`, `sys.process_version`, `sys.process_id` — процесс; `sys.execution_id`,
+  `sys.event_id`, `sys.trigger` — выполнение и его источник; `sys.module`, `sys.record_id` — запись; `sys.now` — момент
+  отправки (UTC).
+- В шаблоне путь `{{ sys.… }}` подставляется как значение, список — через выражение `{{= join(sys.changed_fields, ', ') }}`.
+- `config.big_amount` — порог в условии, `config.audit_email` — адрес получателя письма.
+- `object_before.amount` — сумма до изменения; `| default:'—'` подставляет прочерк, если старого значения нет.
+- `fail_on: "all"` — шаг `notify` падает, только если не доставлен ни один канал.
+- Перед запуском: секрет `slack_sales` вида `webhook_url` (см. [Секреты](secrets.md)); почта — `MAILER_DSN` (на стенде —
+  Mailpit).
+
+**Как проверить.** Ручной запуск с объектом `{"id": "<id сделки>", "module": "Deals", "name": "Big deal", "amount":
+"750000", "assigned_user_id": "1", "user_id": "1", "event_type": "update", "before": {"amount": "90000"},
+"changed_fields": ["amount"]}`. Шаг `notify`: каналы `crm_alert` и `slack` — `success`, текст «Сумма 90000 → 750000.
+Изменил пользователь 1 (update: amount). Процесс «…» v1, запуск manual, выполнение 75d988ca-…». Шаг `send_email` —
+`sent: true`; письмо с темой «[WPS] Deals <id>: сумма 750000» и подписью с процессом, выполнением и временем видно в
+Mailpit (`http://localhost:8025`). Значения `sys.*` выполнения — в `context.system` ответа
+`GET /api/executions/{id}`. Проверено на моке CRM (Slack — эмуляция мока `/mock/slack/…`).
+
+![Письмо в Mailpit](../../images/screenshots/ru/24-mailpit-letter.png)
+
+*Письмо, отправленное процессом, в Mailpit демо-стенда.*
 
 ---
 

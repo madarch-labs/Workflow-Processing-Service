@@ -40,7 +40,8 @@ while caches and execution state stay private to WPS.
 > **Note**
 > The two Redis instances can be one server in a small installation — point `REDIS_STREAM_*` and `REDIS_DATA_*` to the same
 > host and use a different `REDIS_DATA_DB`. Keys do not collide: the stream uses `crm_events*`, data uses `proc_cache:*`,
-> `dict:modules`, `exec:*`, `lock:exec:*`, `idem:*`.
+> `dict:modules`, `crm:capabilities`, `exec:*`, `lock:exec:*`, `idem:*`, `assign:*`, `mail:*`, `oauth:token:*`,
+> `side_effects:purge`. The mock keeps its objects in redis-stream (`mock_crm:*`, `mock_crm_rel:*`, `mock:*`).
 
 ## First start
 
@@ -59,6 +60,80 @@ What happens on the backend start (`back/docker/entrypoint.sh`):
 3. `php server.php` starts the Swoole HTTP server. The log line `[WPS] listening on 0.0.0.0:9501` means the API is up.
 
 The default administrator `admin@wps.local` / `admin` is created by migration `002_seed_admin.sql`.
+
+## Images
+
+| Image | Dockerfile | Base | Content |
+|---|---|---|---|
+| backend, stage `prod` | `back/Dockerfile` (build context — the repository root) | `phpswoole/swoole:6.0-php8.3` + `bcmath`, `intl` (`libicu-dev`) | `composer install --no-dev`, optimised autoload, `ENTRYPOINT docker/entrypoint.sh`, port 9501. This is the stage `docker-compose.yml` builds (`target: prod`) |
+| backend, stage `test` | the same | the same base | Dev dependencies and `ENTRYPOINT vendor/bin/phpunit` |
+| mock | `mock/Dockerfile` | `phpswoole/swoole:6.0-php8.3` (already with `ext-redis`) | PHP built-in server `php -S 0.0.0.0:9502 mock_server.php` |
+| frontend | `front/Dockerfile` | `node:22-alpine` (build) → `nginx:1.27-alpine` | `npm ci && npm run build`, `dist/` and `front/nginx.conf` |
+
+`bcmath` is needed for exact `decimal` arithmetic and comparison; `intl` — for `format_date_locale()` (without it the
+function is not registered). Unit tests:
+
+```bash
+docker build -q -f back/Dockerfile --target test -t wps-backend-test .
+docker run --rm wps-backend-test --testsuite unit
+```
+
+`vendor/` is not in the repository: dependencies are installed when the image is built. Adding a package:
+`docker run --rm -v $PWD/back:/app -w /app --entrypoint composer wps-backend-test require <package> --ignore-platform-req=ext-swoole`.
+
+## Migrations
+
+`back/migrations/migrate.php` runs on every start of the backend container (`entrypoint.sh`) before the server:
+
+1. waits for PostgreSQL up to `DB_WAIT_SECONDS` (`[migrate] waiting for database...` every 2 s);
+2. sets `SET TIME ZONE 'UTC'` for the session and creates the table `schema_migrations (version, applied_at)`;
+3. applies the `*.sql` files missing from `schema_migrations` **in name order**, each in its own transaction; on an error
+   the file is rolled back, `[migrate] <version> failed: …` is printed and the script exits with code 1 (the backend does
+   not start);
+4. prints `[migrate] applied <version>` per file and the total `[migrate] done, N new migration(s)`.
+
+There are no down migrations; every file is idempotent (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`).
+
+| File | What it does |
+|---|---|
+| `001_create_tables.sql` | Tables `users`, `processes`, `executions`, `execution_actions` and their indexes |
+| `002_seed_admin.sql` | Administrator `admin@wps.local` / `admin` (if this e-mail does not exist yet) |
+| `003_run_once.sql` | `processes.run_once`, the marks table `process_object_runs` |
+| `004_program_audit.sql` | Flat-program audit columns `execution_actions.pc`, `step_path`, `iteration`, `step_id`; `pc = step_index` for old rows; index `(execution_id, pc)` |
+| `005_secrets.sql` | Table `secrets` (encrypted secrets) |
+| `006_side_effects.sql` | Side-effect journal `step_side_effects` |
+| `007_trigger_on.sql` | `processes.trigger_on TEXT[]` (default `{create,update}`) and a `CHECK` of the allowed types |
+| `008_step_error_handling.sql` | `executions.handled_errors`, `execution_actions.error_code`, `execution_actions.handled` |
+| `009_execution_waits.sql` | `executions.waiting_until`, `wait_reason`, table `execution_waits`, partial index of waiting executions |
+| `010_reserved_names_check.sql` | Does not change the schema: a **report** of processes that use the names `sys`, `config`, `object_before` as ordinary variables (reserved since task 5.2.9) |
+
+> **Warning**
+> Migration 010 reports the processes it finds with `RAISE NOTICE`, and `migrate.php` (PDO) does not print PostgreSQL
+> notices — the backend log only shows `[migrate] applied 010_reserved_names_check`. The processes found keep running (on
+> their snapshot) but **cannot be saved** after an edit until the variables are renamed. Check them manually with the same
+> condition:
+>
+> ```bash
+> docker compose exec -T postgres psql -U wps -d wps -c "SELECT id, name FROM processes
+>   WHERE definition::text ~ '\"(var|as|item_var)\"\s*:\s*\"(sys|config|object_before)\"'
+>      OR definition::text ~ '\"(target|record)\"\s*:\s*\"(sys|config|object_before)(\.|\")'"
+> ```
+
+Migration state: `docker compose exec -T postgres psql -U wps -d wps -c 'SELECT * FROM schema_migrations ORDER BY 1'`.
+Apply migrations without restarting the server: `docker compose exec backend php migrations/migrate.php`.
+
+## Backups
+
+```bash
+# PostgreSQL: processes, executions, audit, waits, secrets (encrypted), users
+docker compose exec -T postgres pg_dump -U wps -Fc wps > wps-$(date +%F).dump
+# restore into an empty database
+docker compose exec -T postgres pg_restore -U wps -d wps --clean --if-exists < wps-2026-10-27.dump
+```
+
+Keep `WPS_SECRETS_KEY` together with the dump: the `secrets` table cannot be decrypted without it. Data Redis does not
+need a backup (caches and the state of running executions); `redis-stream` holds events not processed yet — when you stop
+the CRM for maintenance, wait for `lag = 0` and `pending = 0` in `/api/health`.
 
 ## Ports
 

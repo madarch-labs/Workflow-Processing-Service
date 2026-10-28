@@ -6,8 +6,17 @@ Ready-made end-to-end scenarios: what each process does, how to set it up, its J
 🇬🇧 English | [🇷🇺 Русский](../../ru/03-user-guide/recipes.md)
 <!-- /lang-switch -->
 
-All recipes were checked on the bundled mock CRM (see [Quick start](../02-getting-started/quick-start.md)): the mock
-publishes test events into the stream and emulates the CRM API, so you can try everything without a real CRM.
+The definition of every recipe was checked by saving it on the current WPS version. The recipes were checked by running
+them on the bundled mock CRM (see [Quick start](../02-getting-started/quick-start.md)) or on the SuiteCRM 8 stand — the
+"How to check" part of each recipe says where. The mock publishes test events into the stream and emulates the CRM API,
+so most recipes can be tried without a real CRM.
+
+> **Note**
+> Recipes 1–8 are built in the visual editor. The others use features the editor does not have (`cast`, value lists,
+> e-mails, HTTP requests, loops, constants…) — create them through the API. Such a process can be opened and saved in
+> the editor without losses, but those parts are shown read-only (see the [Overview](../01-overview/index.md#what-is-configured-in-the-editor-and-what-through-the-api)).
+> Custom fields with the `_c` suffix (`interests_c`, `form_payload_c` …) must be created in the CRM or replaced with
+> your own.
 
 ## How to use a recipe
 
@@ -49,6 +58,7 @@ publishes test events into the stream and emulates the CRM API, so you can try e
 | 6 | [New lead → schedule a call, once per lead](#6-new-lead--schedule-a-call-once-per-lead) | Leads | **Contains**, **Start next process**, **Run once per record** |
 | 7 | [Order: find the customer account by INN](#7-order-find-the-customer-account-by-inn) | Orders | preload by a non-id field |
 | 8 | [Ticket: note on the account's contact](#8-ticket-note-on-the-accounts-contact) | Tickets | preload chain **From variable field**, guard condition |
+| 9 | [Conditions by type, emptiness and lists](#9-conditions-by-type-emptiness-and-lists-via-the-api) | Leads | `in`, `is_empty`, `is_null` on a preloaded variable, `cast: decimal` |
 | 10 | [Deal category](#10-deal-category-ifs-if) | Deals | **Calculate**, conditional functions `ifs`, `if`, comparisons and `and` |
 | 11 | [Best phone to call](#11-best-phone-to-call-coalesce) | Leads | **Calculate**, `coalesce` — the first non-empty value |
 | 12 | [A call 3 days before the deal closes at 10:00 local time](#12-a-call-3-days-before-the-deal-closes-at-1000-local-time) | Deals | date functions `add_days`, `datetime` with a zone, `format_date`, creating a call |
@@ -93,6 +103,12 @@ publishes test events into the stream and emulates the CRM API, so you can try e
 | 51 | [A deal within ±10 % of the plan](#51-a-deal-within-10--of-the-plan-between-with-expressions) | Opportunities | **Between** with a pair of expressions |
 | 52 | [An account card: counter, history, rating by industry](#52-an-account-card-counter-history-rating-by-industry-increment-append-clear-map) | Accounts | **Increment by**, **Append**, **Clear**, **Map** |
 | 53 | [Case priority by the account rating](#53-case-priority-by-the-account-rating-map) | Cases | **Map** with the `""` key and `default` |
+| 54 | [Normalise a phone to E.164](#54-normalise-a-phone-to-e164-regex_replace-right) | Leads | Regular expressions, `set_variable`, `if`/`right`/`starts_with`, no repeated run |
+| 55 | [Lead interests: order and VIP tag](#55-lead-interests-order-and-vip-tag-list-functions) | Leads | List functions for a multienum: `to_list`, `unique`, `without`, `sort`, `in`, `count`, `first`, `join` with the `^` wrapper |
+| 56 | [Contact cleanup: name and e-mail](#56-contact-cleanup-name-and-e-mail-regular-expressions-strings) | Contacts | String normalisation: `regex_replace`, `trim`, `title_case`, `lower`, `regex_match`, `translit`; an OR group of `changed` |
+| 57 | [Lead to the ERP: parsing the JSON response](#57-lead-to-the-erp-parsing-the-json-response-http_request-json_get) | Leads | `json_get` / `json_get_all` over JSON from a CRM field and from an `http_request` response, the JSONPath filter `[?(@.qty > 3)]`, `response.extract` |
+| 58 | [Deal segment and discount from constants](#58-deal-segment-and-discount-from-constants-config) | Deals | `config.*` constants in conditions (`value_type: expression`), expressions and templates |
+| 59 | [A big deal: a notification with execution data](#59-a-big-deal-a-notification-with-execution-data-sys-config) | Deals | `sys.*` in the `notify` and `send_email` texts: process, version, execution, trigger, changed fields, user |
 
 ---
 
@@ -520,38 +536,83 @@ shows the row `v2.id` with **Actual** empty and **Result** `false`.
 
 ## 9. Conditions by type, emptiness and lists (via the API)
 
-Four short conditions from tasks 3.1, 3.2, 3.4. The editor still builds only **Equals** / **Not equals** /
-**Contains** / **Does not contain**, so such rows are set through the API (`POST` / `PUT /api/processes`); the editor
-keeps them unchanged. Details — [Triggers and conditions](triggers-and-conditions.md#operators).
+**What it does.** A lead in the `New`, `Assigned` or `In Process` status without a mobile phone, whose company is not
+found in the CRM, gets a "check" note in its description. The recipe puts the conditions of tasks 3.1, 3.2, 3.4 into one
+process. The editor saves from the form only operators with one text value, so such rows are set through the API
+(`POST` / `PUT /api/processes`); the process card shows them as they are. Details —
+[Triggers and conditions](triggers-and-conditions.md#operators).
 
-**Big deal.** The amount is greater than a million — compared as decimals (`"1500000"`, `"1 500 000,00"` and
-`1500000` are the same):
+```json
+{
+  "name": "Lead without a mobile phone and without a company in the CRM",
+  "object_type": "Leads",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": [
+    "create",
+    "update"
+  ],
+  "definition": {
+    "conditions": [
+      {
+        "field": "object.status",
+        "operator": "in",
+        "value_type": "static",
+        "value": [
+          "New",
+          "Assigned",
+          "In Process"
+        ]
+      },
+      {
+        "field": "object.phone_mobile",
+        "operator": "is_empty"
+      },
+      {
+        "field": "company.id",
+        "operator": "is_null"
+      }
+    ],
+    "preload": [
+      {
+        "var": "company",
+        "source": "object_field",
+        "module": "Accounts",
+        "by_field": "name",
+        "value": "object.account_name"
+      }
+    ],
+    "actions": [
+      {
+        "type": "modify",
+        "target": "object.description",
+        "change_type": "template",
+        "value": "Check the lead: no mobile phone, company “{{ object.account_name | default:'—' }}” is not in the CRM",
+        "save_to_crm": true
+      }
+    ]
+  }
+}
+```
+
+- **Status from a list** (`in`): one operator with a list of values instead of three OR groups.
+- **No mobile phone** (`is_empty`): the CRM sends an empty field as an empty string — that is "empty". The row has no
+  value.
+- **The company is not in the CRM** (`is_null`): the `company` preload looks up the account by name; if there is none,
+  the variable is empty and `company.id` has no data. The preload is lazy — it runs only when the first two rows hold.
+
+**One more condition — a big deal.** For a process on deals: the amount is greater than a million, compared as
+decimals (`"1500000"`, `"1 500 000,00"` and `1500000` are the same):
 
 ```json
 { "field": "object.amount", "operator": "greater_than", "cast": "decimal", "value_type": "static", "value": "1 000 000" }
 ```
 
-**No mobile phone.** The CRM sends an unfilled field as an empty string — that is "empty":
-
-```json
-{ "field": "object.phone_mobile", "operator": "is_empty" }
-```
-
-**Company not found in the CRM.** Preload `company` (module `Accounts`, lookup field `name`, value
-`object.account_name`); when there is no such company the variable is empty and `company.id` has no data:
-
-```json
-{ "field": "company.id", "operator": "is_null" }
-```
-
-**Status from a list.** One operator instead of three OR groups:
-
-```json
-{ "field": "object.status", "operator": "in", "value_type": "static", "value": ["New", "Assigned", "In Process"] }
-```
-
-**How to test.** A manual run (`POST /api/processes/{id}/run`) shows `actual_cast` / `expected_cast` in the condition
-trace, `found: false` for `is_null`, the list of items in `expected_cast` for `in`.
+**How to check.** A manual run (`POST /api/processes/{id}/run`) with the object
+`{"id": "<lead id>", "module": "Leads", "status": "New", "phone_mobile": "", "account_name": "No Such Ltd"}`: in the
+condition trace `in` has the `expected_cast` list, `is_empty` — `found: true`, `is_null` — `found: false`,
+`missing: "actual"`; the lead description gets the note. With `"phone_mobile": "+7999…"` the second row is false and the
+third is **not checked** (`result: null`), the preload does not run. Checked on the mock CRM.
 
 ---
 
@@ -1560,16 +1621,125 @@ with `processed` and `modify` / `save_object` records with iteration numbers `0`
 "Customer confirmed: agree on the quote", the sum of the open deals is accumulated in a process variable and written to
 the account description.
 
-The definition is in [Loop (for each item)](actions.md#example-deals-of-a-new-customer). The key points:
+```json
+{
+  "name": "New customer: next step of open deals",
+  "object_type": "Accounts",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": [
+    "update"
+  ],
+  "definition": {
+    "conditions": [
+      {
+        "field": "object.account_type",
+        "operator": "changed_to",
+        "value_type": "static",
+        "value": "Customer"
+      }
+    ],
+    "preload": [],
+    "actions": [
+      {
+        "type": "find_records",
+        "var": "deals",
+        "related_to": {
+          "record": "object",
+          "link": "opportunities"
+        }
+      },
+      {
+        "type": "set_variable",
+        "var": "sum",
+        "fields": [
+          {
+            "name": "total",
+            "change_type": "set_value",
+            "value": "0"
+          },
+          {
+            "name": "n",
+            "change_type": "set_value",
+            "value": "0"
+          }
+        ]
+      },
+      {
+        "id": "each_deal",
+        "type": "foreach",
+        "source": "deals.items",
+        "as": "deal",
+        "where": [
+          {
+            "field": "deal.sales_stage",
+            "operator": "not_in",
+            "value_type": "static",
+            "value": [
+              "Closed Won",
+              "Closed Lost"
+            ]
+          }
+        ],
+        "actions": [
+          {
+            "type": "modify",
+            "target": "deal.next_step",
+            "change_type": "template",
+            "value": "Customer confirmed: agree on the quote ({{ object.name | truncate:20 }})"
+          },
+          {
+            "type": "save_object",
+            "target": "deal"
+          },
+          {
+            "type": "set_variable",
+            "var": "sum",
+            "fields": [
+              {
+                "name": "total",
+                "change_type": "calculate",
+                "value": "sum.total + deal.amount"
+              },
+              {
+                "name": "n",
+                "change_type": "calculate",
+                "value": "sum.n + 1"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "modify",
+        "target": "object.description",
+        "change_type": "template",
+        "value": "Open deals: {{ sum.n }} for {{ sum.total }}"
+      },
+      {
+        "type": "save_object",
+        "target": "object",
+        "module": "Accounts"
+      }
+    ]
+  }
+}
+```
 
-- the `sum` accumulator is initialized **before** the loop (`set_variable` with `0`) and increased in the body
-  (`calculate`: `sum.total + deal.amount`) — body variables stay between iterations and after the loop;
+- `find_records` over the `opportunities` link loads all deals of the account into the list variable `deals`;
+- the `sum` accumulator is initialised **before** the loop (`set_variable` with `0`) and grows in the body
+  (`calculate`: `sum.total + deal.amount`) — body variables persist between iterations and after the loop;
 - closed deals are skipped by the loop `where`, so the totals show `skipped_by_where`;
+- `save_object deal` without `module`: the `Opportunities` module is known from the "Find records" list;
 - after the loop `deal` and `deal_loop` are gone, `sum` is available.
 
-Checked on SuiteCRM 8: case `.tehnical/suiteCRM8/processes/cases/4.11-foreach.json` (texts in Russian) — the two open
-deals got the next step, the won one is unchanged, the account description is "Открытых сделок: 2 на сумму 3500.5".
+Loop details — [Actions → Loop](actions.md#example-deals-of-a-new-customer).
 
+**How to check.** Checked on SuiteCRM 8: case `.tehnical/suiteCRM8/processes/cases/4.11-foreach.json` (texts in
+Russian) — the two open deals got the next step, the won one is unchanged, the account description is "Открытых
+сделок: 2 на сумму 3500.5"; the loop totals are `processed: 2`, `skipped_by_where: 1`.
+
+---
 
 ## 33. A deal is lost → defer all open tasks (`update_records`)
 
@@ -2409,6 +2579,590 @@ deal amount → a category).
 
 **How to check.** Create a case for an account rated Hot — priority P1; without a rating — P3. The `modify` step journal
 shows `old_value` and `new_value`. The recipe was not run on the stand; `map` is checked by case 5.1.3.
+
+## 54. Normalise a phone to E.164 (`regex_replace`, `right`)
+
+**What it does.** When the work phone of a lead changes, the process keeps only digits, converts a Russian number to
+`+7XXXXXXXXXX` and writes the result to `phone_mobile`. An invalid number is not overwritten: the mobile field keeps the
+original value.
+
+```json
+{
+  "name": "Phone normalisation",
+  "object_type": "Leads",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": ["update"],
+  "definition": {
+    "conditions": [ { "field": "object.phone_work", "operator": "changed" } ],
+    "preload": [],
+    "actions": [
+      { "type": "set_variable", "var": "norm", "fields": [
+        { "name": "digits", "change_type": "calculate", "value": "regex_replace(object.phone_work, '[^0-9]', '')" }
+      ] },
+      { "type": "set_variable", "target": "norm.e164", "change_type": "calculate",
+        "value": "if(len(norm.digits) == 11 and starts_with(norm.digits, '8'), concat('+7', right(norm.digits, 10)), if(len(norm.digits) == 10, concat('+7', norm.digits), concat('+', norm.digits)))" },
+      { "type": "set_variable", "target": "norm.ok", "change_type": "calculate",
+        "value": "regex_match(norm.e164, '^\\+7\\d{10}$')" },
+      { "type": "modify", "target": "object.phone_mobile", "change_type": "calculate",
+        "value": "if(norm.ok, norm.e164, object.phone_work)" },
+      { "type": "save_object", "target": "object", "module": "Leads" }
+    ]
+  }
+}
+```
+
+`regex_replace` with the `[^0-9]` pattern removes spaces, brackets and dashes. A leading eight becomes `+7`, a ten-digit
+number gets `+7`, and any other value gets `+` plus all its digits. `regex_match` checks the result; if the number does
+not look Russian, `phone_mobile` keeps the original value. The `phone_work changed` condition prevents a repeated run
+after `save_object` (it changes `phone_mobile` only).
+
+**How to check.** Save a lead with `phone_work = 8 (999) 123-45-67`, then change the phone to `+7 999 123-45-67`:
+`phone_mobile` becomes `+79991234567`. For `123`, `phone_mobile` stays `123`, and the `modify` step journal shows
+`new_value = 123`. The expressions of the recipe were checked by saving the process on the stand; the string functions
+are covered by unit and integration tests.
+
+---
+
+## 55. Lead interests: order and VIP tag (list functions)
+
+**What it does.** Managers tick the interests of a client in the custom multienum field `interests_c` of a lead (created
+in the CRM Studio; the value format is `^a^,^b^`). The process tidies the value: removes duplicates and the `spam` tag,
+lowercases, sorts alphabetically and writes it back. The lead description gets a summary: how many interests, the main
+one (the first alphabetically) and the VIP flag — the `vip` tag is present or there are three interests or more.
+
+```json
+{
+  "name": "Lead interests: order and VIP tag",
+  "object_type": "Leads",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": [
+    "create",
+    "update"
+  ],
+  "definition": {
+    "conditions": [
+      {
+        "field": "object.interests_c",
+        "operator": "changed"
+      }
+    ],
+    "preload": [],
+    "actions": [
+      {
+        "type": "set_variable",
+        "var": "tags",
+        "fields": [
+          {
+            "name": "raw",
+            "change_type": "calculate",
+            "value": "to_list(lower(object.interests_c), ',', '^')"
+          }
+        ]
+      },
+      {
+        "type": "set_variable",
+        "target": "tags.clean",
+        "change_type": "calculate",
+        "value": "sort(unique(without(tags.raw, 'spam')))"
+      },
+      {
+        "type": "set_variable",
+        "target": "tags.vip",
+        "change_type": "calculate",
+        "value": "in('vip', tags.clean) or count(tags.clean) >= 3"
+      },
+      {
+        "type": "modify",
+        "target": "object.interests_c",
+        "change_type": "calculate",
+        "value": "join(tags.clean, ',', '^')"
+      },
+      {
+        "type": "modify",
+        "target": "object.description",
+        "change_type": "template",
+        "value": "Interests ({{= count(tags.clean) }}): {{= join(tags.clean, ', ') }}. Main: {{= first(tags.clean) }}. VIP: {{= if(tags.vip, 'yes', 'no') }}"
+      },
+      {
+        "type": "save_object",
+        "target": "object",
+        "module": "Leads"
+      }
+    ]
+  }
+}
+```
+
+- `to_list(lower(…), ',', '^')` parses the multienum into a list removing the `^` wrapper; the case is changed
+  **before** parsing, so `VIP` and `vip` become one value.
+- `without` removes every `spam`, `unique` — duplicates, `sort` — sorts. The order matters: list functions are nested
+  into each other, not chained.
+- `join(tags.clean, ',', '^')` builds the list back into the CRM multienum format. A list written into a field directly
+  would be saved as a JSON array that the CRM does not understand.
+- In a template, expressions are written in `{{= … }}`: `{{= count(tags.clean) }}`, `{{= first(tags.clean) }}`.
+- The `interests_c` **Changed** condition prevents a loop: after the save the normalised value no longer changes, and
+  the next event does not start the process.
+
+**How to check.** A manual run with the object `{"id": "<lead id>", "module": "Leads", "interests_c":
+"^Partner^,^vip^,^spam^,^VIP^,^cloud^", "event_type": "create", "changed_fields": ["interests_c"]}`. In the steps:
+`set_variable` `tags.raw` = `["partner","vip","spam","vip","cloud"]`, `tags.clean` = `["cloud","partner","vip"]`,
+`tags.vip` = `true`; `interests_c` = `^cloud^,^partner^,^vip^`; the description "Interests (3): cloud, partner, vip.
+Main: cloud. VIP: yes". Without `changed_fields` the condition is false (`change_info: "missing"`). Checked on the mock
+CRM; for SuiteCRM create the `interests_c` field (or use the standard multienum `AOS_Quotes.template_ddown_c`, as in
+recipe 49).
+
+---
+
+## 56. Contact cleanup: name and e-mail (regular expressions, strings)
+
+**What it does.** When the first name, last name or e-mail of a contact changes, the process removes extra spaces,
+brings the name to "Ivan", "Petrov - Sidorov", the e-mail to lower case without spaces, and writes the name in Latin
+letters into the description. An e-mail that does not look like an address after the cleanup is left as is — the
+description gets a warning.
+
+```json
+{
+  "name": "Contact cleanup: name and e-mail",
+  "object_type": "Contacts",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": [
+    "create",
+    "update"
+  ],
+  "definition": {
+    "conditions": {
+      "logical_operator": "OR",
+      "conditions": [
+        {
+          "field": "object.first_name",
+          "operator": "changed"
+        },
+        {
+          "field": "object.last_name",
+          "operator": "changed"
+        },
+        {
+          "field": "object.email1",
+          "operator": "changed"
+        }
+      ]
+    },
+    "preload": [],
+    "actions": [
+      {
+        "type": "set_variable",
+        "var": "clean",
+        "fields": [
+          {
+            "name": "first",
+            "change_type": "calculate",
+            "value": "title_case(lower(regex_replace(trim(object.first_name), '\\s+', ' ')))"
+          },
+          {
+            "name": "last",
+            "change_type": "calculate",
+            "value": "title_case(lower(regex_replace(trim(object.last_name), '\\s+', ' ')))"
+          },
+          {
+            "name": "email",
+            "change_type": "calculate",
+            "value": "lower(regex_replace(object.email1, '\\s', ''))"
+          }
+        ]
+      },
+      {
+        "type": "set_variable",
+        "target": "clean.email_ok",
+        "change_type": "calculate",
+        "value": "regex_match(clean.email, '^[^@]+@[^@]+\\.[a-z]{2,}$')"
+      },
+      {
+        "type": "modify",
+        "target": "object.first_name",
+        "change_type": "calculate",
+        "value": "clean.first"
+      },
+      {
+        "type": "modify",
+        "target": "object.last_name",
+        "change_type": "calculate",
+        "value": "clean.last"
+      },
+      {
+        "type": "modify",
+        "target": "object.email1",
+        "change_type": "calculate",
+        "value": "if(clean.email_ok, clean.email, object.email1)"
+      },
+      {
+        "type": "modify",
+        "target": "object.description",
+        "change_type": "calculate",
+        "value": "concat('In Latin: ', translit(concat(clean.first, ' ', clean.last)), if(clean.email_ok, '', '; the e-mail does not look like an address'))"
+      },
+      {
+        "type": "save_object",
+        "target": "object",
+        "module": "Contacts"
+      }
+    ]
+  }
+}
+```
+
+- The conditions are an **OR** group (`logical_operator: "OR"`) of three **Changed** rows: the process runs when at
+  least one of the fields changed. Such a group can only be set through the API.
+- `regex_replace(trim(x), '\s+', ' ')` collapses any whitespace (several spaces, tabs) into one space; in JSON the
+  backslash is doubled (`'\\s+'`), in the expression itself it is `'\s+'`.
+- `title_case(lower(…))` — everything lowercase first, then every word capitalised: `ПЕТРОВ  -  сидоров` →
+  `Петров - Сидоров`.
+- `regex_match(clean.email, '^[^@]+@[^@]+\.[a-z]{2,}$')` — a simple format check; the pattern is checked when the
+  process is saved, an invalid pattern is rejected.
+- `translit` — transliteration by GOST 7.79-2000 (system B): `Иван Петров - Сидоров` → `Ivan Petrov - Sidorov`.
+- There is no loop: after the save the fields are already normalised, and the CRM does not report them as changed.
+
+**How to check.** A manual run with the object `{"id": "<contact id>", "module": "Contacts", "first_name": "  иван   ",
+"last_name": "ПЕТРОВ  -  сидоров", "email1": " Ivan.Petrov@Example.COM ", "event_type": "update", "changed_fields":
+["first_name", "email1"], "before": {"first_name": "", "email1": ""}}`. Result: `first_name` = `Иван`, `last_name` =
+`Петров - Сидоров`, `email1` = `ivan.petrov@example.com`, the description "In Latin: Ivan Petrov - Sidorov". Checked on
+the mock CRM.
+
+---
+
+## 57. Lead to the ERP: parsing the JSON response (`http_request`, `json_get`)
+
+**What it does.** The website puts the form JSON into the text field `form_payload_c` of a lead: UTM tags and the cart
+(`{"utm": {"source": "google", "campaign": "autumn"}, "cart": [{"sku": "CRM-START", "qty": 1}, {"sku": "SEAT",
+"qty": 10}]}`). When a lead is created, the process takes the source and the campaign from the JSON, sends the lead with
+the cart lines to the ERP, parses the ERP JSON response (order number, status, lines, bulk lines with a quantity above
+3) and writes a summary into the lead description.
+
+```json
+{
+  "name": "Lead to the ERP: parsing the JSON response",
+  "object_type": "Leads",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": [
+    "create"
+  ],
+  "definition": {
+    "conditions": [],
+    "preload": [],
+    "actions": [
+      {
+        "type": "set_variable",
+        "var": "utm",
+        "fields": [
+          {
+            "name": "source",
+            "change_type": "calculate",
+            "value": "json_get(object.form_payload_c, '$.utm.source', 'direct')"
+          },
+          {
+            "name": "campaign",
+            "change_type": "calculate",
+            "value": "json_get(object.form_payload_c, '$.utm.campaign', '')"
+          },
+          {
+            "name": "products",
+            "change_type": "calculate",
+            "value": "json_get_all(object.form_payload_c, '$.cart[*].sku')"
+          }
+        ]
+      },
+      {
+        "id": "to_erp",
+        "type": "http_request",
+        "var": "erp",
+        "method": "POST",
+        "url": "http://mock:9502/mock/echo/erp-leads",
+        "body": {
+          "type": "json",
+          "value": {
+            "crm_id": "{{ object.id }}",
+            "name": "{{ object.first_name }} {{ object.last_name }}",
+            "source": "{{ utm.source }}",
+            "lines": "{{= json_get_all(object.form_payload_c, '$.cart[*]') }}"
+          }
+        },
+        "response": {
+          "type": "json",
+          "extract": {
+            "order_id": "$.data.order_id"
+          }
+        },
+        "timeout": 10
+      },
+      {
+        "type": "set_variable",
+        "var": "order",
+        "fields": [
+          {
+            "name": "status",
+            "change_type": "calculate",
+            "value": "json_get(erp.body, '$.data.status', 'new')"
+          },
+          {
+            "name": "skus",
+            "change_type": "calculate",
+            "value": "json_get_all(erp.body, '$.data.json.lines[*].sku')"
+          },
+          {
+            "name": "bulk",
+            "change_type": "calculate",
+            "value": "json_get_all(erp.body, '$.data.json.lines[?(@.qty > 3)].sku')"
+          }
+        ]
+      },
+      {
+        "type": "modify",
+        "target": "object.description",
+        "change_type": "template",
+        "value": "ERP: order {{ erp.order_id }} ({{ order.status }}, HTTP {{ erp.status }}); products: {{= join(order.skus, ', ') }}; bulk: {{= ifempty(join(order.bulk, ', '), 'none') }}; source: {{ utm.source }}{{= if(is_empty(utm.campaign), '', concat(' / ', utm.campaign)) }}"
+      },
+      {
+        "type": "save_object",
+        "target": "object",
+        "module": "Leads"
+      }
+    ]
+  }
+}
+```
+
+- `json_get(object.form_payload_c, '$.utm.source', 'direct')` reads JSON straight from the string of a CRM field; the
+  third argument is the value when the path is missing. `json_get_all(…, '$.cart[*].sku')` returns a list of all
+  matches.
+- In the request body the leaf `"lines": "{{= json_get_all(…, '$.cart[*]') }}"` consists of a single substitution, so it
+  goes to the ERP as an **array of objects**, not as a string.
+- `response.extract` puts `order_id` at the top level of the response variable (`erp.order_id`); other values are taken
+  from the parsed body `erp.body` with `json_get` / `json_get_all`. The JSONPath filter
+  `$.data.json.lines[?(@.qty > 3)].sku` selects lines by a condition.
+- **Address.** The recipe uses the echo service of the mock `http://mock:9502/mock/echo/erp-leads`: it returns
+  `{"data": {"order_id": "A-1001", "json": <request body>, …}}`, so paths like `$.data.json.lines[*].sku` read the
+  lines that were sent. For a real ERP use its address (`https://erp.company.ru/api/leads`), the authorisation
+  `"auth": {"type": "bearer", "token": "secret://erp_token"}` and the paths of its response. The host must be allowed
+  by the SSRF protection (on the stack `mock` is allowed by `HTTP_ALLOW_PRIVATE_CIDRS`).
+- The `POST` request is sent at most once (`delivery: at_most_once` by default) with the `Idempotency-Key` header.
+
+**How to check.** A manual run with the object `{"id": "<lead id>", "module": "Leads", "first_name": "Oleg",
+"last_name": "Kim", "form_payload_c": "<the JSON above as a string>", "event_type": "create"}`. The lead description:
+"ERP: order A-1036 (new, HTTP 200); products: CRM-START, SEAT; bulk: SEAT; source: google / autumn" (the order number
+depends on the mock counter). The `http_request` step in the audit has `status: 200`, `response.body.data.json.lines` —
+two lines. Checked on the mock CRM.
+
+---
+
+## 58. Deal segment and discount from constants (`config`)
+
+**What it does.** When the amount of an open deal (not below the minimum) changes, the process determines the segment —
+VIP from a threshold or regular — and computes the VIP discount in percent. All thresholds, percentages, the list of
+open stages and the segment labels are **process constants**: to change a threshold, one place is edited instead of
+every expression.
+
+```json
+{
+  "name": "Deal segment and discount from constants",
+  "object_type": "Deals",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": [
+    "create",
+    "update"
+  ],
+  "definition": {
+    "constants": {
+      "min_amount": 10000,
+      "vip_threshold": 1000000,
+      "vip_discount_pct": 5,
+      "open_stages": [
+        "New",
+        "Active",
+        "Negotiation"
+      ],
+      "segment_vip": "VIP",
+      "segment_regular": "Regular"
+    },
+    "conditions": [
+      {
+        "field": "object.amount",
+        "operator": "changed",
+        "cast": "decimal"
+      },
+      {
+        "field": "object.amount",
+        "operator": "greater_or_equal",
+        "cast": "decimal",
+        "value_type": "expression",
+        "value": "config.min_amount"
+      },
+      {
+        "field": "object.status",
+        "operator": "in",
+        "value_type": "expression",
+        "value": "config.open_stages"
+      }
+    ],
+    "preload": [],
+    "actions": [
+      {
+        "type": "set_variable",
+        "var": "deal",
+        "fields": [
+          {
+            "name": "vip",
+            "change_type": "calculate",
+            "value": "to_number(object.amount) >= config.vip_threshold"
+          }
+        ]
+      },
+      {
+        "type": "modify",
+        "target": "object.segment",
+        "change_type": "calculate",
+        "value": "if(deal.vip, config.segment_vip, config.segment_regular)"
+      },
+      {
+        "type": "modify",
+        "target": "object.discount",
+        "change_type": "calculate",
+        "value": "if(deal.vip, percent(object.amount, config.vip_discount_pct), 0)"
+      },
+      {
+        "type": "modify",
+        "target": "object.description",
+        "change_type": "template",
+        "value": "Segment {{ object.segment }}: threshold {{ config.vip_threshold | number:0:'':' ' }}, discount {{= if(deal.vip, config.vip_discount_pct, 0) }} % = {{ object.discount }}. Open stages: {{= join(config.open_stages, ', ') }}"
+      },
+      {
+        "type": "save_object",
+        "target": "object",
+        "module": "Deals"
+      }
+    ]
+  }
+}
+```
+
+- The constants are declared in `definition.constants` and read as `config.<name>` — in conditions, expressions and
+  templates.
+- In conditions a constant is the **expression** right-hand side (`"value_type": "expression"`): `config.min_amount`
+  with `cast: decimal`, `config.open_stages` — a list for `in`.
+- `to_number(object.amount) >= config.vip_threshold` compares numbers; `percent(object.amount,
+  config.vip_discount_pct)` — 5 % of the amount.
+- `{{ config.vip_threshold | number:0:'':' ' }}` — a constant in a template with a format filter: `1 000 000`.
+- Constants are not shown on the process card or in the editor, but saving from the editor keeps them. Change them
+  with `PUT /api/processes/{id}`. Changing constants does not affect running and waiting executions.
+- The `segment` and `discount` fields are mock fields; in SuiteCRM use your custom fields (`segment_c`, `discount_c`).
+
+**How to check.** A manual run with the object `{"id": "<deal id>", "module": "Deals", "amount": "1500000", "status":
+"Active", "event_type": "update", "changed_fields": ["amount"], "before": {"amount": "5000"}}`: in the condition trace
+`expected_cast` = `10000` and the stage list; `segment` = `VIP`, `discount` = `75000`, the description "Segment VIP:
+threshold 1 000 000, discount 5 % = 75000. Open stages: New, Active, Negotiation". With the `Closed` status the third
+condition row is false and no execution is created. Checked on the mock CRM.
+
+---
+
+## 59. A big deal: a notification with execution data (`sys`, `config`)
+
+**What it does.** When the amount of a deal changes and reaches a threshold, the owner gets a notification in the CRM
+bell and in Slack, and an audit mailbox gets a letter. The texts use the `sys.*` system variables: who changed what,
+which process of which version sent the message, the execution id to look up in the audit.
+
+```json
+{
+  "name": "Big deal: a notification with execution data",
+  "object_type": "Deals",
+  "is_child": false,
+  "is_active": true,
+  "trigger_on": [
+    "update"
+  ],
+  "definition": {
+    "constants": {
+      "big_amount": 500000,
+      "audit_email": "sales-audit@company.ru"
+    },
+    "conditions": [
+      {
+        "field": "object.amount",
+        "operator": "changed",
+        "cast": "decimal"
+      },
+      {
+        "field": "object.amount",
+        "operator": "greater_or_equal",
+        "cast": "decimal",
+        "value_type": "expression",
+        "value": "config.big_amount"
+      }
+    ],
+    "preload": [],
+    "actions": [
+      {
+        "type": "notify",
+        "id": "notify_big",
+        "title": "Big deal: {{ object.name }}",
+        "message": "Amount {{ object_before.amount | default:'—' }} → {{ object.amount }}. Changed by user {{ sys.user_id | default:'—' }} ({{ sys.event_type }}: {{= join(sys.changed_fields, ', ') }}). Process “{{ sys.process_name }}” v{{ sys.process_version }}, trigger {{ sys.trigger }}, execution {{ sys.execution_id }}",
+        "link": {
+          "record": "object"
+        },
+        "channels": [
+          {
+            "channel": "crm_alert",
+            "users": [
+              "{{ object.assigned_user_id }}"
+            ]
+          },
+          {
+            "channel": "slack",
+            "connection": "secret://slack_sales"
+          }
+        ],
+        "fail_on": "all"
+      },
+      {
+        "id": "audit_mail",
+        "type": "send_email",
+        "to": [
+          "{{ config.audit_email }}"
+        ],
+        "subject": "[WPS] {{ sys.module }} {{ sys.record_id }}: amount {{ object.amount }}",
+        "text": "Deal: {{ object.name }}\nAmount: {{ object_before.amount | default:'—' }} → {{ object.amount }}\n\n--\nProcess: {{ sys.process_name }} (id {{ sys.process_id }}, version {{ sys.process_version }})\nExecution: {{ sys.execution_id }}, event {{ sys.event_id }}, trigger {{ sys.trigger }}\nSent: {{ sys.now }} UTC"
+      }
+    ]
+  }
+}
+```
+
+- `sys.user_id` — the CRM user who saved the record; `sys.event_type` and `sys.changed_fields` — the event type and
+  the changed fields; `sys.process_name`, `sys.process_version`, `sys.process_id` — the process; `sys.execution_id`,
+  `sys.event_id`, `sys.trigger` — the execution and its trigger; `sys.module`, `sys.record_id` — the record; `sys.now` —
+  the moment of sending (UTC).
+- In a template the path `{{ sys.… }}` is substituted as a value, a list — through the expression
+  `{{= join(sys.changed_fields, ', ') }}`.
+- `config.big_amount` — the threshold in the condition, `config.audit_email` — the letter recipient.
+- `object_before.amount` — the amount before the change; `| default:'—'` puts a dash when there is no old value.
+- `fail_on: "all"` — the `notify` step fails only if no channel was delivered.
+- Before running: a `slack_sales` secret of kind `webhook_url` (see [Secrets](secrets.md)); mail — `MAILER_DSN` (on the
+  stack — Mailpit).
+
+**How to check.** A manual run with the object `{"id": "<deal id>", "module": "Deals", "name": "Big deal", "amount":
+"750000", "assigned_user_id": "1", "user_id": "1", "event_type": "update", "before": {"amount": "90000"},
+"changed_fields": ["amount"]}`. The `notify` step: the `crm_alert` and `slack` channels are `success`, the text "Amount
+90000 → 750000. Changed by user 1 (update: amount). Process “…” v1, trigger manual, execution 7212fa35-…". The
+`send_email` step — `sent: true`; the letter with the subject "[WPS] Deals <id>: amount 750000" and a footer with the
+process, the execution and the time is visible in Mailpit (`http://localhost:8025`). The `sys.*` values of the
+execution are in `context.system` of `GET /api/executions/{id}`. Checked on the mock CRM (Slack — the mock emulation
+`/mock/slack/…`).
+
+![The letter in Mailpit](../../images/screenshots/en/24-mailpit-letter.png)
+
+*A letter sent by a process, in Mailpit on the demo stack.*
 
 ---
 

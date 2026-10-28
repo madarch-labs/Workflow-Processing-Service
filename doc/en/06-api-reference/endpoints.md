@@ -1,14 +1,18 @@
 # API reference: endpoints
 
-All 28 endpoints of the WPS API with roles, parameters, request and response examples.
+All 55 routes of the WPS API (54 under `/api` plus `/metrics`): roles, parameters, request bodies, responses, error codes and examples.
 
 <!-- lang-switch -->
 🇬🇧 English | [🇷🇺 Русский](../../ru/06-api-reference/endpoints.md)
 <!-- /lang-switch -->
 
 Examples use `http://localhost:9501` and `$TOKEN` from [the authentication flow](index.md#authentication-flow).
-Responses were taken from a running instance and shortened (`…`). The envelope (`success`, `data`, `error`, `meta`) is described
-in [API basics](index.md).
+Responses were taken from a running instance (mock-CRM mode, 2026-10-27) and shortened (`…`). The envelope (`success`, `data`,
+`error`, `meta`), pagination and the full list of error codes are described in [API basics](index.md).
+
+Every route is a separate class in `back/src/Controllers/**` with a `#[Route(uri, method)]` attribute; access rules live in
+`Wps\Auth\AccessPolicy` (see [Roles](index.md#roles)). Errors common to all protected routes (`401` without a token or with an
+expired one, `403` for a wrong role, `400` for malformed JSON, `404 NOT_FOUND` for an unknown route) are not repeated below.
 
 ## Summary
 
@@ -63,6 +67,7 @@ in [API basics](index.md).
 | `GET` | [`/api/dictionaries/event-types`](#get-apidictionariesevent-types) | any | Event types for `trigger_on` |
 | `GET` | [`/api/dictionaries/preload-sources`](#get-apidictionariespreload-sources) | any | Preload sources |
 | `GET` | [`/api/dictionaries/casts`](#get-apidictionariescasts) | any | Cast types for conditions (`cast`) |
+| `GET` | [`/api/dictionaries/system-variables`](#get-apidictionariessystem-variables) | any | System variables `sys.*` |
 | `GET` | [`/api/dictionaries/delivery-policies`](#get-apidictionariesdelivery-policies) | any | Delivery policies of external actions (`delivery`) |
 | `GET` | [`/api/dictionaries/secret-kinds`](#get-apidictionariessecret-kinds) | any | Secret kinds and their fields |
 | `GET` | [`/api/dictionaries/mail-transports`](#get-apidictionariesmail-transports) | admin, editor | Mail transports for `send_email` |
@@ -97,7 +102,8 @@ in [API basics](index.md).
   "definition": {
     "conditions": [ { "field": "object.status", "operator": "equals", "value_type": "static", "value": "Active" } ],
     "preload": [ { "var": "v1", "source": "object_field", "module": "Accounts", "by_field": "id", "value": "object.account_id" } ],
-    "actions": [ { "type": "modify", "target": "v1.rating", "change_type": "set_value", "value": "VIP", "save_to_crm": true } ]
+    "actions": [ { "type": "modify", "target": "v1.rating", "change_type": "set_value", "value": "VIP", "save_to_crm": true } ],
+    "constants": { "vip_threshold": 100000 }
   },
   "created_at": "2026-10-15T07:49:36+00:00",
   "updated_at": "2026-10-15T07:49:36+00:00"
@@ -113,18 +119,31 @@ in [API basics](index.md).
 | `run_once` | At most one start per CRM record (`object_type` + object `id`) |
 | `trigger_on` | CRM event types that start the process: a subset of `create`, `update`, `delete`, default `["create", "update"]`; `[]` — manual runs only. Ignored for child processes; a manual run does not check it. See [Event type](../03-user-guide/triggers-and-conditions.md#event-type-and-the-run-on-field-trigger_on) |
 | `version` | Incremented by every `PUT`; executions store the version they ran |
+| `definition.constants` | Process constants `name → value` (a scalar or a list of scalars), read as `config.<name>`; see [System variables and constants](../03-user-guide/change-types-and-expressions.md#system-variables-and-constants). Without constants the API returns `"constants": []` (an empty PHP array is serialized as a list) |
 | `definition` | `conditions` (a condition row: `field`, `operator`, `value_type`, `value`, optional `cast`, `cast_options`, `on_cast_error` — see [Comparison type (cast)](../03-user-guide/triggers-and-conditions.md#comparison-type-cast)), `preload`, `actions` — see [Triggers and conditions](../03-user-guide/triggers-and-conditions.md), [Actions](../03-user-guide/actions.md), [Change types and expressions](../03-user-guide/change-types-and-expressions.md). Elements of `actions` can be blocks with nested lists (`{"type":"condition","branches":[{"conditions":[…],"actions":[…]}],"else":[…]}`); any step has optional `id` and `name`, see [Nested blocks](../03-user-guide/actions.md#nested-blocks-and-step-fields), and `on_error` and `retry`, see [Step errors](../03-user-guide/actions.md#step-errors-on_error-and-retries) |
 
 ### `Execution` and `ExecutionAction`
 
 ```json
 {
-  "id": "7a0d6f22-aa92-4fef-ac54-5674b6b138eb", "process_id": 9, "process_name": "API doc test", "process_version": 2,
-  "parent_execution_id": null, "trigger": "manual", "event_id": "manual-ce71f9d2-…",
-  "object_type": "Tasks", "object_id": "T-1", "status": "completed", "retry_count": 0, "handled_errors": 0, "error_message": null,
-  "started_at": "2026-10-15T08:02:39+00:00", "finished_at": "2026-10-15T08:02:39+00:00", "duration_ms": 3
+  "id": "17ab587a-8751-4ec6-aff2-86829ee3c18d", "process_id": 3786, "process_name": "API doc demo", "process_version": 1,
+  "parent_execution_id": null, "trigger": "manual", "event_id": "manual-784844a3-fcec-4011-9817-e53f4ca04950",
+  "object_type": "Tasks", "object_id": "T-doc-1", "status": "completed", "retry_count": 0, "handled_errors": 0,
+  "waiting_until": null, "wait_reason": null, "error_message": null,
+  "started_at": "2026-10-27T19:27:31+00:00", "finished_at": "2026-10-27T19:27:32+00:00", "duration_ms": 43
 }
 ```
+
+| Field | Description |
+|---|---|
+| `id` | execution UUID |
+| `process_id`, `process_name`, `process_version` | the process and the definition version the execution ran with |
+| `parent_execution_id` | the parent execution (for `trigger: child`), otherwise `null` |
+| `event_id` | Redis Stream message id; `manual-<uuid>` for a manual run, the parent's event id for a child |
+| `object_type`, `object_id` | module and id of the CRM record from the event |
+| `retry_count` | number of execution retries after transient errors |
+| `error_message` | error text for `failed` / `cancelled`, otherwise `null` |
+| `duration_ms` | time from `started_at` to `finished_at`; `null` while the execution is not finished |
 
 - `trigger`: `stream` (CRM event) | `manual` | `child`.
 - `status`: `running` | `retrying` | `waiting` | `completed` | `failed` | `cancelled`. A waiting execution has
@@ -142,7 +161,9 @@ in [API basics](index.md).
 }
 ```
 
-- `action_type`: `preload` | `modify` | `save_object` | `start_process` (or a custom type).
+- `action_type`: the `type` of the step — an action or a block from the [`action-types`](#get-apidictionariesaction-types) dictionary
+  (`preload`, `modify`, `save_object`, `set_variable`, `find_records`, `update_records`, `delay`, `send_email`, `http_request`,
+  `assign`, `notify`, `link_records`, `unlink_records`, `start_process`, `condition`, `stop_process`, `foreach`) or a custom type.
 - `status`: `success` | `waiting` | `failed` | `skipped`. `attempts` = 1 + retries.
 - `step_index` is the sequence number of the audit record (`seq`); `pc` — instruction number in the program;
   `step_path` — place of the step in the definition (`actions[1].branches[0].actions[0]`); `iteration` — the iteration
@@ -166,11 +187,40 @@ in [API basics](index.md).
 - `action_type: delay` — `request_data`: `mode`, the due-time fields, `due_at` (UTC), `due_at_local`; `result_data`:
   `waited`, `waited_seconds`, `inline` (pause in the coroutine), `lateness_ms` (after parking), `past_due` (the moment has
   passed). While the execution waits, the step is `waiting`. See [Delay](../03-user-guide/actions.md#delay).
+- `action_type: http_request` (details — [Actions → HTTP request](../03-user-guide/actions.md#http-request)): `request_data` —
+  `method`, `url`, `headers` (names only), `body_size`, `body_preview`, `delivery`; `result_data` — `status`, `duration_ms`,
+  `var`, `replayed`, `response`. The `var` variable in `context.variables`: `status`, `ok`, `headers`, `body` / `body_text` /
+  `body_truncated` and the `response.extract` fields; `context.meta.<var>.source` is `http`. A step record:
+
+  ```json
+  {"id":8686,"step_index":1,"action_type":"http_request","status":"success","attempts":1,"duration_ms":7,
+   "request_data":{"url":"http://mock:9502/mock/echo/doc","method":"POST","headers":["Content-Type","Accept","User-Agent"],
+                   "delivery":"at_most_once","body_size":18,"body_preview":"{\"task\":\"T-doc-1\"}"},
+   "result_data":{"var":"erp","status":200,"replayed":false,"duration_ms":7,
+                  "response":{"ok":true,"status":200,"headers":{"content-type":"application/json",…},"body":{"data":{…}}}},
+   "pc":1,"step_path":"actions[1]","iteration":"","step_id":"notify_erp","error_code":null,"handled":null}
+  ```
+- `action_type: link_records` / `unlink_records` (details — [Actions → Link / unlink records](../03-user-guide/actions.md#link--unlink-records)):
+  `request_data` — `record`, `link`, `module`, `record_id`, `related_module`, `related_ids` (the first 100), `related_count`,
+  for `link_records` also `fields`, `batches`; `result_data` — `linked`, `updated`, `not_found`, `warnings` (for
+  `unlink_records` — `removed`, `not_linked`), `missing_paths`. A record without `id` or no related ids → the step is
+  `skipped`. CRM contract 2.0 (`relationships`) is required, otherwise `CRM_CAPABILITY_MISSING`.
+- `action_type: find_records` (details — [Actions → Find records](../03-user-guide/actions.md#find-records)): `request_data` — `var`,
+  `limit`, `module` / `related_to`, `filter`, `sort`, `fields`, in module mode — `crm_filter` (what was sent to the CRM) and
+  `crm_requests`; `result_data` — `count`, `has_more`, the first 100 `ids`, `reason`, `warnings`. The list variable
+  `{items, count, has_more, ids}` is in `context.variables`, `context.meta.<name>.source` is `list`.
+- `action_type: set_variable` (details — [Actions → Set a process variable](../03-user-guide/actions.md#set-a-process-variable)):
+  `request_data` — `var`, `fields` (`name → {change_type, value}`); `result_data.fields.<name>` — `old_value`, `new_value`.
+  The variable is in `context.variables`, `context.meta.<name>.source` is `local`.
+
 
 - A failed step has `error_code` (`HTTP_503`, `TIMEOUT`, `CONFIG`, `UNKNOWN_OUTCOME` …) and `handled` (`null` — the error
   stopped the execution, `continue`, `goto`, `item_continue` — a `foreach` loop went on to the next item); `result_data` has `error_class`, `recoverable`, `error_code`, `error`
-  (`{code, message, transient, http_status?, retry_after?}`), `details`, with `goto` — `goto` (target id). External actions (`send_email`, `http_request`, `notify`) add `idempotency_key` and `replayed`
-  (`true` — the response came from the side-effect journal without calling again).
+  (`{code, message, transient, http_status?, retry_after?}`), `details`, with `goto` — `goto` (target id). External actions (`send_email`, `http_request`, `notify`) add
+  `replayed` to `result_data` (`true` — the response came from the side-effect journal without calling again). The idempotency key
+  `{execution_id}:{effect_key}` is not written to the audit: `http_request` sends it to the external system in the
+  `Idempotency-Key` header (by default for `POST` / `PATCH`).
+
 ### `ProcessObjectRun` (run-once mark)
 
 ```json
@@ -357,6 +407,17 @@ Editor or admin. Body: `{ name, object_type, is_child, is_active?, priority?, ru
 `The process runs only on delete: the deleted record cannot be saved` (field `definition.actions[k]`). The definition is validated in execution order;
 all errors are returned at once.
 
+| Body field | Type | Required | Check and error message (`422`) |
+|---|---|---|---|
+| `name` | string | yes | non-empty after `trim`, ≤ 255 characters — `Process name is required`, `Process name is too long (max 255)` |
+| `object_type` | string | yes | `^[A-Za-z][A-Za-z0-9_]*$` — `Object type (CRM module) is required` |
+| `is_child` | bool | no (`false`) | `true` / `false` (also `1` / `0`, `"true"` / `"false"`) — `Must be true or false` |
+| `is_active` | bool | no (`true`) | as `is_child` |
+| `priority` | int | no (`0`) | an integer or a string of digits — `Priority must be an integer` |
+| `run_once` | bool | no (`false`) | as `is_child` |
+| `trigger_on` | string[] | no (`["create","update"]`) | a subset of `create`, `update`, `delete`; `[]` — manual runs only |
+| `definition` | object | yes | `Definition must be an object`; `preload` / `actions` — `Must be an array`; `conditions` — an array or a condition group; any other top-level key — `Unknown key "x" (allowed: conditions, preload, actions, constants)` (field `definition.x`); `constants` — see [System variables and constants](../03-user-guide/change-types-and-expressions.md#system-variables-and-constants) |
+
 ```bash
 curl -s -X POST http://localhost:9501/api/processes -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{
   "name": "API doc test", "object_type": "Tasks", "is_child": false, "is_active": false, "priority": 5,
@@ -376,20 +437,38 @@ the error `details`) is added to the process, e.g.
 `"warnings":[{"field":"definition.actions[1].value","message":"Variable \"task\" may be undefined here: it is set only in some branches"}]`.
 Errors:
 
+```bash
+curl -s -X POST http://localhost:9501/api/processes -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{
+  "name": "", "object_type": "1x", "is_child": "yes", "trigger_on": ["link"], "priority": "a",
+  "definition": {"constants": {"api_key": "x"},
+                 "conditions": [{"field":"v9.x","operator":"equals","value_type":"static","value":"1"}],
+                 "actions": [{"type":"modify","target":"sys.now","change_type":"calculate","value":"foo(1)"}]}}'
+```
+
 ```json
 {"success":false,"data":null,"error":{"code":"VALIDATION_ERROR","message":"Validation failed","details":[
   {"field":"name","message":"Process name is required"},
+  {"field":"object_type","message":"Object type (CRM module) is required"},
+  {"field":"is_child","message":"Must be true or false"},
+  {"field":"trigger_on","message":"Unknown event type \"link\" (allowed: create, update, delete)"},
+  {"field":"priority","message":"Priority must be an integer"},
+  {"field":"definition.constants.api_key","message":"Constant \"api_key\" looks like a secret; use a secret reference (secret://name)"},
   {"field":"definition.conditions[0].field","message":"Variable \"v9\" is not defined at this point"},
-  {"field":"definition.actions[0].value","message":"Unknown function \"foo\""}]}}
+  {"field":"definition.actions[0].value","message":"Unknown function \"foo\""},
+  {"field":"definition.actions[0].target","message":"Variable \"sys\" is read-only"}]}}
 ```
 
-- `422 VALIDATION_ERROR` — also `Process 6 "…" is not a child process`, `Process 42 not found`, `A process cannot start itself`.
+- `422 VALIDATION_ERROR` — also `Process 6 "…" is not a child process`, `Process 42 not found`, `A process cannot start itself`;
+  a secret outside a credential field — `Secrets can only be used in credential fields`, a missing secret — `Secret "x" does not exist`;
+  in `http_request` the scheme and host of the URL must be literal — `Scheme and host of the URL must be literal (https://host/...)`.
 - `422 CYCLE_DETECTED` — see `PUT`.
 - `400 BAD_REQUEST` — body is not valid JSON or is a JSON scalar.
 
 ### `PUT /api/processes/{id}`
 
-Editor or admin. Same body as `POST` (the whole process); when `trigger_on` is not sent, the current value is kept. `version` is incremented. The process cache of the old and the new
+Editor or admin. Same body as `POST` (the whole process); `version` is incremented. This is a full replacement: omitted
+`is_active`, `priority` and `run_once` get their defaults (`true`, `0`, `false`) instead of keeping the old values. The exception
+is `trigger_on`: when the key is absent, the current value is kept (old clients do not know it). The process cache of the old and the new
 object type is invalidated, so the next event uses the new definition; running executions keep their version.
 
 ```bash
@@ -400,7 +479,15 @@ curl -s -X PUT http://localhost:9501/api/processes/9 -H "Authorization: Bearer $
                  "actions":[{"type":"modify","target":"object.description","change_type":"set_value","value":"closed by WPS","save_to_crm":false}]}}'
 ```
 
-`200 Process` (`"version": 2`), with `warnings` when needed, as for `POST`. Errors: `404 PROCESS_NOT_FOUND`, `422 VALIDATION_ERROR` (also when a child process that is
+`200 Process` (`"version": 2`), with `warnings` when needed, as for `POST`. A real response with a warning (the variable is
+set only in one branch of a `condition` block):
+
+```json
+{"success":true,"data":{"id":3786,"name":"API doc demo",…,"version":2,"definition":{…},
+ "warnings":[{"field":"definition.actions[1].value","message":"Variable \"note\" may be undefined here: it is set only in some branches"}]},"error":null}
+```
+
+ Errors: `404 PROCESS_NOT_FOUND`, `422 VALIDATION_ERROR` (also when a child process that is
 started by others is turned into a top-level one), `422 CYCLE_DETECTED`:
 
 ```json
@@ -420,7 +507,9 @@ The `force=true` parameter is required when the process has waiting executions (
 curl -s -X DELETE http://localhost:9501/api/processes/10 -H "Authorization: Bearer $TOKEN"
 ```
 
-`200 {"deleted": true}`. Errors: `404 PROCESS_NOT_FOUND`, `409 PROCESS_HAS_WAITING_EXECUTIONS` (without `force=true`):
+`200 {"deleted": true}`; deleting again gives `404 PROCESS_NOT_FOUND`. The checks run in this order: the process exists → no
+waiting executions (or `force=true`) → no other process starts it. Errors: `404 PROCESS_NOT_FOUND`,
+`409 PROCESS_HAS_WAITING_EXECUTIONS` (without `force=true`):
 
 ```json
 {"success":false,"data":null,"error":{"code":"PROCESS_HAS_WAITING_EXECUTIONS",
@@ -455,18 +544,25 @@ fields), `changed_fields` — are passed in `object` at the top level; they do n
 `object_before` and `context.event_info` of the execution. Without them the run is an old-format event (`object_before` = `null`).
 
 ```bash
-curl -s -X POST http://localhost:9501/api/processes/9/run -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"object":{"id":"T-1","module":"Tasks","status":"Done"}}'
+curl -s -X POST http://localhost:9501/api/processes/3786/run -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"object":{"id":"T-doc-1","status":"Done","event_type":"update","before":{"status":"Open"},"changed_fields":["status"]}}'
+```
+
+```json
+{"success":true,"data":{"conditions_met":true,"execution_id":"17ab587a-8751-4ec6-aff2-86829ee3c18d",
+ "conditions":[{"field":"object.status","operator":"equals","value_type":"static","value":"Done","actual":"Done","expected":"Done","result":true}],
+ "run_once_applied":true,"run_once_blocked":false,"previous_execution_id":null},"error":null}
 ```
 
 | Result | HTTP | `data` |
 |---|---|---|
-| Conditions met, execution created | `201` | `{"conditions_met":true,"execution_id":"7a0d6f22-…","conditions":[ConditionTrace],"run_once_applied":true,"run_once_blocked":false,"previous_execution_id":null}` |
-| Conditions not met | `200` | `{"conditions_met":false,"execution_id":null,"conditions":[{"field":"object.status",…,"actual":"Open","expected":"Done","result":false}],…}` |
-| Blocked by run once | `200` | `{"conditions_met":true,"execution_id":null,"conditions":[],"run_once_applied":true,"run_once_blocked":true,"previous_execution_id":"7a0d6f22-…"}` |
+| Conditions met, execution created | `201` | `{"conditions_met":true,"execution_id":"17ab587a-…","conditions":[ConditionTrace],"run_once_applied":true,"run_once_blocked":false,"previous_execution_id":null}` |
+| Conditions not met | `200` | `{"conditions_met":false,"execution_id":null,"conditions":[{"field":"object.status",…,"actual":"Open","expected":"Done","result":false}],"run_once_applied":false,"run_once_blocked":false,"previous_execution_id":null}` |
+| Blocked by run once (even with `force: true`) | `200` | `{"conditions_met":true,"execution_id":null,"conditions":[],"run_once_applied":true,"run_once_blocked":true,"previous_execution_id":"17ab587a-…"}` |
 | A strict condition could not cast a value (`on_cast_error: "error"`) | `200` | `{"conditions_met":false,"execution_id":null,"conditions":[{…,"cast_error":{"side":"actual","message":"…"}}],…,"error":"CAST_ERROR","error_message":"Condition on object.amount: Value \"12.5\" is not an integer"}` |
 
-`run_once_applied` is `true` when the process has `run_once` and the object has an `id`. Follow the execution with
+`run_once_applied` is `true` when the run-once check was made: the process has `run_once`, the object has an `id` and the
+conditions are met (or `force: true`). When the conditions are not met, the mark is not checked and the field is `false`. Follow the execution with
 `GET /api/executions/{execution_id}`. Errors: `404 PROCESS_NOT_FOUND`, `422 VALIDATION_ERROR`
 (`object`: "A JSON object is required"; `object.id`: "The object must have an \"id\"").
 
@@ -476,11 +572,15 @@ Any role. Query: `status` (`running` | `retrying` | `waiting` | `completed` | `f
 date-time, a time without zone is UTC; a bare date `YYYY-MM-DD` in `date_to` means "up to the end of that day"), `page`, `per_page`. Sorted by `started_at DESC`.
 
 ```bash
-curl -s 'http://localhost:9501/api/processes/9/executions?status=completed' -H "Authorization: Bearer $TOKEN"
+curl -s 'http://localhost:9501/api/processes/3786/executions?status=completed' -H "Authorization: Bearer $TOKEN"
 ```
 
 ```json
-{"success":true,"data":[{"id":"7a0d6f22-…","process_id":9,"process_name":"API doc test","process_version":2,"parent_execution_id":null,"trigger":"manual","event_id":"manual-ce71f9d2-…","object_type":"Tasks","object_id":"T-1","status":"completed","retry_count":0,"error_message":null,"started_at":"…","finished_at":"…","duration_ms":3}],"error":null,"meta":{"page":1,"per_page":20,"total":1}}
+{"success":true,"data":[{"id":"17ab587a-8751-4ec6-aff2-86829ee3c18d","process_id":3786,"process_name":"API doc demo","process_version":1,
+ "parent_execution_id":null,"trigger":"manual","event_id":"manual-784844a3-…","object_type":"Tasks","object_id":"T-doc-1",
+ "status":"completed","retry_count":0,"handled_errors":0,"waiting_until":null,"wait_reason":null,"error_message":null,
+ "started_at":"2026-10-27T19:27:31+00:00","finished_at":"2026-10-27T19:27:32+00:00","duration_ms":43}],
+ "error":null,"meta":{"page":1,"per_page":20,"total":1}}
 ```
 
 Errors: `404 PROCESS_NOT_FOUND`; `422` ("Status must be one of: running, retrying, waiting, completed, failed, cancelled", "Invalid date").
@@ -490,22 +590,28 @@ Errors: `404 PROCESS_NOT_FOUND`; `422` ("Status must be one of: running, retryin
 Any role. Run-once marks of the process, `created_at DESC`. Query: `object_id` (exact), `page`, `per_page`.
 
 ```bash
-curl -s http://localhost:9501/api/processes/9/runs -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:9501/api/processes/3786/runs -H "Authorization: Bearer $TOKEN"
 ```
 
 ```json
-{"success":true,"data":[{"process_id":9,"object_type":"Tasks","object_id":"T-1","execution_id":"7a0d6f22-…","event_id":"manual-ce71f9d2-…","trigger":"manual","created_at":"…","blocked_count":1,"last_blocked_at":"…"}],"error":null,"meta":{"page":1,"per_page":20,"total":1}}
+{"success":true,"data":[{"process_id":3786,"object_type":"Tasks","object_id":"T-doc-1","execution_id":"17ab587a-8751-4ec6-aff2-86829ee3c18d",
+ "event_id":"manual-784844a3-…","trigger":"manual","created_at":"2026-10-27T19:27:31+00:00","blocked_count":1,
+ "last_blocked_at":"2026-10-27T19:27:32+00:00"}],"error":null,"meta":{"page":1,"per_page":20,"total":1}}
 ```
+
+`blocked_count` — how many times a run was blocked by the mark (here, a repeated manual run with `force: true`).
+Errors: `404 PROCESS_NOT_FOUND`.
 
 ### `DELETE /api/processes/{id}/runs/{object_type}/{object_id}`
 
 Editor or admin. Removes the mark: the next event of this record starts the process again. URL-encode the segments.
 
 ```bash
-curl -s -X DELETE http://localhost:9501/api/processes/9/runs/Tasks/T-1 -H "Authorization: Bearer $TOKEN"
+curl -s -X DELETE http://localhost:9501/api/processes/3786/runs/Tasks/T-doc-1 -H "Authorization: Bearer $TOKEN"
 ```
 
-`200 {"deleted": true}`. Errors: `404 PROCESS_NOT_FOUND`; `404 NOT_FOUND` ("Process 9 has no run mark for Tasks T-1").
+`200 {"deleted": true}`; the reset is logged (`run_once mark reset`, with the user's e-mail). Errors: `404 PROCESS_NOT_FOUND`;
+`404 NOT_FOUND` ("Process 3786 has no run mark for Tasks T-doc-1") — for example, on a repeated call.
 
 ## Executions
 
@@ -526,6 +632,8 @@ curl -s 'http://localhost:9501/api/executions?status=waiting&due_before=2026-11-
 ```
 
 Errors: `422` ("Status must be one of: running, retrying, waiting, completed, failed, cancelled", `due_before` — "Invalid date").
+Unlike the process log, `date_from` / `date_to` are not validated up front here: an unparsable date (`date_from=garbage`)
+currently leads to `500 INTERNAL_ERROR`. A non-numeric `process_id` gives an empty list. Sorted by `started_at DESC`.
 
 ### `GET /api/executions/{id}`
 
@@ -533,7 +641,7 @@ Any role. `Execution` plus:
 
 | Field | Description |
 |---|---|
-| `context` | `{event, variables, meta, event_info, conditions, stop?}` — the final snapshot; while running, the live state from Redis. `event` and `variables.object` are the record without the event service keys; `variables.object_before` — old values of the changed fields or `null`; `event_info` — `{event_type, changed_fields, has_before, origin, legacy}` (`changed_fields: null` — unknown, `origin` — `wps_origin` of the event); `stop` — `{status, code, message}` when a `stop_process` step ended the execution |
+| `context` | `{event, variables, meta, event_info, conditions, system, frames?, stop?}` — the final snapshot (column `executions.context_snapshot`). `event` and `variables.object` are the record without the event service keys; `variables.object_before` — old values of the changed fields or `null`; `meta.<variable>` — `{module, source}` (`event`, `event_before`, `preload`, `local`, `list`, `http`, `loop` …); `event_info` — `{event_type, changed_fields, has_before, origin, legacy}` (`changed_fields: null` — unknown, `origin` — `wps_origin` of the event); `conditions` — the trace of the start conditions; `system` — the values of `sys.*` at the end; `stop` — `{status, code, message}` when a `stop_process` step ended the execution. While the execution runs, the live state from Redis `exec:{id}` is returned instead of the snapshot, and for a waiting one — the state from `execution_waits`: in both cases only `event`, `variables`, `meta`, `conditions` |
 | `current_step` | Only while running: `pc` of the next program instruction |
 | `seq` | Only while running: number of the next audit record |
 | `frames` | Only while running: frames of the open `foreach` loops (`[]` outside loops): `begin`, `next`, `end`, `as`, `loop_var`, `module`, `items_key`, `index`, `count`, `audit_seq`, `stats` … — without the items themselves (they are in the snapshot `exec:{id}:loop:{pc}`) |
@@ -541,20 +649,46 @@ Any role. `Execution` plus:
 | `actions` | `ExecutionAction[]`, by `step_index` |
 | `children` | `Execution[]` started by `start_process` of this execution |
 
+Example — an execution of a three-step process (`modify` with a template over `sys.*` and `config.*`, `http_request` to the mock,
+`set_variable`), started manually with `event_type`, `before` and `changed_fields`:
+
 ```bash
-curl -s http://localhost:9501/api/executions/7a0d6f22-aa92-4fef-ac54-5674b6b138eb -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:9501/api/executions/17ab587a-8751-4ec6-aff2-86829ee3c18d -H "Authorization: Bearer $TOKEN"
 ```
 
 ```json
-{"success":true,"data":{"id":"7a0d6f22-…","process_id":9,…,"status":"completed",
- "context":{"meta":{"object":{"module":"Tasks","source":"event"},"object_before":{"module":"Tasks","source":"event_before"}},
-            "event":{"id":"T-1","module":"Tasks","status":"Done"},
-            "variables":{"object":{"id":"T-1","module":"Tasks","status":"Done","description":"closed by WPS"},"object_before":null},
-            "event_info":{"event_type":"update","changed_fields":null,"has_before":false,"origin":null,"legacy":true},
-            "conditions":[{"field":"object.status","value":"Done","actual":"Done","result":true,"expected":"Done","operator":"equals","value_type":"static"}]},
- "actions":[{"id":27,"step_index":0,"action_type":"modify","status":"success","attempts":1,…}],
+{"success":true,"data":{"id":"17ab587a-8751-4ec6-aff2-86829ee3c18d","process_id":3786,"process_name":"API doc demo",
+ "process_version":1,"parent_execution_id":null,"trigger":"manual","event_id":"manual-784844a3-…","object_type":"Tasks",
+ "object_id":"T-doc-1","status":"completed","retry_count":0,"handled_errors":0,"waiting_until":null,"wait_reason":null,
+ "error_message":null,"started_at":"2026-10-27T19:27:31+00:00","finished_at":"2026-10-27T19:27:32+00:00","duration_ms":43,
+ "context":{
+   "meta":{"erp":{"module":null,"source":"http"},"object":{"module":"Tasks","source":"event"},
+           "summary":{"module":null,"source":"local"},"object_before":{"module":"Tasks","source":"event_before"}},
+   "event":{"id":"T-doc-1","status":"Done"},
+   "system":{"now":"2026-10-27 19:27:32","depth":0,"module":"Tasks","trigger":"manual","user_id":"","event_id":"manual-784844a3-…",
+             "record_id":"T-doc-1","event_type":"update","process_id":3786,"started_at":"2026-10-27 19:27:31","errors_count":0,
+             "execution_id":"17ab587a-8751-4ec6-aff2-86829ee3c18d","process_name":"API doc demo","changed_fields":["status"],
+             "process_version":1,"parent_execution_id":""},
+   "variables":{"erp":{"ok":true,"status":200,"headers":{…},"body":{"data":{…}}},
+                "object":{"id":"T-doc-1","status":"Done","description":"closed by API doc demo (manual, EU)"},
+                "summary":{"status":200},
+                "object_before":{"status":"Open"}},
+   "conditions":[{"field":"object.status","value":"Done","actual":"Done","result":true,"expected":"Done","operator":"equals","value_type":"static"}],
+   "event_info":{"legacy":false,"origin":null,"event_type":"update","has_before":true,"changed_fields":["status"]}},
+ "actions":[
+   {"id":8685,"step_index":0,"action_type":"modify","status":"success","attempts":1,"started_at":"2026-10-27T19:27:31+00:00","duration_ms":4,
+    "request_data":{"value":"closed by {{ sys.process_name }} ({{ sys.trigger }}, {{ config.region }})","target":"object.description","change_type":"template"},
+    "result_data":{"new_value":"closed by API doc demo (manual, EU)","old_value":null},
+    "error_message":null,"pc":0,"step_path":"actions[0]","iteration":"","step_id":null,"error_code":null,"handled":null},
+   {"id":8686,"step_index":1,"action_type":"http_request","status":"success",…,"step_id":"notify_erp"},
+   {"id":8687,"step_index":2,"action_type":"set_variable","status":"success","attempts":1,"duration_ms":0,
+    "request_data":{"var":"summary","fields":{"status":{"value":"erp.status","change_type":"calculate"}}},
+    "result_data":{"fields":{"status":{"new_value":200,"old_value":null}}},…}],
  "children":[]},"error":null}
 ```
+
+Object keys in `context` and `request_data` are not in definition order: the snapshot is stored as `jsonb`, which does not keep
+key order.
 
 `404 EXECUTION_NOT_FOUND` (also for an id that is not a UUID).
 
@@ -563,10 +697,11 @@ curl -s http://localhost:9501/api/executions/7a0d6f22-aa92-4fef-ac54-5674b6b138e
 Any role. Only the steps (`ExecutionAction[]`).
 
 ```bash
-curl -s http://localhost:9501/api/executions/7a0d6f22-aa92-4fef-ac54-5674b6b138eb/actions -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:9501/api/executions/17ab587a-8751-4ec6-aff2-86829ee3c18d/actions -H "Authorization: Bearer $TOKEN"
 ```
 
-`404 EXECUTION_NOT_FOUND`.
+`200`: `{"success":true,"data":[ExecutionAction, …],"error":null}` — the same items as `actions` of `GET /api/executions/{id}`,
+by `step_index`. `404 EXECUTION_NOT_FOUND` ("Execution not-a-uuid not found").
 
 ### `GET /api/executions/{id}/side-effects`
 
@@ -574,14 +709,17 @@ Any role. The external call journal of an execution (table `step_side_effects`, 
 systems) — for analysing `UNKNOWN_OUTCOME` and repeats ([Reliability](../04-operations/reliability.md#side-effects-and-repeats)).
 
 ```bash
-curl -s http://localhost:9501/api/executions/7a0d6f22-aa92-4fef-ac54-5674b6b138eb/side-effects -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:9501/api/executions/17ab587a-8751-4ec6-aff2-86829ee3c18d/side-effects -H "Authorization: Bearer $TOKEN"
 ```
 
 ```json
 {"success":true,"data":[
-  {"effect_key":"3","action_type":"send_email","delivery":"at_most_once","status":"done","attempts":1,
-   "started_at":"2026-10-19T19:40:02+00:00","finished_at":"2026-10-19T19:40:03+00:00","error_message":null}]}
+  {"effect_key":"1","action_type":"http_request","delivery":"at_most_once","status":"done","attempts":1,
+   "started_at":"2026-10-27T19:27:31+00:00","finished_at":"2026-10-27T19:27:31+00:00","error_message":null}],"error":null}
 ```
+
+Sorted by `started_at`, then `effect_key`. The idempotency key the external system received is `{execution_id}:{effect_key}`
+(here the header `Idempotency-Key: 17ab587a-…:1`).
 
 - `effect_key` — `{pc}`, `{pc}@{iteration}` in loops, `#{sub}` for several calls in one step.
 - `status`: `started` (the call started, outcome unknown), `done`, `failed`.
@@ -615,22 +753,53 @@ admin, editor. `Secret[]` sorted by name, each with `usages_count` — the numbe
 ### `GET /api/secrets/{name}`
 
 admin, editor. `Secret` + `usages: [{process_id, process_name, path}]` (`path` — the field in the definition, e.g.
-`definition.actions[1].auth.token`). No such secret — `404 NOT_FOUND`.
+`definition.actions[1].auth.token`). No such secret — `404 NOT_FOUND` ("Secret "x" not found").
+
+```bash
+curl -s http://localhost:9501/api/secrets/doc_erp_token -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"success":true,"data":{"name":"doc_erp_token","kind":"bearer","description":"ERP API","mask":"****cdef","allowed_hosts":[],
+ "version":1,"created_at":"2026-10-27T19:28:29+00:00","updated_at":"2026-10-27T19:28:29+00:00","last_used_at":null,
+ "usages":[{"process_id":3786,"process_name":"API doc demo","path":"definition.actions[0].auth.token"}]},"error":null}
+```
 
 ### `POST /api/secrets`
 
 admin. Body `{ name, kind?, value, description?, allowed_hosts? }` → `201 Secret` (without the value).
 
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | `^[a-z][a-z0-9_]{1,63}$`; processes refer to it (`secret://name`), cannot be changed |
+| `kind` | string | a kind from [`secret-kinds`](#get-apidictionariessecret-kinds), `generic` by default; cannot be changed |
+| `value` | string \| object | a string (at least 4 characters) or an object for composite kinds (`basic_auth`, `oauth2_client`) |
+| `description` | string | optional description |
+| `allowed_hosts` | string[] | hosts the secret may be sent to (`http_request`); empty — no restriction |
+
 ```bash
 curl -s -X POST http://localhost:9501/api/secrets -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"erp_basic","kind":"basic_auth","value":{"username":"erp","password":"p@ssw0rd"}}'
+  -d '{"name":"doc_basic","kind":"basic_auth","value":{"username":"erp","password":"p@ssw0rd"},"description":"ERP basic","allowed_hosts":["erp.example.com"]}'
+```
+
+```json
+{"success":true,"data":{"name":"doc_basic","kind":"basic_auth","description":"ERP basic","mask":{"username":"erp","password":"********"},
+ "allowed_hosts":["erp.example.com"],"version":1,"created_at":"2026-10-27T19:28:19+00:00","updated_at":"2026-10-27T19:28:19+00:00",
+ "last_used_at":null},"error":null}
 ```
 
 Validation errors (`422`, field → message): `name` — `Secret name must match ^[a-z][a-z0-9_]{1,63}$`; `kind` —
 `Unknown secret kind (allowed: …)`; `value` — `Secret value is required`, `Secret value is too short (min 4 characters)`,
 `Value must be a string`, `Value must be an object for kind "basic_auth"`, `Invalid mailer DSN (…)`,
 `Value must be an http(s) URL`; `value.password` — `Field "password" is required for kind "basic_auth"`;
-`value.token_url` — `Token URL must use https`; `allowed_hosts[0]` — `Invalid host "…"`. Name taken — `409 SECRET_EXISTS`.
+`value.token_url` — `Token URL must use https`; `allowed_hosts[0]` — `Invalid host "…"`. Name taken — `409 SECRET_EXISTS`
+("Secret "doc_basic" already exists"). A `422` response:
+
+```json
+{"success":false,"data":null,"error":{"code":"VALIDATION_ERROR","message":"Validation failed","details":[
+  {"field":"name","message":"Secret name must match ^[a-z][a-z0-9_]{1,63}$"},
+  {"field":"kind","message":"Unknown secret kind (allowed: generic, smtp_dsn, basic_auth, bearer, api_key, oauth2_client, webhook_url, telegram_bot)"}]}}
+```
 
 ### `PUT /api/secrets/{name}`
 
@@ -638,15 +807,30 @@ admin. Body `{ value?, description?, allowed_hosts? }` → `Secret`. A new value
 cannot change (`422`: `A secret cannot be renamed (processes refer to it by name)`,
 `The kind of a secret cannot be changed`). Workers pick up a new value within `SECRETS_CACHE_TTL`.
 
+```bash
+curl -s -X PUT http://localhost:9501/api/secrets/doc_basic -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"value":{"username":"erp","password":"n3w-pass"},"description":"ERP basic v2"}'
+```
+
+`200`: the same `Secret` with `"version":2` and `"description":"ERP basic v2"`.
+
 ### `DELETE /api/secrets/{name}`
 
 admin. `{ "deleted": true }`. If non-deleted processes refer to the secret — `409 SECRET_IN_USE` with
-`{ "usages": [{process_id, process_name, path}] }` in `details`.
+`{ "usages": [{process_id, process_name, path}] }` in `details`:
+
+```json
+{"success":false,"data":null,"error":{"code":"SECRET_IN_USE","message":"Secret \"doc_erp_token\" is used by processes",
+ "details":{"usages":[{"process_id":3786,"process_name":"API doc demo","path":"definition.actions[0].auth.token"}]}}}
+```
+
+Soft-deleted processes do not count as references. No such secret — `404 NOT_FOUND`.
 
 ### `POST /api/secrets/rotate`
 
 admin. Re-encrypts with the current key every secret encrypted with the previous one (`WPS_SECRETS_KEY_PREVIOUS`) →
-`{ "reencrypted": N }`. A row that no key decrypts — `409 ROTATION_FAILED`.
+`{ "reencrypted": N }` (`0` when everything is already encrypted with the current key). A row that no key decrypts —
+`409 ROTATION_FAILED`. A key is generated with `php bin/secrets-key.php` (see [Security](../04-operations/security.md)).
 
 ## Mail
 
@@ -664,7 +848,14 @@ curl -s -X POST http://localhost:9501/api/mail/test -H "Authorization: Bearer $T
 {"success":true,"data":{"sent":true,"to":"you@company.ru","message_id":"27xdaVLBnTJG95wPWc7fmU"},"error":null}
 ```
 
-A failed send is also `200`: `{ "sent": false, "error": "<SMTP error text, password masked>", "error_code": "SMTP_AUTH" }`.
+The letter is sent from `MAILER_FROM` with the Russian subject "WPS: проверка отправки почты" (on the dev stand Mailpit catches
+it, http://localhost:8025). A failed send is also `200`: `{ "sent": false, "error": "<SMTP error text, password masked>",
+"error_code": "SMTP_AUTH" }`; a transport configuration error has `error_code: null`:
+
+```json
+{"success":true,"data":{"sent":false,"error":"Secret \"nope\" not found","error_code":null},"error":null}
+```
+
 An invalid address — `422` (`to`: `Invalid email address`). Role editor or viewer — `403`.
 
 ## Notifications
@@ -684,13 +875,47 @@ curl -s -X POST http://localhost:9501/api/notify/test -H "Authorization: Bearer 
 {"success":true,"data":{"sent":true,"result":{"channels":[{"channel":"telegram","status":"success","deliveries":[{"connection":"secret://sales_bot","chat_id":"-1001234567890","message_id":42,"replayed":false}]}]}},"error":null}
 ```
 
+Slack (a webhook from a `webhook_url` secret) and the CRM bell — responses from the stand:
+
+```json
+{"success":true,"data":{"sent":true,"result":{"channels":[{"channel":"slack","status":"success","deliveries":[{"connection":"secret://test_slack","status":200,"replayed":false}]}]}},"error":null}
+{"success":true,"data":{"sent":true,"result":{"channels":[{"channel":"crm_alert","status":"success","deliveries":[{"module":"Alerts","user":"1","record":"482228","replayed":false}]}]}},"error":null}
+```
+
+The send is real: `crm_alert` creates an `Alerts` record in the CRM (its id is `record`), a messenger receives the message.
+
 A send error is also `200`: `{ "sent": false, "error": "notify: 1 of 1 channels failed: telegram: HTTP 403 …" }`
-(secrets masked). Channel configuration errors — `422` with `channel.…` fields (`channel.connection`: `Connection secret
-is required (secret://name)` and others). The viewer role — `403`.
+(secrets masked). Channel configuration errors — `422` with `channel.…` fields — the same rules as for a `notify` step when a
+process is saved:
+
+```json
+{"success":false,"data":null,"error":{"code":"VALIDATION_ERROR","message":"Validation failed","details":[
+  {"field":"channel.connection","message":"Connection secret is required (secret://name)"},
+  {"field":"channel.chat_id","message":"Chat id is required"}]}}
+```
+
+The viewer role — `403`.
 
 ## Dictionaries
 
-All return `[{ "value", "label" }]`; action types also have `description`. Labels are Russian; translate by `value`.
+Most dictionaries return `[{ "value", "label" }]` (labels are Russian; clients translate by `value`). Exceptions:
+`crm-capabilities`, `relative-dates` and `mail-transports` return an object; `functions` returns the function list with
+`meta.operators`; `action-types`, `operators`, `casts`, `template-filters`, `notify-channels`, `secret-kinds` and
+`system-variables` have extra fields (described in their sections). All dictionaries except `modules` and `crm-capabilities`
+are built from code (registries and constants of `back/src/Controllers/Dictionaries/*`) and never call the CRM.
+
+| Dictionary | Source in code |
+|---|---|
+| `modules` | `DictionaryService::modules()` — `MOCK_SERVICE_URL/modules` or `GET {CRM}/modules`, Redis cache `dict:modules` |
+| `crm-capabilities` | `CrmCapabilitiesService::describe()` — `GET {CRM}/capabilities`, Redis cache `crm:capabilities` |
+| `operators` | `ComparatorRegistry` (`Container::comparators()`) |
+| `functions` | `ExpressionEngine::functionSpecs()` (the `FunctionSpec` of each function) |
+| `template-filters` | `TemplateEngine::filterDictionary()` (expression functions + `raw`) |
+| `action-types` | `ActionHandlerRegistry` and `BlockTypeRegistry` |
+| `change-types` | `ChangeTypeRegistry` |
+| `notify-channels` | `ChannelRegistry` |
+| `system-variables` | `ExecutionContext::SYS_FIELDS` + the controller's labels |
+| the rest | controller constants and enums (`CastType`, `DeliveryPolicy`, `SecretKind`, `DateUnit` …) |
 
 ### `GET /api/dictionaries/modules`
 
@@ -724,14 +949,15 @@ curl -s http://localhost:9501/api/dictionaries/crm-capabilities -H "Authorizatio
 
 ```json
 {"success":true,"data":{"contract_version":"2.0",
- "features":["filter_operators","sort","cursor_pagination","fields","count","delete","relationships","relationship_fields","event_v2","delete_events","origin_headers"],
+ "features":["filter_operators","filter_nin","sort","cursor_pagination","fields","count","delete","relationships","relationship_fields","event_v2","delete_events","origin_headers"],
  "limits":{"max_page_size":100,"max_link_batch":100,"max_in_values":100},
  "crm":{"name":"SuiteCRM","version":"8.10.2","plugin_version":"1.2.0"},
  "source":"crm","cached_at":"2026-10-20T09:00:00+00:00"},"error":null}
 ```
 
 `source`: `crm` — the answer of `GET {CRM}/capabilities`; `fallback` — the CRM has no such endpoint (an old plugin):
-`contract_version: "1.0"`, `features: []`. If the CRM is not reachable — `503 CRM_UNAVAILABLE`.
+`contract_version: "1.0"`, `features: []`. If the CRM is not reachable — `503 CRM_UNAVAILABLE` ("The CRM is not reachable: …").
+On the mock CRM `crm` is `{"name":"WPS mock CRM","version":"2.0","plugin_version":"mock"}`.
 
 ### `GET /api/dictionaries/operators`
 
@@ -789,24 +1015,18 @@ curl -s http://localhost:9501/api/dictionaries/functions -H "Authorization: Bear
 ```json
 {"success":true,"data":[
  {"name":"add_days","category":"date","signature":"add_days(d, n)","min_args":2,"max_args":2,"returns":"date|datetime","description":"Прибавляет календарные дни; местное время сохраняется","example":"add_days(today(), 3)","pure":true},
- {"name":"date_diff","category":"date","signature":"date_diff(from, to, unit)","min_args":3,"max_args":3,"returns":"number","description":"…","example":"date_diff(object.date_modified, now(), 'days')","pure":true},
  {"name":"now","category":"date","signature":"now()","min_args":0,"max_args":0,"returns":"datetime","description":"Текущий момент, UTC","example":"now()","pure":false},
- … other date functions …,
+ {"name":"pluck","category":"list","signature":"pluck(list, field)","min_args":2,"max_args":2,"returns":"list","description":"Значения поля из списка записей; отсутствующее поле — ''; поле может быть вложенным ('address.city')","example":"pluck(tasks.items, 'name')","pure":true},
+ {"name":"to_list","category":"list","signature":"to_list(s[, separator[, wrapper]])","min_args":1,"max_args":3,"returns":"list","description":"Приводит значение к списку: массив — как есть, пустое — [], JSON-массив — декодированный, строка — один элемент; с separator — делит строку (wrapper снимает обрамление каждого элемента, мультисписок ^a^,^b^)","example":"to_list(object.tags_c, ',', '^')","pure":true},
  {"name":"coalesce","category":"logic","signature":"coalesce(a, b, …)","min_args":1,"max_args":null,"returns":"any","description":"Первое непустое значение (не null и не пустая строка)","example":"coalesce(object.phone_mobile, object.phone_work, v1.phone_office)","pure":true},
  {"name":"if","category":"logic","signature":"if(cond, then[, else])","min_args":2,"max_args":3,"returns":"any","description":"Значение then, если cond истинно, иначе else (или пустая строка)","example":"if(object.amount > 100000, 'VIP', 'Regular')","pure":true},
- {"name":"ifempty","category":"logic","signature":"ifempty(a, default)","min_args":2,"max_args":2,"returns":"any","description":"…","example":"ifempty(object.title, 'Без названия')","pure":true},
- {"name":"ifs","category":"logic","signature":"ifs(cond1, value1, cond2, value2, …[, default])","min_args":2,"max_args":null,"returns":"any","description":"…","example":"…","pure":true},
- {"name":"switch","category":"logic","signature":"switch(x, key1, value1, key2, value2, …[, default])","min_args":3,"max_args":null,"returns":"any","description":"…","example":"…","pure":true},
- {"name":"abs","category":"number","signature":"abs(x)","min_args":1,"max_args":1,"returns":"number","description":"Модуль числа","example":"abs(object.balance)","pure":true},
- {"name":"max","category":"number","signature":"max(a, b, …)","min_args":1,"max_args":null,"returns":"number","description":"…","example":"…","pure":true},
- {"name":"min","category":"number","signature":"min(a, b, …)","min_args":1,"max_args":null,"returns":"number","description":"…","example":"…","pure":true},
- {"name":"round","category":"number","signature":"round(x[, digits])","min_args":1,"max_args":2,"returns":"number","description":"Округление до digits знаков","example":"round(object.amount * 0.9, 2)","pure":true},
+ {"name":"percent","category":"number","signature":"percent(x, p)","min_args":2,"max_args":2,"returns":"number","description":"p процентов от x","example":"percent(object.amount, 15)","pure":true},
+ {"name":"round","category":"number","signature":"round(x[, digits])","min_args":1,"max_args":2,"returns":"number","description":"Округление до digits знаков, половина — от нуля (2.5 → 3); digits может быть отрицательным (1250, -2 → 1300)","example":"round(object.amount * 1.2, 2)","pure":true},
  {"name":"concat","category":"string","signature":"concat(a, b, …)","min_args":1,"max_args":null,"returns":"string","description":"Склеивает значения в одну строку","example":"concat(v1.first_name, ' ', v1.last_name)","pure":true},
- {"name":"len","category":"string","signature":"len(s)","min_args":1,"max_args":1,"returns":"number","description":"…","example":"…","pure":true},
- {"name":"lower","category":"string","signature":"lower(s)","min_args":1,"max_args":1,"returns":"string","description":"…","example":"…","pure":true},
- {"name":"substr","category":"string","signature":"substr(s, start[, length])","min_args":2,"max_args":3,"returns":"string","description":"…","example":"…","pure":true},
- {"name":"trim","category":"string","signature":"trim(s)","min_args":1,"max_args":1,"returns":"string","description":"…","example":"…","pure":true},
- {"name":"upper","category":"string","signature":"upper(s)","min_args":1,"max_args":1,"returns":"string","description":"…","example":"…","pure":true}],
+ {"name":"regex_replace","category":"string","signature":"regex_replace(s, pattern, replacement[, flags])","min_args":3,"max_args":4,"returns":"string","description":"Заменяет совпадения; в replacement допустимы ссылки $1, флаги i/m/s","example":"regex_replace(object.phone, '[^0-9+]', '')","pure":true},
+ {"name":"json_get","category":"type","signature":"json_get(json, path[, default])","min_args":2,"max_args":3,"returns":"any","description":"Первое совпадение JSONPath в массиве или JSON-строке; нет совпадения — default (пустая строка)","example":"json_get(resp.body, '$.data.customer.id')","pure":true},
+ {"name":"to_bool","category":"type","signature":"to_bool(x)","min_args":1,"max_args":1,"returns":"boolean","description":"bool: '1'/'yes'/'да' → true, '0'/'no'/'нет' → false, пустое → false","example":"to_bool(object.do_not_call)","pure":true},
+ … 121 functions in total …],
  "meta":{"operators":[
  {"op":"or","synonyms":["||"],"precedence":1},
  {"op":"and","synonyms":["&&"],"precedence":2},
@@ -824,15 +1044,28 @@ curl -s http://localhost:9501/api/dictionaries/functions -H "Authorization: Bear
  {"op":"%","synonyms":[],"precedence":6}]},"error":null}
 ```
 
-The `data` items are sorted by `category`, then by `name`. Date functions (category `date`) are described in [Dates and time](../03-user-guide/change-types-and-expressions.md#dates-and-time); `format_date_locale` exists only when `intl` is installed in the image:
+The `data` items are sorted by `category`, then by `name`.
+
+Current set (121 functions; the list is built from the registry, so new functions appear in the response automatically):
+
+| `category` | Purpose | Functions |
+|---|---|---|
+| `date` | dates and time | `add_days`, `add_hours`, `add_minutes`, `add_months`, `add_weeks`, `add_years`, `date`, `date_diff`, `datetime`, `day`, `end_of_day`, `end_of_month`, `end_of_quarter`, `end_of_week`, `end_of_year`, `format_date`, `format_date_locale`, `hour`, `is_weekend`, `minute`, `month`, `now`, `quarter`, `start_of_day`, `start_of_month`, `start_of_quarter`, `start_of_week`, `start_of_year`, `today`, `week`, `weekday`, `year` |
+| `list` | lists | `avg`, `concat_lists`, `count`, `first`, `in`, `index_of_item`, `last`, `list`, `nth`, `pluck`, `reverse`, `slice`, `sort`, `sum`, `to_list`, `unique`, `where`, `without` |
+| `logic` | conditionals | `coalesce`, `if`, `ifempty`, `ifs`, `switch` |
+| `number` | numbers | `abs`, `ceil`, `floor`, `max`, `min`, `number_format`, `percent`, `pow`, `round`, `sign`, `sqrt`, `to_int`, `to_number`, `trunc` |
+| `string` | strings | `after`, `before`, `capitalize`, `concat`, `contains`, `default`, `ends_with`, `index_of`, `join`, `json`, `left`, `len`, `lower`, `nl2br`, `number`, `pad_left`, `pad_right`, `regex_extract`, `regex_match`, `regex_replace`, `repeat`, `replace`, `replace_ci`, `right`, `slug`, `split`, `starts_with`, `strip_tags`, `substr`, `title_case`, `translit`, `trim`, `truncate`, `upper`, `urlencode` |
+| `type` | type checks and conversion, JSON | `is_bool`, `is_date`, `is_empty`, `is_int`, `is_list`, `is_not_empty`, `is_number`, `is_numeric_text`, `is_object`, `json_decode`, `json_encode`, `json_get`, `json_get_all`, `to_bool`, `to_date`, `to_datetime`, `to_string` |
+
+Date functions (category `date`) are described in [Dates and time](../03-user-guide/change-types-and-expressions.md#dates-and-time); `format_date_locale` exists only when `intl` is installed in the image:
 
 | Field | Description |
 |---|---|
 | `name` | function name (lower case) |
-| `category` | `logic`, `string`, `number`, `date`, `list`, `type`, `system` or `custom` (a function registered without a description) |
+| `category` | `logic`, `string`, `number`, `date`, `list`, `type` or `custom` (a function registered with `registerFunction()` without a `FunctionSpec`) |
 | `signature` | the signature; `[…]` marks optional arguments, `…` a variable number |
-| `min_args`, `max_args` | the allowed number of arguments; `max_args: null` — no upper bound. Checked when a process is saved: `Function "if" expects 2..3 arguments, got 1` → `422` |
-| `returns` | result type: `string`, `number`, `bool`, `date`, `datetime`, `date\|datetime` (same as the argument), `any` |
+| `min_args`, `max_args` | the allowed number of arguments; `max_args: null` — no upper bound. Checked when a process is saved: `Function "if" expects 2..3 arguments, got 1` → `422`. Besides the arity, some functions have a validator of literal arguments (`FunctionSpec::$validator`): the `date_diff` unit, a time zone, a regular expression pattern, a JSONPath path — its errors are returned on save too |
+| `returns` | result type: `string`, `number`, `bool` / `boolean` (both spellings occur in the current specs), `list`, `date`, `datetime`, `date\|datetime` (same as the argument), `any` |
 | `description`, `example` | description (in Russian) and a sample call |
 | `pure` | `true` — the result depends on the arguments only; `false` — on the current time (`now`, `today`): a retried step computes it again |
 
@@ -849,21 +1082,21 @@ curl -s http://localhost:9501/api/dictionaries/action-types -H "Authorization: B
 ```json
 {"success":true,"data":[
  {"value":"preload","label":"Предзагрузка объекта","description":"Загружает объект из CRM по ID или другому полю в переменную процесса","kind":"action"},
- {"value":"modify","label":"Изменить объект/переменную","description":"…","kind":"action"},
- {"value":"save_object","label":"Сохранить объект в CRM","description":"…","kind":"action"},
- {"value":"start_process","label":"Запустить следующий процесс","description":"…","kind":"action"},
- {"value":"send_email","label":"Отправить письмо","description":"Отправляет письмо через SMTP: получатели, тема и тело — шаблоны с подстановками","kind":"action"},
- {"value":"http_request","label":"HTTP-запрос","description":"Вызывает внешний API (вебхук): URL, заголовки и тело — шаблоны, ответ сохраняется в переменную","kind":"action"},
- {"value":"link_records","label":"Связать записи","description":"Связывает запись с другими записями через link-поле CRM (участники встречи, контакты контрагента), можно с полями связи","kind":"action"},
- {"value":"unlink_records","label":"Отвязать записи","description":"Удаляет связи записи с другими записями через link-поле CRM","kind":"action"},
+ {"value":"modify","label":"Изменить объект/переменную","description":"Изменяет поле объекта или переменной: значение, копия поля другой переменной, расчёт или шаблон","kind":"action"},
+ {"value":"save_object","label":"Сохранить объект в CRM","description":"Отправляет изменённые поля переменной в CRM (PUT; для нового объекта — POST)","kind":"action"},
  {"value":"set_variable","label":"Записать в переменную процесса","description":"Сохраняет промежуточное значение в переменную, которая не является записью CRM","kind":"action"},
  {"value":"find_records","label":"Найти записи","description":"Находит записи CRM по фильтру или связанные записи и сохраняет список в переменную","kind":"action"},
  {"value":"update_records","label":"Изменить записи списка","description":"Меняет поля у всех записей списка, найденного шагом «Найти записи», одним шагом","kind":"action"},
+ {"value":"delay","label":"Пауза","description":"Приостанавливает выполнение на срок или до даты; длинная пауза не занимает воркер и переживает перезапуск","kind":"action"},
+ {"value":"send_email","label":"Отправить письмо","description":"Отправляет письмо через SMTP: получатели, тема и тело — шаблоны с подстановками","kind":"action"},
+ {"value":"http_request","label":"HTTP-запрос","description":"Вызывает внешний API (вебхук): URL, заголовки и тело — шаблоны, ответ сохраняется в переменную","kind":"action"},
  {"value":"assign","label":"Назначить ответственного","description":"Назначает ответственного по правилу: по кругу, наименее загруженного, случайно, руководителя","kind":"action"},
  {"value":"notify","label":"Уведомление","description":"Отправляет короткое уведомление в колокольчик CRM, Telegram, Slack или Microsoft Teams","kind":"action"},
- {"value":"delay","label":"Пауза","description":"Приостанавливает выполнение на срок или до даты; длинная пауза не занимает воркер и переживает перезапуск","kind":"action"},
- {"value":"condition","label":"Условие (если / иначе)","description":"…","kind":"block"},
- {"value":"stop_process","label":"Завершить процесс","description":"…","kind":"block"},
+ {"value":"link_records","label":"Связать записи","description":"Связывает запись с другими записями через link-поле CRM (участники встречи, контакты контрагента), можно с полями связи","kind":"action"},
+ {"value":"unlink_records","label":"Отвязать записи","description":"Удаляет связи записи с другими записями через link-поле CRM","kind":"action"},
+ {"value":"start_process","label":"Запустить следующий процесс","description":"Асинхронно запускает ведомый процесс, передавая ему событие и все переменные","kind":"action"},
+ {"value":"condition","label":"Условие (если / иначе)","description":"Выполняет действия первой ветки, условия которой выполнены, иначе — действия блока «иначе»","kind":"block"},
+ {"value":"stop_process","label":"Завершить процесс","description":"Досрочно завершает выполнение — успешно или с ошибкой и сообщением","kind":"block"},
  {"value":"foreach","label":"Для каждого элемента","description":"Выполняет вложенные действия для каждого элемента списка","kind":"block"}],"error":null}
 ```
 
@@ -992,7 +1225,7 @@ curl -s http://localhost:9501/api/dictionaries/event-types -H "Authorization: Be
 
 Template filters ([Template](../03-user-guide/change-types-and-expressions.md#template)): `{{ x | f:a:b }}` calls the
 expression function `f(x, a, b)`, so the list holds every function that takes the value as its first argument (no
-`now()`) and the `raw` pseudo-filter.
+`now()`) and the `raw` pseudo-filter (on the stand — 121 items: 120 functions and `raw`).
 
 ```bash
 curl -s http://localhost:9501/api/dictionaries/template-filters -H "Authorization: Bearer $TOKEN"
@@ -1046,38 +1279,58 @@ Types for the `cast` field of a condition row. `orderable` — the type supports
 allowed `cast_options` with their defaults. `case_sensitive: false` — Unicode case folding of both sides, `trim: true` —
 trimming the edges including the no-break space and BOM (see [Case and spaces](../03-user-guide/triggers-and-conditions.md#case-and-spaces)).
 
+### `GET /api/dictionaries/system-variables`
+
+Any role. The system variables `sys.*` for the variables panel of the editor ([System variables and constants](../03-user-guide/change-types-and-expressions.md#system-variables-and-constants)).
+The engine computes the values when they are read; writing to `sys` is not allowed (`422 Variable "sys" is read-only`).
+
+```bash
+curl -s http://localhost:9501/api/dictionaries/system-variables -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"success":true,"data":[
+ {"value":"sys.execution_id","label":"ID выполнения","type":"string"},
+ {"value":"sys.parent_execution_id","label":"ID родительского выполнения","type":"string"},
+ {"value":"sys.process_id","label":"ID процесса","type":"integer"},
+ {"value":"sys.process_name","label":"Название процесса","type":"string"},
+ {"value":"sys.process_version","label":"Версия процесса","type":"integer"},
+ {"value":"sys.event_id","label":"ID события","type":"string"},
+ {"value":"sys.trigger","label":"Способ запуска","type":"string","values":["stream","manual","child"]},
+ {"value":"sys.depth","label":"Глубина вложенности","type":"integer"},
+ {"value":"sys.module","label":"Модуль CRM","type":"string"},
+ {"value":"sys.record_id","label":"ID записи","type":"string"},
+ {"value":"sys.event_type","label":"Тип события","type":"string","values":["create","update","delete"]},
+ {"value":"sys.changed_fields","label":"Изменённые поля","type":"list"},
+ {"value":"sys.user_id","label":"ID пользователя CRM","type":"string"},
+ {"value":"sys.now","label":"Текущее время (UTC)","type":"datetime"},
+ {"value":"sys.started_at","label":"Начало выполнения (UTC)","type":"datetime"},
+ {"value":"sys.last_error","label":"Последняя обработанная ошибка","type":"object"},
+ {"value":"sys.errors_count","label":"Обработано ошибок","type":"integer"}],"error":null}
+```
+
+| Field | Description |
+|---|---|
+| `value` | the path for conditions, expressions and templates (`sys.<field>`) |
+| `label` | the label (Russian) |
+| `type` | `string`, `integer`, `list`, `datetime` (`Y-m-d H:i:s`, UTC) or `object` |
+| `values` | only for `sys.trigger` and `sys.event_type` — the allowed values |
+
+The order and the set match `ExecutionContext::SYS_FIELDS`. The actual values of an execution are in `context.system` of
+[`GET /api/executions/{id}`](#get-apiexecutionsid).
+
 ### `GET /api/dictionaries/delivery-policies`
 
 Any role. Values of the `delivery` field of actions with external effects.
 
 ```json
-{"success":true,"data":[{"value":"at_most_once","label":"Не более одного раза"},{"value":"at_least_once","label":"Не менее одного раза"}]}
+{"success":true,"data":[{"value":"at_most_once","label":"Не более одного раза"},{"value":"at_least_once","label":"Не менее одного раза"}],"error":null}
 ```
 
 The `delivery` field is allowed only on actions with external effects (`send_email`, `http_request`, `notify`); on other
 actions saving the process fails: `Action "modify" does not support "delivery"`. Defaults: `send_email` — `at_most_once`,
 `http_request` — `at_most_once` for `POST`/`PATCH` and `at_least_once` for the other methods. A wrong value gives
 `Delivery must be "at_most_once" or "at_least_once"`.
-
-An `http_request` step (details — [Actions → HTTP request](../03-user-guide/actions.md#http-request)): `request_data` —
-`method`, `url`, `headers` (names only), `body_size`, `body_preview`, `delivery`; `result_data` — `status`, `duration_ms`,
-`var`, `replayed`, `response`. The `var` variable in `context.variables`: `status`, `ok`, `headers`, `body` / `body_text` /
-`body_truncated` and the `response.extract` fields.
-
-`link_records` / `unlink_records` steps (details — [Actions → Link / unlink records](../03-user-guide/actions.md#link--unlink-records)):
-`request_data` — `record`, `link`, `module`, `record_id`, `related_module`, `related_ids` (the first 100), `related_count`,
-for `link_records` also `fields`, `batches`; `result_data` — `linked`, `updated`, `not_found`, `warnings` (for
-`unlink_records` — `removed`, `not_linked`), `missing_paths`. A record without `id` or no related ids → the step is
-`skipped`. CRM contract 2.0 (`relationships`) is required, otherwise `CRM_CAPABILITY_MISSING`.
-
-`find_records` step (details — [Actions → Find records](../03-user-guide/actions.md#find-records)): `request_data` — `var`,
-`limit`, `module` / `related_to`, `filter`, `sort`, `fields`, in module mode — `crm_filter` (what was sent to the CRM) and
-`crm_requests`; `result_data` — `count`, `has_more`, the first 100 `ids`, `reason`, `warnings`. The list variable
-`{items, count, has_more, ids}` is in `context.variables`, `context.meta.<name>.source` is `list`.
-
-`set_variable` step (details — [Actions → Set a process variable](../03-user-guide/actions.md#set-a-process-variable)):
-`request_data` — `var`, `fields` (`name → {change_type, value}`); `result_data.fields.<name>` — `old_value`, `new_value`.
-The variable is in `context.variables`, `context.meta.<name>.source` is `local`.
 
 ### `GET /api/dictionaries/mail-transports`
 
@@ -1087,6 +1340,8 @@ values) — for the `transport` field of `send_email`.
 ```json
 {"success":true,"data":{"default_configured":true,"secrets":["smtp_main","smtp_support"]},"error":null}
 ```
+
+On a stand without `smtp_dsn` secrets — `{"default_configured":true,"secrets":[]}` (`MAILER_DSN=smtp://mailpit:1025`). The viewer role — `403`.
 
 ### `GET /api/dictionaries/secret-kinds`
 

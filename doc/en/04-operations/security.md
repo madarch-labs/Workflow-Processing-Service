@@ -64,6 +64,9 @@ request. The first matching rule wins:
 | `GET` | `^/api/.*$` | admin, editor, viewer |
 | other | not listed | `GET` → any role, other methods → admin, editor |
 
+The default rule covers, for example, `POST /api/notify/test` (test notification: admin, editor) and
+`GET /api/auth/me`, `GET /api/dictionaries/*` (any role).
+
 Responses: no or malformed header → `401 UNAUTHORIZED`; bad signature or wrong type → `401 INVALID_TOKEN`; expired →
 `401 TOKEN_EXPIRED`; role not allowed → `403 FORBIDDEN`. `OPTIONS` (CORS preflight) is answered before routing.
 Routes are checked by URL only; a new endpoint is protected by the fallback rule until you add an explicit one
@@ -189,6 +192,59 @@ body by `HTTP_MAX_REQUEST_BYTES`.
 > **Development stand.** `docker-compose.yml` sets `HTTP_ALLOW_PRIVATE_CIDRS=172.16.0.0/12,192.168.0.0/16` and
 > `HTTP_DENY_HOSTS` without `mock` for the stand — so that tests can call the mock CRM inside the docker network. Do not
 > override these variables in production (or set only the subnets of your internal systems).
+
+## Regular expressions (`SafeRegex`)
+
+The expression functions `regex_match`, `regex_extract`, `regex_replace` take a regular expression from the process
+editor. So that one expression cannot occupy a worker (catastrophic backtracking, ReDoS), `Wps\Expression\SafeRegex`:
+
+- wraps the pattern itself (`~…~u`, `~` inside is escaped) — do not write delimiters or modifiers in the pattern; flags
+  are only `i`, `m`, `s` (the third/fourth argument of the function);
+- limits the pattern to 500 characters and the subject string to 100 000 characters;
+- lowers `pcre.backtrack_limit` to 100 000 and `pcre.recursion_limit` to 10 000 for a single `preg_*` call and restores
+  the previous values (the worker is shared by coroutines);
+- checks a literal pattern when the process is saved (`422` with the PCRE message) and turns a run-time failure into a
+  non-recoverable step error.
+
+| Message | When |
+|---|---|
+| `Invalid regular expression in regex_match(): missing closing parenthesis` | The pattern does not compile (at save or run time) |
+| `Regular expression in regex_replace() is too long (max 500 characters)` | Pattern longer than 500 characters |
+| `Regular expression input in regex_extract() is too long (max 100000 characters)` | Subject longer than 100 000 characters |
+| `Function "regex_match": flags may contain only i, m, s, got "x"` | Invalid flag |
+| `Regular expression failed: backtrack limit exceeded` | The pattern is too "expensive" for this subject (also `recursion limit exceeded`, `JIT stack limit exceeded`) |
+
+## Built-in limits
+
+Besides the configurable variables ([Configuration](configuration.md)), the code has fixed limits. They protect the
+worker from oversized definitions and data; exceeding one gives a save error (`422 VALIDATION_ERROR`) or a
+non-recoverable step error.
+
+| What | Limit | Message / behaviour |
+|---|---|---|
+| Expression length (`calculate`, `{{= … }}`, functions) | 4000 characters; in conditions (`value_type: expression`) — 1000 | `Expression is too long (max 4000 characters)` |
+| Expression complexity | 500 nodes, nesting 32 levels | `Expression is too complex (max 500 nodes)`, `Expression is nested too deeply (max 32 levels)` |
+| Result of an expression / template | 1 MB | step error |
+| Template length | 65 536 characters | `Template is too long (max 65536 characters)` |
+| Lists in expression functions | 10 000 items | `List is too large (max 10000 items)` |
+| Count and length of `repeat`, `pad_left`, `pad_right` | 0..1000 | `Function "repeat": count must be an integer between 0 and 1000, got "5000"` |
+| `json_decode`, `json_get` | 1 MB, depth 64 | step error |
+| `decimal` precision | 100 digits, `cast_options.scale` ≤ 20 | cast error |
+| Process constants (`definition.constants`) | 100 items, 16 KB as JSON; scalars and lists of scalars only | `Too many constants (max 100)`, `Constants are too large (max 16 KB)` |
+| Constant name that looks like a secret (`password`, `secret`, `token`, `api_key`) | forbidden | `Constant "api_token" looks like a secret; use a secret reference (secret://name)` |
+| Branches of a `condition` block | 20 | `Too many branches (max 20)` |
+| List on the right side of a condition (`in`, `contains_any` …) | 500 values | `List is too long (max 500 items)` |
+| Shifts of a relative date (`today+1d-2h…`) | 5 | `Too many shifts in relative date (max 5)` |
+| Rules of `update_records` | 1..20 | `1..20 field rules are required: …` |
+| Entries of `map` | 500 | `Too many entries (max 500)` |
+| `notify` channels | 1..10 | `From 1 to 10 channels are required` |
+| Recipients of the `crm_alert` bell | 50 users (the rest are dropped) | — |
+| Notification text | 4000 characters (cut) | warning `Message was cut to 4000 characters` |
+| E-mail subject | 998 characters | step error |
+| `assign` pool | 200 ids | `assign: pool is too large (N > 200)` |
+| `date_shift` amount | 100 000 units | step error |
+| Step retries | 20 attempts, delay ≤ 7 days | save error |
+| Deliveries of one stream message | 5, then DLQ | `Delivered N times without success` |
 
 ## CRM key
 

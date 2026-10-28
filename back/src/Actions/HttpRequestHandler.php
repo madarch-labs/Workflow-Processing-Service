@@ -355,7 +355,7 @@ final class HttpRequestHandler implements ActionHandlerInterface, HasDeliveryPol
         }
         if (array_key_exists('var', $actionConfig)) {
             $var = $actionConfig['var'];
-            if (!is_string($var) || !ExecutionContext::isValidVariableName($var) || in_array($var, [ExecutionContext::OBJECT, ...ExecutionContext::READ_ONLY], true)) {
+            if (!is_string($var) || !ExecutionContext::isValidVariableName($var) || in_array($var, ExecutionContext::RESERVED, true)) {
                 $scope->error("{$path}.var", 'Variable name is required (letters, digits, "_"; not object, object_before, sys)');
             } else {
                 $scope->declare($var, 'http');

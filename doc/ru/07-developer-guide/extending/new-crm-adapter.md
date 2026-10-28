@@ -40,18 +40,42 @@ classDiagram
     CrmObjectSaver --> ExternalApiAdapterService
     DictionaryService --> ExternalApiAdapterService : getModules()
     LoadStrategyInterface ..> ExternalApiAdapterService : load(api, …)
-    ByIdStrategy ..|> LoadStrategyInterface
-    ByFieldStrategy ..|> LoadStrategyInterface
+    FindRecordsHandler --> ExternalApiAdapterService
+    CrmCapabilitiesService --> ExternalApiAdapterService : capabilities()
 ```
 
-- Клиент CRM **один**: `Wps\Services\ExternalApiAdapterService`, он создаётся в `Wps\Kernel\Container::crm()`.
-  Это `final`-класс **без интерфейса**, и его конкретный тип используется в `PreloadHandler`, `CrmObjectSaver`
-  (`modify` с `save_to_crm`, `save_object`), `DictionaryService` (справочник модулей) и в сигнатуре
-  `LoadStrategyInterface::load()`. Реестра адаптеров CRM, куда можно было бы подключить вторую реализацию, нет.
+- Клиент CRM **один**: `Wps\Services\ExternalApiAdapterService`, он создаётся в `Wps\Kernel\Container::crm()`
+  (`new ExternalApiAdapterService(AppConfig $config, LoggerInterface $logger, ?\Closure $capabilities = null)`, замыкание
+  возвращает `CrmCapabilities` из `Container::crmCapabilities()`). Это `final`-класс **без интерфейса**, и его конкретный
+  тип используется повсюду:
+
+  | Где | Что вызывает |
+  |---|---|
+  | `PreloadHandler`, `ByIdStrategy`, `ByFieldStrategy` (сигнатура `LoadStrategyInterface::load()`) | `getById()`, `findOneByField()` |
+  | `CrmObjectSaver` (`modify` с `save_to_crm`, `save_object`, `assign`) | `update()`, `create()` |
+  | `FindRecordsHandler` (`find_records`) | `findMany()`, `listRelated()` |
+  | `UpdateRecordsHandler` (`update_records`) | `update()` |
+  | `AggregateChangeType` (`aggregate`) | `findPage()`, `count()`, `listRelated()` |
+  | `LinkRecordsHandler` (`link_records` / `unlink_records`) | `link()`, `unlink()` |
+  | `SendEmailHandler` (копия письма в CRM), `CrmAlertChannel` (`Alerts` в колокольчике) | `create()` |
+  | `Services/Assign/UserPoolResolver`, `AssignmentStrategies` (`assign`) | `getById()`, `findMany()`, `listRelated()`, `count()` |
+  | `CrmCapabilitiesService` | `capabilities()` (кэш в Redis `crm:capabilities` на `DICT_CACHE_TTL`) |
+  | `DictionaryService` | `getModules()` |
+
+  Реестра адаптеров CRM, куда можно было бы подключить вторую реализацию, нет.
 - Адаптер работает по контракту из раздела [Интеграция с CRM](../../04-operations/crm-integration.md#контракт-api-crm-wps--crm):
   `GET/PUT {base}/{module}/{id}`, `GET {base}/{module}?filter[field]=value&size=1`, `POST {base}/{module}`,
   `GET {base}/modules`, заголовок `X-Auth-Key = CRM_API_STATIC_KEY . gmdate("Y.m.d H")`, ресурсы JSON:API
   `{type, id, attributes}`. `AppConfig::crmUrl()` дописывает `/api/v8`, если базовый адрес ещё не заканчивается на `/api/v<N>`.
+- Версию контракта адаптер узнаёт запросом `GET {base}/capabilities`: ответ `404`/`405` или другая невосстановимая
+  ошибка (любой `4xx`) означает контракт **1.0** (`CrmCapabilities::legacy()`), ответ с `data.contract_version` и
+  `features` — 2.0. Возможности кэшируются в Redis `crm:capabilities` на `DICT_CACHE_TTL` и обновляются вместе со
+  справочником модулей; текущие — `GET /api/dictionaries/crm-capabilities`.
+- Справочник модулей `getModules()` берётся сначала из `MOCK_SERVICE_URL/modules` (если переменная задана), затем из
+  `{base}/modules`; ответ — список `{value, label}` или строк.
+- Каждый запрос шага несёт заголовки происхождения `X-WPS-Execution-Id`, `X-WPS-Process-Id`, `X-WPS-Depth`
+  (`Crm\CrmCallOrigin::headers()`). CRM, которая кладёт их в событие как `wps_origin`, позволяет WPS защищаться от
+  каскадов ([Заголовки происхождения X-WPS](../../04-operations/crm-integration.md#заголовки-происхождения-x-wps)).
 - События идут в обратную сторону и адаптер вообще не используют: CRM пишет сообщения в Redis Stream `crm_events`
   ([формат события](../../04-operations/crm-integration.md#формат-события-crm--wps)).
 
@@ -92,6 +116,17 @@ contract_check.sh http://<crm>/api/v9 <ключ> <контейнер redis-strea
 
 ## 3. Пошагово
 
+| Файл | Изменение |
+|---|---|
+| `crm-bridge/bridge.php` | **новый** — мост (вне `back/`, это отдельный сервис) |
+| `docker-compose.override.yml` | **новый** — контейнер моста рядом с WPS |
+| `./.env` | `CRM_API_BASE_URL`, `CRM_API_STATIC_KEY`, `MOCK_SERVICE_URL` |
+| код CRM (вебхук, хук, опрос) | публикация событий в Redis Stream `crm_events` |
+| `doc/{ru,en}/04-operations/crm-integration.md` | если CRM становится поддерживаемым вариантом |
+
+Код WPS (`back/src`) не меняется, поэтому нет ни регистрации в `Container`, ни юнит-тестов в `back/tests/Unit` —
+проверка моста описана в [6](#6-тест).
+
 У целевой CRM в примере простой REST API:
 
 | Запрос к целевой CRM | Ответ |
@@ -122,6 +157,7 @@ declare(strict_types=1);
  *   GET  /api/vN/{module}?filter[f]=v&size=1       — (not supported by the target → 422)
  *   PUT  /api/vN/{module}/{id}                     GET + PUT {TARGET_URL}/{module}/{id} (full object)
  *   POST /api/vN/{module}                          PUT {TARGET_URL}/{module}/{new id}
+ *   GET  /api/vN/capabilities                      — (404: contract 1.0, WPS limits itself to it)
  * Target responses: {"success": true, "data": {flat object}}; missing record → HTTP 404.
  */
 
@@ -217,6 +253,10 @@ if ($module === 'modules' && $id === null && $method === 'GET') {
     $names = array_filter(array_map('trim', explode(',', env('BRIDGE_MODULES', 'Accounts,Contacts,Deals'))));
     respond(200, ['data' => array_map(static fn (string $n) => ['value' => $n, 'label' => $n], array_values($names))]);
 }
+if ($module === 'capabilities' && $id === null && $method === 'GET') {
+    // no /capabilities: WPS treats the CRM as contract 1.0 (equality search, no sort / cursor / relationships)
+    error(404, 'Capabilities are not implemented');
+}
 
 $item = '/' . rawurlencode($module) . ($id !== null ? '/' . rawurlencode($id) : '');
 switch (true) {
@@ -255,6 +295,7 @@ switch (true) {
 | Вызов WPS (`ExternalApiAdapterService`) | Мост → целевая CRM | Ответ WPS |
 |---|---|---|
 | `getModules()` → `GET /api/v1/modules` | — (`BRIDGE_MODULES`) | `{"data": [{"value", "label"}]}` |
+| `capabilities()` → `GET /api/v1/capabilities` | — | `404` → контракт 1.0 |
 | `getById()` → `GET /api/v1/{module}/{id}` | `GET /{module}/{id}` | ресурс с `200` или `404` |
 | `findOneByField()` → `GET /api/v1/{module}?filter…` | — | `422` (не поддерживается) |
 | `update()` → `PUT /api/v1/{module}/{id}` | `GET` + `PUT` объединённого объекта | ресурс с `200` или `404` |
@@ -313,20 +354,26 @@ redis-cli -h <redis-stream host> -p 6379 XADD crm_events MAXLEN '~' 100000 '*' \
 | Ответ моста | Как его понимает WPS | Результат шага |
 |---|---|---|
 | `200`/`201` с JSON | успех | `success`; `{id, attributes}` разворачивается в плоский объект |
-| `404` на `GET` | запись не найдена | переменная предзагрузки = `null` |
-| ошибка соединения, тайм-аут (`CRM_API_TIMEOUT`), `5xx` | `CrmApiException`, восстановимая | повтор `ACTION_RETRY_MAX` раз, затем `failed` |
-| другие `4xx` (в том числе `404` на `PUT`), некорректный JSON | `CrmApiException`, невосстановимая | сразу `failed`, остальные шаги `skipped` |
+| `404` на `GET` или `DELETE` | запись не найдена | `getById()` → `null` (переменная предзагрузки = `null`), `delete()` → `false` |
+| ошибка соединения, тайм-аут (`CRM_API_TIMEOUT`) | `CrmApiException`, восстановимая (`error_code` `TRANSPORT` / `TIMEOUT`) | повтор по `ACTION_RETRY_MAX` или `retry` шага, затем `failed` |
+| `5xx`, `408`, `425`, `429` | `CrmApiException`, восстановимая (`HTTP_<код>`); `Retry-After` задаёт задержку повтора | то же |
+| другие `4xx` (в том числе `404` на `PUT`), некорректный JSON | `CrmApiException`, невосстановимая (`HTTP_<код>`) | `failed` (или `on_error` шага), остальные шаги `skipped` |
+
+Тело ответа с ошибкой (до 500 символов) попадает в `details.response` ошибки шага — возвращайте в нём понятное
+сообщение (`{"errors": [{"status", "title"}]}`), но без секретов целевой CRM.
 
 Правила для моста или плагина:
 
-- Возвращайте `5xx` (в примере — `502`) только при **временных** проблемах целевой CRM, чтобы WPS их повторял.
+- Возвращайте `5xx` (в примере — `502`) или `429`/`503` с `Retry-After` только при **временных** проблемах целевой CRM,
+  чтобы WPS их повторял.
 - Возвращайте `4xx` для всего, что повтор не исправит: неподдерживаемая операция, некорректные данные, отклонённая запись.
 - Возвращайте `404` на `GET`, если записи нет, — никогда не пустой `200`.
 - `PUT` должен принимать неполные `attributes` (WPS отправляет только изменённые поля, если `save_object.mode` не `full`).
 - `POST` должен вернуть новый `id` в `data.id`; WPS записывает его обратно в переменную (`created_id` в результате шага).
 - Проверяйте `X-Auth-Key` для текущего **и** предыдущего часа, как это делают мок и плагин SuiteCRM.
 
-Проверено на отдельном стенде (мост + мок в роли целевой CRM):
+Так выглядел прогон процесса из [6](#6-тест) на отдельном стенде (мост + мок в роли целевой CRM) при подготовке
+страницы; после изменений моста повторите его сами:
 
 ```text
 Execution steps (process "Bridge: active deal → VIP account + contact"):
@@ -362,12 +409,15 @@ smoke-тестом изнутри контейнера бэкенда (там т
 KEY="bridgeKey$(date -u +'%Y.%m.%d %H')"
 docker compose exec backend sh -c "
   curl -s -H 'X-Auth-Key: $KEY' http://crm-bridge:8080/api/v1/modules; echo
+  curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Auth-Key: $KEY' http://crm-bridge:8080/api/v1/capabilities
   curl -s -H 'X-Auth-Key: $KEY' http://crm-bridge:8080/api/v1/Accounts/<existing id>; echo
   curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Auth-Key: $KEY' http://crm-bridge:8080/api/v1/Accounts/does-not-exist
   curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Auth-Key: wrong' http://crm-bridge:8080/api/v1/Accounts/1"
 ```
 
-Ожидается: список модулей, `{"data":{"type":"Accounts","id":…,"attributes":{…}}}`, `404`, `401`.
+Ожидается: список модулей, `404` (контракт 1.0), `{"data":{"type":"Accounts","id":…,"attributes":{…}}}`, `404`, `401`.
+Проверенный ответ моста без целевой CRM: `capabilities` → `404`, `modules` → список `BRIDGE_MODULES`, неверный
+ключ → `401`, запись при недоступной целевой CRM → `502 Target CRM is unavailable`.
 
 Затем прогоните один процесс целиком: создайте его из JSON ниже (`POST /api/processes`), опубликуйте событие `Deals`
 со `status = Active` и существующим `account_id` ([3.4](#34-публикация-событий)) и откройте выполнение в UI —
@@ -388,7 +438,20 @@ docker compose exec backend sh -c "
 }
 ```
 
-## 7. Чек-лист готовности
+## 7. Типичные ошибки
+
+| Ошибка | Последствие | Как правильно |
+|---|---|---|
+| `CRM_API_BASE_URL` без `/api/v<N>` | WPS обращается к `…/api/v8/…`, мост отвечает `404` | базовый адрес с `/api/v1` (любой `/api/v<N>`) |
+| Пустой `200` вместо `404` для отсутствующей записи | переменная получает пустой объект, условия по ней ведут себя неверно | `404` |
+| `4xx` при временной недоступности целевой CRM | шаг сразу падает без повторов | `502` / `503` / `429` (+ `Retry-After`) |
+| `5xx` на ошибку данных | WPS повторяет запрос, который не пройдёт никогда | `422` / `400` |
+| Мост проверяет ключ только текущего часа | ошибки `401` на стыке часов | текущий и предыдущий час |
+| `PUT` заменяет запись присланными полями | поля, которых не было в запросе, стираются | объединять с текущим объектом, как в примере |
+| `features` в `/capabilities` без реальной реализации | процессы падают на неподдерживаемом запросе вместо `CRM_CAPABILITY_MISSING` при сохранении/выполнении | перечислять только сделанное |
+| Процесс сохраняет запись, вызвавшую его | бесконечный цикл событий | `run_once`, защитное условие, `wps_origin` из заголовков `X-WPS-*` |
+
+## 8. Чек-лист готовности
 
 - [ ] Обслуживается каждая операция, которую используют ваши процессы: `GET` по id, поиск по полю (если предзагрузка ищет по другим полям), `PUT`, `POST`, `modules`
 - [ ] Ресурсы JSON:API `{type, id, attributes}` в `data`; `404` для отсутствующей записи; новый `id` в ответе на `POST`
@@ -396,7 +459,7 @@ docker compose exec backend sh -c "
 - [ ] `X-Auth-Key` проверяется для текущего и предыдущего часа; тот же ключ указан в `CRM_API_STATIC_KEY`
 - [ ] `CRM_API_BASE_URL` заканчивается на `/api/v<N>`, `MOCK_SERVICE_URL` пуст, кэш модулей обновлён
 - [ ] CRM публикует события в `crm_events` с `module` и `id`; циклы исключены через `run_once` или условия
-- [ ] Для контракта 2.0: `GET /capabilities` перечисляет реализованные `features`, `contract_check.sh` проходит
+- [ ] Для контракта 1.0: `GET /capabilities` отвечает `404`; для 2.0 — перечисляет реализованные `features`, `contract_check.sh` проходит
 - [ ] Smoke-тест и одно сквозное выполнение проходят
 - [ ] Если CRM становится поддерживаемым вариантом, она описана в разделе [Интеграция с CRM](../../04-operations/crm-integration.md) (en + ru)
 

@@ -127,14 +127,47 @@ scrape_configs:
 | Некорректные события | `increase(wps_events_invalid_total[1h]) > 0` |
 | Ожидания продолжаются с опозданием | `rate(wps_wait_lateness_seconds_sum[5m]) / rate(wps_wait_lateness_seconds_count[5m]) > 30` |
 | Ожидания не удаётся продолжить | `increase(wps_wait_resume_failed_total[15m]) > 0` |
+| Неизвестный исход внешних вызовов | `increase(wps_side_effects_unknown_total[1h]) > 0` |
+| Ошибки, «съеденные» `on_error` | `rate(wps_step_errors_handled_total[15m]) > 0` |
+| Плагин CRM старше 1.2.0 | `increase(wps_events_legacy_format_total[1h]) > 0` |
+
+Пример правил оповещений Prometheus:
+
+```yaml
+groups:
+  - name: wps
+    rules:
+      - alert: WpsDown
+        expr: up{job="wps"} == 0
+        for: 2m
+      - alert: WpsStreamLag
+        expr: wps_redis_stream_lag > 100
+        for: 5m
+      - alert: WpsFailureRate
+        expr: rate(wps_executions_failed_total[10m]) / clamp_min(rate(wps_processes_started_total[10m]), 0.001) > 0.1
+        for: 10m
+      - alert: WpsUnknownOutcome
+        expr: increase(wps_side_effects_unknown_total[1h]) > 0
+      - alert: WpsInvalidEvents
+        expr: increase(wps_events_invalid_total[1h]) > 0
+```
+
+Проверку `/api/health` удобно делать отдельно (blackbox exporter или проба оркестратора): `503` означает, что
+недоступен PostgreSQL или один из Redis.
 
 ## Логи
 
 Backend пишет по одному JSON-объекту в строке: уровни ниже `error` — в stdout, `error` и выше — в stderr.
 
 ```json
-{"timestamp":"2026-10-15T08:03:19.096Z","level":"warning","message":"Step failed","context":{"execution_id":"b74defa3-…","process_id":14,"step":0,"action":"modify","attempts":1,"recoverable":false,"error":"CRM PUT http://mock:9502/api/v8/Deals/70001 returned HTTP 404"},"pid":14}
+{"timestamp":"2026-10-27T19:28:46.333Z","level":"warning","message":"Step failed","context":{"execution_id":"0f1be6e5-9152-4b6c-a4e8-7cd2b4651d4f","process_id":3972,"pc":2,"seq":2,"action":"delay","attempts":1,"code":"ERROR","recoverable":false,"error":"delay: cannot resolve a date from object.no_such_date (value \"\")"},"pid":14}
+{"timestamp":"2026-10-27T19:28:46.333Z","level":"warning","message":"Step error handled","context":{"execution_id":"0f1be6e5-9152-4b6c-a4e8-7cd2b4651d4f","process_id":3972,"pc":2,"policy":"continue","target":null,"code":"ERROR"},"pid":14}
+{"timestamp":"2026-10-27T19:27:32.013Z","level":"info","message":"Process completed","context":{"execution_id":"17ab587a-8751-4ec6-aff2-86829ee3c18d","process_id":3786,"event_id":"manual-784844a3-…","object_type":"Tasks","pc":3,"seq":3,"duration_ms":45,"error":null},"pid":14}
 ```
+
+Поля строки: `timestamp` (UTC, миллисекунды), `level`, `message` (постоянный текст — по нему удобно искать),
+`context` (данные события), `pid` (процесс воркера: `1` — мастер, остальные — HTTP-воркеры). Секреты в `context` не
+попадают: тексты ошибок шагов проходят через маскер секретов.
 
 `LOG_LEVEL` (по умолчанию `info`) задаёт минимальный уровень. На `debug` в лог попадает каждый запрос к CRM со статусом и
 длительностью и каждое обработанное событие. Исключения в `context` сокращаются до `class`, `message`, `file`.
@@ -159,6 +192,27 @@ docker compose logs backend | grep '<id выполнения>'
 | `Stream message processing failed` | error | Ошибка инфраструктуры; сообщение остаётся в pending и будет обработано позже |
 | `Process skipped: run_once` | info | Запуск заблокирован отметкой однократного запуска |
 | `run_once mark reset` | info | Пользователь снял отметку (в контексте — его e-mail) |
+
+Полный перечень сообщений backend по областям (текст — постоянная часть `message`):
+
+| Область | Сообщения |
+|---|---|
+| Старт | `Business time zone` (info), `Consumer group created` (info), строки `[migrate] …` и `[WPS] listening on 0.0.0.0:9501` (не JSON) |
+| Стрим | `Event handled` (debug), `Invalid stream event`, `Message moved to the dead-letter stream`, `Invalid service fields in event` (warning), `Unsupported event_type, no process is started`, `Re-processing pending stream message` (info), `Stream message processing failed`, `Failed to write to the dead-letter stream` (error) |
+| Выполнение | `Process started`, `Process completed`, `Process failed`, `Process stopped`, `Process skipped: run_once` (info), `Process failed on conditions` (error), `run_once ignored: object has no id` (warning), `run_once mark could not be released` (error), `Branch selected` (debug), `Loop finished` (info), `Loop item failed, the loop continues` (warning) |
+| Шаги и ошибки | `Step failed, retrying`, `Step failed, retry parked`, `Step failed`, `Step error handled` (warning), `Long retry delay runs inside the worker until waiting executions are available` (warning) |
+| Условия | `Condition cast failed` (warning, `error` при `on_cast_error: error`), `Condition expression failed`, `Change operators used but the event has no change info` (warning) |
+| Ведомые процессы | `Child process handled` (info), `Child process crashed` (error) |
+| Восстановление | `Resuming interrupted execution` (info), `Execution state lost` (warning), `Execution recovery failed`, `Execution interrupted`, `Program changed after an upgrade` (error) |
+| Ожидания | `Execution parked`, `Execution woken` (info), `Resume attempt failed`, `Execution is no longer running, it was not parked` (warning), `Execution interrupted after waking` (error) |
+| Внешние вызовы | `Email sent`, `HTTP request done`, `Notification sent`, `Side effect replayed` (info), `Email recipients skipped`, `Email history was not saved to the CRM`, `Side effect outcome unknown` (warning) |
+| Журнал побочных эффектов | `Side-effect journal purged` (info, раз в час), `Side-effect journal purge failed` (warning) |
+| CRM и кэши | `CRM request` (debug: метод, URL, статус, длительность), `CRM capabilities cache unavailable`, `CRM capabilities cache write failed`, `Modules dictionary source unavailable`, `Modules dictionary could not be loaded`, `Process cache unavailable, reading from database`, `Process cache invalidation failed` (warning) |
+| Секреты | `Secret created`, `Secret updated`, `Secret deleted`, `Secrets re-encrypted` (info; имя и id пользователя, без значения) |
+| HTTP API | `Request failed` (error: исключение в контроллере, `uri` и класс исключения), `Unhandled request error` (error) |
+
+Пример: `{"level":"error","message":"Request failed","context":{"uri":"/api/processes","error":{"class":"Wps\\Exceptions\\NonRecoverableException","message":"Secret \"smtp_support\" not found",…}}}` — процесс
+ссылается на секрет, которого нет (сохранение отклонено).
 
 История выполнений и аудит шагов есть также в UI и в API — см. [Выполнения и аудит](../03-user-guide/executions-and-audit.md).
 
@@ -188,6 +242,29 @@ R="docker compose exec -T redis-stream redis-cli"
 7) "at"           8) "2026-10-15T08:03:19+00:00"
 ```
 
+Пример реального ответа `XINFO GROUPS crm_events`:
+
+```text
+name               wps_workers
+consumers          231
+pending            0
+last-delivered-id  1793129318815-0
+entries-read       2955
+lag                0
+```
+
+> **Примечание**
+> Каждый перезапуск backend добавляет новых потребителей (`{hostname}-{pid}`), старые остаются в группе — отсюда
+> большое `consumers`. На доставку это не влияет; потребителей без pending-сообщений можно удалить:
+>
+> ```bash
+> R="docker compose exec -T redis-stream redis-cli"
+> $R --raw XINFO CONSUMERS crm_events wps_workers | paste - - - - - - - - | \
+>   awk '$4 == 0 && $6 > 3600000 {print $2}' | xargs -r -n1 $R XGROUP DELCONSUMER crm_events wps_workers
+> ```
+>
+> (поля строки: `name`, `pending`, `idle` (мс), `inactive`; удаляются потребители без pending, простаивающие больше часа).
+
 DLQ ограничена примерно 10 000 записями. WPS её не перечитывает: исправьте издателя и при необходимости отправьте событие заново.
 
 Ключи Redis для данных (`docker compose exec -T redis-data redis-cli`):
@@ -197,8 +274,46 @@ DLQ ограничена примерно 10 000 записями. WPS её не
 | `exec:<uuid>` | Живое состояние выполнения (hash: статус, текущий шаг, событие, переменные …) |
 | `lock:exec:<uuid>` | Блокировка выполняющегося выполнения |
 | `idem:<event_id>:<process_id>` | Id выполнения или `skipped` для уже обработанного события |
+| `exec:<uuid>:loop:<pc>` | Снимок элементов цикла `foreach` |
+| `idem:<parent_execution_id>.<seq>:<child_process_id>` | Идемпотентность ведомого процесса |
 | `proc_cache:<тип объекта>` | Кэш списка активных процессов верхнего уровня |
 | `dict:modules` | Кэш справочника модулей |
+| `crm:capabilities` | Кэш возможностей CRM (`DICT_CACHE_TTL`) |
+| `side_effects:purge` | Отметка «журнал побочных эффектов уже чистился в этот час» (TTL 1 ч) |
+| `mail:rate:<hash транспорта>:<минута>` | Счётчик писем транспорта за минуту (`MAILER_RATE_PER_MINUTE`, TTL 120 с) |
+| `mail:rcpt:<sha1 адреса>:<час>` | Счётчик писем получателю за час (`MAILER_RATE_PER_RECIPIENT_HOUR`, TTL 2 ч) |
+| `oauth:token:<sha1>` / `…:lock` | Кэш токена OAuth2 `http_request` (на срок `expires_in`) и блокировка его получения (15 с) |
+| `assign:rr:<queue_key>` | Последний назначенный в очереди `round_robin` |
+| `assign:last:<queue_key>:<user>` | Когда пользователь назначался (`least_busy`, 30 дней) |
+| `assign:decided:<execution>:<pc>:<iteration>` | Решение шага `assign` для повтора |
+| `assign:pool:<sha1>` | Кэш состава группы безопасности (`ASSIGN_POOL_CACHE_TTL`) |
+
+Пример: живое состояние идущего выполнения и его блокировка.
+
+```bash
+D="docker compose exec -T redis-data redis-cli"
+$D --scan --pattern 'exec:*' | head
+$D HMGET exec:<uuid> status current_step seq retry_count
+$D TTL lock:exec:<uuid>
+```
+
+## Запросы к PostgreSQL для мониторинга
+
+```bash
+docker compose exec -T postgres psql -U wps -d wps
+```
+
+| Что | SQL |
+|---|---|
+| Выполнения по статусам за час | `SELECT status, count(*) FROM executions WHERE started_at > now() - interval '1 hour' GROUP BY 1;` |
+| Самые частые ошибки за сутки | `SELECT error_code, action_type, count(*) FROM execution_actions a JOIN executions e ON e.id = a.execution_id WHERE a.status = 'failed' AND e.started_at > now() - interval '1 day' GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10;` |
+| Зависшие выполнения | `SELECT id, process_id, status, started_at FROM executions WHERE status IN ('running','retrying') AND started_at < now() - interval '10 minutes';` |
+| Ожидающие и просроченные ожидания | `SELECT execution_id, reason, due_at, attempts, last_error FROM execution_waits ORDER BY due_at LIMIT 20;` |
+| Неизвестный исход внешних вызовов | `SELECT execution_id, effect_key, action_type, started_at FROM step_side_effects WHERE status = 'started' AND started_at < now() - interval '10 minutes';` |
+| Обработанные ошибки (`on_error`) | `SELECT process_id, sum(handled_errors) FROM executions WHERE started_at > now() - interval '1 day' GROUP BY 1 HAVING sum(handled_errors) > 0;` |
+
+Колонки `started_at` в `executions` и `execution_actions` — `TIMESTAMP` в UTC (сессии `migrate.php` и backend
+работают в UTC); если ваш клиент psql в другом поясе, сравнивайте с `now() AT TIME ZONE 'UTC'`.
 
 <!-- footer-nav -->
 ---

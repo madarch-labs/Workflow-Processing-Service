@@ -40,7 +40,8 @@ Backend стартует, когда PostgreSQL прошёл healthcheck (`depen
 > **Примечание**
 > В небольшой установке оба Redis можно заменить одним сервером: укажите в `REDIS_STREAM_*` и `REDIS_DATA_*` один хост и
 > другой номер базы в `REDIS_DATA_DB`. Ключи не пересекаются: стрим — `crm_events*`, данные — `proc_cache:*`,
-> `dict:modules`, `exec:*`, `lock:exec:*`, `idem:*`.
+> `dict:modules`, `crm:capabilities`, `exec:*`, `lock:exec:*`, `idem:*`, `assign:*`, `mail:*`, `oauth:token:*`,
+> `side_effects:purge`. Мок хранит свои объекты в redis-stream (`mock_crm:*`, `mock_crm_rel:*`, `mock:*`).
 
 ## Первый запуск
 
@@ -59,6 +60,79 @@ curl -s http://localhost:9501/api/health
 3. `php server.php` запускает HTTP-сервер Swoole. Строка лога `[WPS] listening on 0.0.0.0:9501` означает, что API поднялся.
 
 Администратор по умолчанию `admin@wps.local` / `admin` создаётся миграцией `002_seed_admin.sql`.
+
+## Образы
+
+| Образ | Dockerfile | Основа | Что внутри |
+|---|---|---|---|
+| backend, стадия `prod` | `back/Dockerfile` (контекст — корень репозитория) | `phpswoole/swoole:6.0-php8.3` + `bcmath`, `intl` (`libicu-dev`) | `composer install --no-dev`, оптимизированный autoload, `ENTRYPOINT docker/entrypoint.sh`, порт 9501. Именно эту стадию собирает `docker-compose.yml` (`target: prod`) |
+| backend, стадия `test` | то же | та же база | Зависимости для разработки и `ENTRYPOINT vendor/bin/phpunit` |
+| mock | `mock/Dockerfile` | `phpswoole/swoole:6.0-php8.3` (уже с `ext-redis`) | Встроенный сервер PHP `php -S 0.0.0.0:9502 mock_server.php` |
+| frontend | `front/Dockerfile` | `node:22-alpine` (сборка) → `nginx:1.27-alpine` | `npm ci && npm run build`, `dist/` и `front/nginx.conf` |
+
+`bcmath` нужен для точной арифметики и сравнения `decimal`; `intl` — для `format_date_locale()` (без него функция не
+регистрируется). Юнит-тесты:
+
+```bash
+docker build -q -f back/Dockerfile --target test -t wps-backend-test .
+docker run --rm wps-backend-test --testsuite unit
+```
+
+`vendor/` в репозиторий не входит: зависимости ставятся при сборке образа. Добавить пакет:
+`docker run --rm -v $PWD/back:/app -w /app --entrypoint composer wps-backend-test require <пакет> --ignore-platform-req=ext-swoole`.
+
+## Миграции
+
+`back/migrations/migrate.php` выполняется при каждом старте контейнера backend (`entrypoint.sh`) до запуска сервера:
+
+1. ждёт PostgreSQL до `DB_WAIT_SECONDS` (строки `[migrate] waiting for database...` каждые 2 с);
+2. ставит сессии `SET TIME ZONE 'UTC'` и создаёт таблицу `schema_migrations (version, applied_at)`;
+3. применяет файлы `*.sql`, которых нет в `schema_migrations`, **по порядку имён**, каждый в своей транзакции; при
+   ошибке — откат файла, `[migrate] <версия> failed: …` и выход с кодом 1 (backend не стартует);
+4. печатает `[migrate] applied <версия>` на каждый файл и итог `[migrate] done, N new migration(s)`.
+
+Отката (down-миграций) нет; все файлы идемпотентны (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`).
+
+| Файл | Что делает |
+|---|---|
+| `001_create_tables.sql` | Таблицы `users`, `processes`, `executions`, `execution_actions` и их индексы |
+| `002_seed_admin.sql` | Администратор `admin@wps.local` / `admin` (если такого e-mail ещё нет) |
+| `003_run_once.sql` | `processes.run_once`, таблица отметок `process_object_runs` |
+| `004_program_audit.sql` | Колонки аудита плоской программы `execution_actions.pc`, `step_path`, `iteration`, `step_id`; `pc = step_index` для старых строк; индекс `(execution_id, pc)` |
+| `005_secrets.sql` | Таблица `secrets` (зашифрованные секреты) |
+| `006_side_effects.sql` | Журнал побочных эффектов `step_side_effects` |
+| `007_trigger_on.sql` | `processes.trigger_on TEXT[]` (по умолчанию `{create,update}`) и `CHECK` допустимых типов |
+| `008_step_error_handling.sql` | `executions.handled_errors`, `execution_actions.error_code`, `execution_actions.handled` |
+| `009_execution_waits.sql` | `executions.waiting_until`, `wait_reason`, таблица `execution_waits`, частичный индекс ожидающих |
+| `010_reserved_names_check.sql` | Схему не меняет: **отчёт** о процессах, которые используют имена `sys`, `config`, `object_before` как обычные переменные (с задачи 5.2.9 они зарезервированы) |
+
+> **Внимание**
+> Миграция 010 сообщает о найденных процессах через `RAISE NOTICE`, а `migrate.php` (PDO) уведомления PostgreSQL не
+> печатает — в логе backend будет только `[migrate] applied 010_reserved_names_check`. Найденные процессы продолжают
+> выполняться (по своему снимку), но **не сохранятся** после правки, пока переменные не переименованы. Проверьте их
+> вручную тем же условием:
+>
+> ```bash
+> docker compose exec -T postgres psql -U wps -d wps -c "SELECT id, name FROM processes
+>   WHERE definition::text ~ '\"(var|as|item_var)\"\s*:\s*\"(sys|config|object_before)\"'
+>      OR definition::text ~ '\"(target|record)\"\s*:\s*\"(sys|config|object_before)(\.|\")'"
+> ```
+
+Состояние миграций: `docker compose exec -T postgres psql -U wps -d wps -c 'SELECT * FROM schema_migrations ORDER BY 1'`.
+Применить миграции без перезапуска сервера: `docker compose exec backend php migrations/migrate.php`.
+
+## Резервное копирование
+
+```bash
+# PostgreSQL: процессы, выполнения, аудит, ожидания, секреты (зашифрованные), пользователи
+docker compose exec -T postgres pg_dump -U wps -Fc wps > wps-$(date +%F).dump
+# восстановление в пустую базу
+docker compose exec -T postgres pg_restore -U wps -d wps --clean --if-exists < wps-2026-10-27.dump
+```
+
+Вместе с дампом храните `WPS_SECRETS_KEY`: без него таблица `secrets` не расшифровывается. Redis-данные копировать не
+обязательно (кэши и состояние идущих выполнений); `redis-stream` содержит ещё не обработанные события — при остановке
+CRM перед обслуживанием дождитесь `lag = 0` и `pending = 0` в `/api/health`.
 
 ## Порты
 

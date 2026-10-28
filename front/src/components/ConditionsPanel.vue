@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { Delete, Plus } from '@element-plus/icons-vue'
 import type { Condition, DictionaryItem } from '@/types'
 import PathInput from './PathInput.vue'
+import { isNoValueOperator, operatorOptions } from '@/utils/processForm'
 
 const props = withDefaults(
   defineProps<{
@@ -31,10 +32,20 @@ function updateRow(index: number, patch: Partial<Condition>): void {
 }
 
 function addRow(): void {
+  const first = operatorOptions(props.operators)[0]
   emit('update:conditions', [
     ...props.conditions,
-    { field: 'object.', operator: props.operators[0]?.value ?? 'equals', value_type: 'static', value: '' },
+    { field: 'object.', operator: first?.value ?? 'equals', value_type: 'static', value: '', _noValue: isNoValueOperator(first) },
   ])
+}
+
+/** The operator of the row takes no value: value inputs are hidden and not sent */
+function noValue(c: Condition): boolean {
+  return isNoValueOperator(props.operators.find((o) => o.value === c.operator))
+}
+
+function setOperator(index: number, operator: string): void {
+  updateRow(index, { operator, _noValue: isNoValueOperator(props.operators.find((o) => o.value === operator)) })
 }
 
 function removeRow(index: number): void {
@@ -77,24 +88,29 @@ const GRID = '1.3fr 1fr 1.2fr 1.3fr 40px'
               :invalid="isFieldInvalid(c)"
               @update:model-value="(v) => updateRow(index, { field: v })"
             />
-            <el-select :model-value="c.operator" @update:model-value="(v: string) => updateRow(index, { operator: v })">
-              <el-option v-for="o in operators" :key="o.value" :label="o.label" :value="o.value" />
+            <el-select :model-value="c.operator" @update:model-value="(v: string) => setOperator(index, v)">
+              <el-option v-for="o in operatorOptions(operators, c.operator)" :key="o.value" :label="o.label" :value="o.value" />
             </el-select>
+            <template v-if="noValue(c)">
+              <span class="muted no-value">—</span>
+              <span class="muted no-value">—</span>
+            </template>
             <el-select
+              v-else
               :model-value="c.value_type"
               @update:model-value="(v) => updateRow(index, { value_type: v as Condition['value_type'] })"
             >
               <el-option v-for="o in VALUE_TYPES" :key="o.value" :label="o.label" :value="o.value" />
             </el-select>
             <PathInput
-              v-if="c.value_type === 'from_object_field'"
+              v-if="!noValue(c) && c.value_type === 'from_object_field'"
               :model-value="c.value"
               :suggestions="suggestions"
               :placeholder="t('conditions.fieldPlaceholder')"
               @update:model-value="(v) => updateRow(index, { value: v })"
             />
             <el-input
-              v-else
+              v-else-if="!noValue(c)"
               :model-value="c.value"
               :placeholder="t('conditions.valuePlaceholder')"
               @update:model-value="(v: string) => updateRow(index, { value: v })"
@@ -125,6 +141,10 @@ const GRID = '1.3fr 1fr 1.2fr 1.3fr 40px'
   flex: 1;
   height: 1px;
   background: var(--el-border-color-lighter);
+}
+.no-value {
+  align-self: center;
+  padding-left: 12px;
 }
 .hint {
   font-size: 12px;

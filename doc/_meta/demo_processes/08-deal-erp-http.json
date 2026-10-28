@@ -1,0 +1,8 @@
+{"name":"Deal → register order in ERP (HTTP)","object_type":"Deals","is_child":false,"is_active":true,"priority":0,"run_once":false,
+ "definition":{"conditions":[{"field":"object.status","operator":"equals","value_type":"static","value":"Invoiced"}],
+  "preload":[],
+  "actions":[{"type":"http_request","id":"erp","var":"erp","method":"POST","url":"http://mock:9502/mock/echo/orders/{{ object.id }}",
+              "headers":{"X-Source":"wps"},
+              "body":{"type":"json","value":{"number":"{{ object.name }}","amount":"{{= to_number(object.amount) }}","process":"{{ sys.process_name }}"}},
+              "response":{"extract":{"path":"$.data.path","method":"$.data.method"}}},
+             {"type":"modify","target":"object.description","change_type":"calculate","value":"concat('ERP: ', erp.method, ' ', erp.path)","save_to_crm":true}]}}

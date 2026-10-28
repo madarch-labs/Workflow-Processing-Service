@@ -24,6 +24,26 @@
 > `back/.env` исключён из контекста сборки Docker (`.dockerignore`), поэтому контейнер всегда стартует с копией
 > `back/.env.example`. Backend в контейнере настраивайте через `docker-compose.yml` / `./.env`, а не через `back/.env`.
 
+### Как разбираются значения
+
+`Wps\Kernel\Env` и `AppConfig::fromEnv()` разбирают строки окружения по одним правилам:
+
+| Вид значения | Правило | Пример |
+|---|---|---|
+| Строка в `back/.env` | `KEY=value`; строки с `#` в начале и без `=` пропускаются; кавычки `"…"` / `'…'` вокруг значения снимаются | `MAILER_FROM_NAME="WPS bot"` |
+| Целое (`Env::int`) | не число или пусто — значение по умолчанию; затем применяются границы (`max(…)`, `min(…)`) из `AppConfig` | `WAIT_POLL_INTERVAL_MS=50` → `100` |
+| Дробное (`Env::float`) | так же | `CRM_API_TIMEOUT=2.5` |
+| Логическое (`Env::bool`) | `1`, `true`, `yes`, `on` (без учёта регистра) — истина, иное непустое — ложь | `APP_DEBUG=on` |
+| Флаги `HTTP_ALLOW_PLAIN_HTTP`, `HTTP_TLS_VERIFY` | выключаются **только** строкой `false`; любое другое значение — включено | `HTTP_TLS_VERIFY=0` — проверка **остаётся включённой** |
+| Списки (`HTTP_*_HOSTS`, `HTTP_*_PORTS`, `HTTP_ALLOW_PRIVATE_CIDRS`, `MAILER_ALLOWED_FROM`) | через запятую, пробелы обрезаются, приводятся к нижнему регистру, пустые элементы отбрасываются; в списках портов нечисловые элементы игнорируются | `HTTP_ALLOW_HOSTS=api.example.com, *.erp.local` |
+| Перечисления (`ACTION_RETRY_JITTER`, `CRM_ALERT_PROFILE`) | неизвестное значение молча заменяется значением по умолчанию | `ACTION_RETRY_JITTER=random` → `full` |
+| Длительности (`ACTION_RETRY_MAX_DELAY`, `DELAY_MAX`) | короткая форма (`500ms`, `30s`, `10m`, `1h`, `2d`, `1w`, можно сочетать: `1h30m`) или ISO 8601 (`PT5M`, `P400D`); для `ACTION_RETRY_MAX_DELAY` число без единицы — миллисекунды, месяцы и годы не допускаются, неразбираемое значение — `1h` | `ACTION_RETRY_MAX_DELAY=15m` |
+| `DB_POSTGRES_*` и синонимы `DB_*` | берётся первое **непустое** значение из пары | `DB_HOST=db` работает, если `DB_POSTGRES_HOST` не задан |
+
+Значения, которые проверяются при старте и останавливают сервис: `WPS_TIMEZONE` (неизвестный пояс) и
+`WPS_SECRETS_KEY` / `WPS_SECRETS_KEY_PREVIOUS` (не base64 от 32 байт). Остальные ошибки молча исправляются границами —
+проверяйте действующие значения командами из раздела [Проверка действующей конфигурации](#проверка-действующей-конфигурации).
+
 ## Корневой `./.env` (Docker Compose)
 
 | Переменная | По умолчанию в `docker-compose.yml` | Описание |
@@ -34,9 +54,19 @@
 | `WPS_PG_PORT` | `5432` | Порт PostgreSQL на хосте (в этом репозитории — `55432`) |
 | `WPS_REDIS_STREAM_PORT` | `6379` | Порт Redis шины событий на хосте |
 | `WPS_REDIS_DATA_PORT` | `6380` | Порт Redis для данных на хосте |
+| `WPS_MAILPIT_PORT` | `8025` | Порт веб-интерфейса и API Mailpit на хосте |
 | `CRM_API_BASE_URL` | `http://mock:9502` | Передаётся в backend: базовый адрес API CRM |
 | `CRM_API_STATIC_KEY` | `mySecretKey` | Передаётся в backend: префикс ключа API CRM |
 | `MOCK_SERVICE_URL` | `http://mock:9502` | Передаётся в backend; **пустое** значение — справочник модулей загружается из CRM |
+
+Кроме перечисленных, `docker-compose.yml` пробрасывает в backend из `./.env` или командной строки (со значением по
+умолчанию после `:-`): `WPS_TIMEZONE` (`UTC`), `WPS_SECRETS_KEY` (тестовый ключ), `WPS_SECRETS_KEY_PREVIOUS` (пусто),
+`MAILER_DSN` (`smtp://mailpit:1025`), `MAILER_FROM` (`wps@wps.local`), `MAILER_FROM_NAME` (`WPS`),
+`HTTP_ALLOW_PRIVATE_CIDRS` (`172.16.0.0/12,192.168.0.0/16`), `HTTP_DENY_HOSTS`
+(`localhost,metadata.google.internal,postgres,redis-stream,redis-data`), `RECOVERY_STALE_SECONDS` (`300`),
+`TELEGRAM_API_BASE` (`https://api.telegram.org`), `CRM_UI_BASE_URL` (пусто), `CRM_ALERT_PROFILE` (`suitecrm8`).
+Любую другую переменную backend добавьте в секцию `environment:` (или в `docker-compose.override.yml`) — сама по себе
+переменная из `./.env` в контейнер не попадает.
 
 > **Внимание**
 > `./.env` этого репозитория сейчас направляет backend на локальную SuiteCRM 8 (`CRM_API_BASE_URL=http://suitecrm8/api/v9`,
@@ -259,6 +289,8 @@ docker compose exec redis-data redis-cli DEL assign:rr:<queue_key>
 | `MOCK_REDIS_PASSWORD` | пусто | Пароль |
 | `MOCK_REDIS_STREAM` | `crm_events` | Имя стрима |
 | `MOCK_CRM_STATIC_KEY` | пусто (в compose — `mySecretKey`) | Ожидаемый префикс `X-Auth-Key`; пустое значение отключает проверку. Должен совпадать с `CRM_API_STATIC_KEY` |
+| `MOCK_CRM_CONTRACT` | `2.0` (compose) | Версия контракта API мока: `2.0` или `1.0` (эмуляция старого плагина: `404` на `capabilities`, поиск только по равенству, без связей и удаления). Меняется на лету: `PUT http://localhost:9502/mock/config {"contract": "1.0"}` |
+| `MOCK_PUBLISH_ON_WRITE` | `0` (compose) | `1` — мок публикует событие v2 (с `before` и `wps_origin`) на каждый `POST`, `PUT`, `DELETE` через API, как плагин CRM. На лету: `PUT /mock/config {"publish_on_write": true}` |
 
 ## Контейнер PostgreSQL
 
@@ -290,6 +322,32 @@ docker compose exec redis-data redis-cli DEL assign:rr:<queue_key>
 | `cyclic_jobs.monitoring_interval` | `60` | Интервал проверки состояния циклических задач фреймворком, секунды (при `APP_DEBUG` ещё и пишет их статистику в лог) |
 | `StateContainerInitiation` | `["Wps\\State\\StateInitiation"]` | Создаёт `AppConfig` и общую таблицу метрик до форка воркеров |
 | `events` | `[]` | События фреймворка (не используются) |
+
+## Проверка действующей конфигурации
+
+```bash
+# что compose подставит в контейнеры (после ./.env и переменных командной строки)
+docker compose config | sed -n '/backend:/,/ports:/p'
+
+# окружение работающего backend
+docker compose exec backend env | sort | grep -E '^(CRM_|MOCK_|WPS_|HTTP_|MAILER_|REDIS_|DB_)'
+
+# часовой пояс бизнеса, записанный при старте
+docker compose logs backend | grep 'Business time zone'
+# {"level":"info","message":"Business time zone","context":{"WPS_TIMEZONE":"UTC"},...}
+
+# возможности CRM, которую видит backend (токен любой роли)
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:9501/api/dictionaries/crm-capabilities
+```
+
+Ошибки конфигурации при старте (сервис не поднимается, текст — в `docker compose logs backend`):
+
+| Сообщение | Причина |
+|---|---|
+| `WPS_TIMEZONE: unknown time zone "MSK" (use an IANA name, e.g. Europe/Moscow)` | Неизвестное имя часового пояса |
+| `WPS_SECRETS_KEY: expected base64 of 32 bytes (generate with: php bin/secrets-key.php)` | Ключ секретов не base64 или не 32 байта (так же для `WPS_SECRETS_KEY_PREVIOUS`) |
+| `[migrate] database is not reachable: …` | PostgreSQL недоступен дольше `DB_WAIT_SECONDS` или неверные `DB_POSTGRES_*` |
+| `[migrate] 0NN_… failed: …` | Миграция упала; транзакция откатана, следующий старт попробует снова |
 
 ## Пример: настройки для продакшена
 

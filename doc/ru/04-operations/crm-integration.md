@@ -91,7 +91,7 @@ redis-cli -h <хост redis-stream> -p 6379 XADD crm_events MAXLEN '~' 100000 '
 | `changed_fields` | Изменённые поля. Для `create` — все непустые поля. Поля из `ignore_change_fields` (по умолчанию `date_modified`, `modified_user_id`, `date_entered`, `created_by`, `deleted`) не попадают ни сюда, ни в `before`, иначе любое сохранение «меняло» бы `date_modified` |
 | `wps_origin` | Есть, только если сохранение сделал WPS: заголовки `X-WPS-*` запроса (см. [ниже](#заголовки-происхождения-x-wps)). Защита от каскадов процессов |
 | `wps_event_version` | `2` — маркер формата для диагностики |
-| `wps_event`, `wps_is_update`, `wps_user_id`, `wps_published_at` | Поля контракта 1.0, сохранены для совместимости |
+| `wps_event`, `wps_is_update`, `wps_user_id`, `wps_published_at` | Поля контракта 1.0, сохранены для совместимости. `wps_user_id` — id пользователя CRM, сохранившего запись; системная переменная `sys.user_id` берёт нейтральное поле `user_id` события, а если его нет — `wps_user_id` (плагины 1.2.0 публикуют только `wps_user_id`) |
 
 Изменения издатель считает после нормализации по типу поля: `1000.000000` и `1000` равны, `NULL` равно `''`, порядок значений
 multienum не важен; строки сравниваются как есть (регистр и пробелы значимы). Сохранение без изменений публикуется как `update`
@@ -145,6 +145,26 @@ multienum не важен; строки сравниваются как есть
 | Обновление (`save_object`, `save_to_crm`, у записи есть `id`) | `PUT {base}/{module}/{id}` с телом `{"data": {"type", "id", "attributes": {изменённые поля}}}` | `200 {"data": {...}}` |
 | Создание (запись без `id`) | `POST {base}/{module}` с телом `{"data": {"type", "attributes": {...}}}` | `201 {"data": {"id", ...}}` — новый id записывается обратно в переменную |
 | Справочник модулей | `GET {base}/modules` | список `{value,label}` / `{name,label}` / элементы JSON:API с `id` и `attributes.label` |
+
+Методы `ExternalApiAdapterService` и запросы, которые они делают (все — через корутинный `Swoole\Coroutine\Http\Client`,
+таймаут `CRM_API_TIMEOUT`, заголовки `X-Auth-Key` и `X-WPS-*`):
+
+| Метод | Запрос | Кто использует |
+|---|---|---|
+| `getById(module, id)` | `GET {base}/{module}/{id}`; `404` → `null` | предзагрузка `by_id`, `assign` (пользователь, руководитель) |
+| `findOneByField(module, field, value)` | `GET {base}/{module}?filter[field]=value&size=1` | предзагрузка `by_field` |
+| `create(module, attributes)` / `update(module, id, attributes)` | `POST {base}/{module}` / `PUT {base}/{module}/{id}` | `save_object`, `save_to_crm`, `update_records`, канал `crm_alert` |
+| `findPage(module, filter, sort, fields, size, cursor, withTotal)` | `GET {base}/{module}?filter[f][op]=…&sort=&fields=&page[size]=&page[after]=&count=1` | `find_records`, `aggregate`, `assign` |
+| `findMany(…, limit)` | `findPage` по страницам до `limit` | `find_records`, `aggregate` |
+| `count(module, filter)` | `GET …&fields=id&page[size]=1&count=1` → `meta.total` | `aggregate` (`count` без поля), `assign` (`least_busy`) |
+| `delete(module, id)` | `DELETE {base}/{module}/{id}`; `404` → `false` | тесты, будущие действия |
+| `listRelated(module, id, link, fields, size, cursor)` | `GET {base}/{module}/{id}/relationships/{link}` | `find_records` (`related_to`), `link_records`, `assign` (группа) |
+| `link(module, id, link, items)` / `unlink(…, relatedId)` | `POST …/relationships/{link}` / `DELETE …/relationships/{link}/{related_id}` | `link_records`, `unlink_records` |
+| `capabilities()` | `GET {base}/capabilities`; `404`/`405` → контракт 1.0 | `CrmCapabilitiesService` |
+| `getModules()` | `GET {base}/modules` | `DictionaryService` |
+
+Если CRM не поддерживает возможность, нужную методу (оператор фильтра, сортировку, связи), метод бросает
+`CrmCapabilityMissingException` до отправки запроса (см. [Возможности и деградация](#возможности-и-деградация)).
 
 `null` в `attributes` очищает поле (плагины WPS для SuiteCRM 7 и 8 начиная с 1.2.0; раньше SugarBean пропускал такое поле при сохранении) —
 так работают, например, `date_shift` с `on_missing: null` и `set_value` с `null`.
@@ -443,15 +463,146 @@ MOCK_SERVICE_URL=                            # пусто: модули беру
 (`processes/*.processes.json`, импорт через `scripts/wps_processes.php`) описаны в `.tehnical/suiteCRM7/README.md` и
 `.tehnical/suiteCRM8/README.md`.
 
-Настройки плагина 1.2.0 (`$sugar_config['wps']`, переменные `WPS_*` для `bin/install.sh`, все необязательные):
+### Пакеты плагина: SuiteCRM 7 и SuiteCRM 8
 
-| Ключ (переменная) | По умолчанию | Назначение |
+Плагины — два **отдельных** пакета с одинаковым PHP-кодом в `custom/include/WPS` (`WpsApi`, `WpsEventHook`,
+`WpsRedisClient`, `WpsBeanSerializer`, `WpsConfig`), но разными установщиками и правилами веб-сервера. Каждый меняется
+и проверяется отдельно. Текущая версия обоих — 1.2.0 (контракт 2.0).
+
+| | SuiteCRM 7 (`../suiteCRM7`) | SuiteCRM 8 (`../SuiteCRM8`) |
 |---|---|---|
-| `ignore_change_fields` (`WPS_IGNORE_CHANGE_FIELDS`) | `date_modified,modified_user_id,date_entered,created_by,deleted` | Поля, которые не считаются изменениями |
-| `publish_unchanged` (`WPS_PUBLISH_UNCHANGED`) | `true` | Публиковать `update` без изменённых полей |
-| `publish_delete_events` (`WPS_PUBLISH_DELETE_EVENTS`) | `true` | Хук `after_delete` → событие `delete` |
-| `publish_relationship_events` (`WPS_PUBLISH_RELATIONSHIP_EVENTS`) | `false` | События `link` / `unlink` |
-| `max_page_size`, `max_link_batch`, `max_in_values` (`WPS_MAX_PAGE_SIZE`, …) | `100` | Лимиты поиска и связей |
+| Поддерживаемая CRM | 7.14.x (`manifest.php`: `^7\.14\.`), PHP 8.1–8.2 | 8.10.x (`^8\.10\.`), PHP 8.2–8.4 |
+| Куда ставится | корень CRM (там `include/entryPoint.php`) | legacy-слой `public/legacy`; `--crm-path` — корень CRM с `bin/console` |
+| Rewrite `/api/v9/(.*)` | `/index.php?entryPoint=wpsApi&wps_path=$1` | `/legacy/index.php?entryPoint=wpsApi&wps_path=$1`, в vhost до front controller Symfony |
+| Вариант `.htaccess` | есть (`--htaccess`, блок ставится в начало файла, переживает «Rebuild .htaccess») | нет: `public/.htaccess` — front controller Symfony |
+| После установки | — | `php bin/console cache:clear` (делает `install.sh`) |
+| Логи плагина | `suitecrm.log` (строки `[WPS]`) | `logs/legacy/suitecrm.log`, `logs/prod/` |
+| Поле-маркер | `Leads.wps_processed_c` | `Leads.wps_processed_c` |
+
+Состав пакета: `package/` (zip для Module Loader, `manifest.php` в корне), `bin/install.sh`, `bin/uninstall.sh`,
+`bin/build.sh` (→ `dist/wps_integration-<версия>-suitecrm<7|8>.zip`), `bin/wps_setup.php` (CLI `config` / `install` /
+`uninstall` / `status`), `bin/contract_check.sh`, `config/wps.env.example`, `config/apache-wps.conf`,
+`config/nginx-wps.conf` (SuiteCRM 7 — ещё `config/htaccess-wps.conf`).
+
+### Установка плагина
+
+```bash
+cd /path/to/SuiteCRM8                      # или suiteCRM7
+cp config/wps.env.example config/wps.env   # задать WPS_API_STATIC_KEY и адрес Redis WPS
+
+# CRM на этой машине (от root, www-data или через sudo)
+bin/install.sh --crm-path /var/www/html --apache-conf /etc/apache2/sites-available/000-default.conf
+
+# CRM в Docker-контейнере (пути — внутри контейнера)
+bin/install.sh --docker <контейнер> --env-file config/wps.env \
+    --apache-conf /etc/apache2/sites-available/000-default.conf
+```
+
+Что делает `install.sh`:
+
+1. Проверяет, что это установленная CRM нужной версии, есть PHP `zip` и права на запись (иначе — `is not the legacy root
+   of SuiteCRM`, `bin/console not found: is this SuiteCRM 8?`, `does not support SuiteCRM x.y`).
+2. Пишет параметры `WPS_*` в `$sugar_config['wps']` (`config_override.php`); переменные окружения важнее файла.
+3. Ставит пакет через `ModuleInstaller`, регистрирует его в Module Loader, создаёт поле `Leads.wps_processed_c`, если его
+   нет. Повторный запуск — обновление/переустановка: файлы прежней версии сначала удаляются.
+4. SuiteCRM 8: `bin/console cache:clear`.
+5. С `--apache-conf` добавляет rewrite между маркерами `# BEGIN/END WPS integration`, проверяет `apachectl -t` и делает
+   graceful reload; без него — только печатает фрагмент.
+6. Самопроверка: `GET /api/v9/modules` с верным и неверным ключом (ожидается `200` и `401`), адрес — `--site-url`
+   (по умолчанию `http://localhost`).
+
+Код выхода: `0` — установлено и API отвечает; `3` — установлено, но самопроверка не прошла. Опции: `--web-user`,
+`--skip-config` (не трогать параметры), `--skip-check`, `--force` (другая версия CRM, на свой риск), `--help`.
+
+Вручную: `bin/build.sh` → Admin → Module Loader → Upload → Install → Commit; затем параметры
+(`sudo -u www-data env $(grep -v '^#' config/wps.env | xargs) php bin/wps_setup.php config` из каталога legacy-слоя),
+`cache:clear` (SuiteCRM 8) и rewrite веб-сервера. Module Loader открывайте через меню Admin: прямая ссылка без
+Referer вызывает защиту SuiteCRM от XSRF.
+
+> **Внимание**
+> В Docker правило `--apache-conf` живёт в конфигурации контейнера и пропадает при его пересоздании (`up
+> --force-recreate`, новый образ). Положите rewrite в образ (как в стендах `.tehnical/suiteCRM*`) или используйте
+> `--htaccess` (SuiteCRM 7). Пересоздание **тома** CRM удаляет и сам плагин.
+
+### Параметры плагина (`WPS_*`)
+
+Записываются в `$sugar_config['wps']` командой `wps_setup.php config` (её вызывает `install.sh`). Изменить без
+переустановки: `bin/install.sh … --skip-check` или `wps_setup.php config`.
+
+| Переменная | Ключ `$sugar_config['wps']` | По умолчанию | Назначение |
+|---|---|---|---|
+| `WPS_ENABLED` | `enabled` | `true` | `false` — события не публикуются, API `/api/v9` продолжает работать |
+| `WPS_REDIS_HOST` | `redis_host` | `redis-stream` | Хост Redis Stream WPS (= `REDIS_STREAM_HOST` WPS) |
+| `WPS_REDIS_PORT` | `redis_port` | `6379` | Порт |
+| `WPS_REDIS_PASSWORD` | `redis_password` | пусто | Пароль `AUTH` (= `REDIS_STREAM_PASSWORD`) |
+| `WPS_REDIS_TIMEOUT` | `redis_timeout` | `1.0` | Таймаут подключения и чтения, с: дольше сохранение записи при недоступном Redis не ждёт |
+| `WPS_REDIS_STREAM` | `stream` | `crm_events` | Имя стрима (= `REDIS_STREAM_NAME`) |
+| `WPS_REDIS_STREAM_MAXLEN` | `stream_maxlen` | `100000` | `XADD MAXLEN ~` (`0` — без ограничения). WPS стрим не обрезает |
+| `WPS_EVENT_MODULES` | `event_modules` | `Leads,Contacts,Accounts,Opportunities,Cases,Calls,Tasks,Meetings` | Модули, чьи сохранения публикуются (пусто — все). Модуль процесса WPS должен быть в списке |
+| `WPS_API_STATIC_KEY` | `api_static_key` | пусто | Ключ API (= `CRM_API_STATIC_KEY` WPS); пустой — API отвечает `401` на всё |
+| `WPS_API_USER_ID` | `api_user_id` | `1` | Пользователь CRM, от имени которого API пишет записи (`created_by`, `modified_user_id`) |
+| — | `api_readonly_modules` | `Users, Employees` | Модули только для чтения (`405`) |
+| `WPS_IGNORE_CHANGE_FIELDS` | `ignore_change_fields` | `date_modified,modified_user_id,date_entered,created_by,deleted` | Поля, которые не считаются изменениями (`before`, `changed_fields`) |
+| `WPS_PUBLISH_UNCHANGED` | `publish_unchanged` | `true` | Публиковать `update` без изменённых полей |
+| `WPS_PUBLISH_DELETE_EVENTS` | `publish_delete_events` | `true` | `after_delete` → событие `delete` |
+| `WPS_PUBLISH_RELATIONSHIP_EVENTS` | `publish_relationship_events` | `false` | События `link` / `unlink` (WPS подтверждает их без запуска процессов) |
+| `WPS_MAX_PAGE_SIZE` | `max_page_size` | `100` | Наибольший `page[size]` поиска и списка связей (`limits.max_page_size`) |
+| `WPS_MAX_LINK_BATCH` | `max_link_batch` | `100` | Элементов в одном `POST …/relationships/{link}` |
+| `WPS_MAX_IN_VALUES` | `max_in_values` | `100` | Значений оператора `in` / `nin` |
+
+После изменения `WPS_EVENT_MODULES` на стендах плагин переустанавливают (`install.sh … --force`).
+
+### Проверка установленного плагина
+
+```bash
+# 1. статус: пакет, хук, entry point, поле, параметры, доступность Redis
+#    (SuiteCRM 8 — из public/legacy, SuiteCRM 7 — из корня CRM, от www-data)
+sudo -u www-data php /path/to/SuiteCRM8/bin/wps_setup.php status
+
+# 2. API с ключом текущего часа (UTC)
+KEY="${WPS_API_STATIC_KEY}$(date -u '+%Y.%m.%d %H')"
+curl -s -H "X-Auth-Key: $KEY" http://<crm>/api/v9/capabilities                                   # contract_version 2.0
+curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Auth-Key: wrong' http://<crm>/api/v9/modules      # 401
+
+# 3. событие: сохраните лид в CRM и посмотрите хвост стрима WPS
+docker compose exec -T redis-stream redis-cli XREVRANGE crm_events + - COUNT 1
+
+# 4. полная проверка контракта 2.0: операторы поиска, курсор, fields, count, 422, события v2, DELETE, связи
+bin/contract_check.sh http://<crm>/api/v9 "$WPS_API_STATIC_KEY" <контейнер redis-stream WPS>
+```
+
+`contract_check.sh` печатает строки `ok …` / `FAIL …: got […] expected […]` и в конце `ALL OK` или `FAILURES: N`. Он
+создаёт тестовые записи — три сделки `ct-<время>-<сумма>`, лид (удаляется проверкой `DELETE`) и встречу со связью — и
+остальные не удаляет: на рабочей CRM удалите их после проверки. Нужны `curl`, `jq` и `docker` (чтение стрима через
+`docker exec <контейнер> redis-cli`). Базовый адрес — с `/api/v9`.
+
+На стенде WPS: `bin/contract_check.sh http://localhost:8801/api/v9 <ключ> swoole_worckflow-redis-stream-1`.
+
+### Обновление и удаление плагина
+
+- **Обновление** — `bin/install.sh` с новой версией пакета: файлы прежней версии удаляются, ставится новая, запись в
+  Module Loader обновляется; поле `wps_processed_c` с данными и параметры сохраняются. Через Module Loader — сначала
+  Uninstall старой версии с «Do not remove tables».
+- **Удаление** — `bin/uninstall.sh --crm-path <корень> [--apache-conf <vhost>] [--htaccess] [--keep-config]
+  [--remove-fields]` (или `--docker <контейнер>`). По умолчанию удаляются файлы, хук, entry point, запись Module Loader
+  и блок `$sugar_config['wps']`; поле `Leads.wps_processed_c` с данными и rewrite остаются (`--remove-fields`,
+  `--apache-conf` / `--htaccess` удаляют их).
+
+### Диагностика плагина
+
+| Симптом | Причина | Решение |
+|---|---|---|
+| `install.sh`: `is not the legacy root of SuiteCRM` | Неверный `--crm-path` | SuiteCRM 8 — корень с `bin/console`, SuiteCRM 7 — корень с `include/entryPoint.php` |
+| `bin/console not found: is this SuiteCRM 8?` | Пакет SuiteCRM 8 ставится в SuiteCRM 7 | Возьмите пакет `suiteCRM7` |
+| `does not support SuiteCRM x.y` | Версия CRM вне манифеста | Обновите CRM или `--force` на свой риск |
+| Самопроверка: `404` на оба ключа | Нет rewrite или entry point не зарегистрирован | Правило веб-сервера; `wps_setup.php status` |
+| Самопроверка: `401` на оба ключа | Пустой или другой `WPS_API_STATIC_KEY`, часы сервера | Ключ; синхронизация времени (UTC, NTP) |
+| `/api/v9/...` отдаёт HTML нового интерфейса или редирект на `#/Login` (SuiteCRM 8) | Rewrite в `public/.htaccess`, запрос ушёл во front controller Symfony | Правило — в vhost |
+| `POST/PUT` → `Bad data passed in` | Тело без `Content-Type: application/json` | WPS его отправляет; добавьте в своих запросах |
+| Сохранение записи медленное, в логе `[WPS] publish failed` | Redis WPS недоступен из CRM | Сеть, `WPS_REDIS_HOST`; таймаут — `WPS_REDIS_TIMEOUT`. Событие теряется (outbox нет) |
+| После установки через Module Loader не видно поля / хук не срабатывает (SuiteCRM 8) | Symfony-кэш хранит старые legacy-метаданные | `php bin/console cache:clear` |
+| Module Loader: `Possible Cross Site Request Forgery` | Открыт прямой URL без Referer | Заходите через Admin → Module Loader |
+| Нет событий по модулю | Модуль не в `WPS_EVENT_MODULES` или `WPS_ENABLED=false` | Исправьте параметры, `install.sh --skip-check` |
 
 > **Внимание**
 > Процесс, который сохраняет ту же запись, что его запустила, вызывает новое событие `after_save`, и процесс может запуститься

@@ -7,6 +7,8 @@ namespace Wps\Context;
 use Wps\Events\EventEnvelope;
 use Wps\Exceptions\ConfigurationException;
 use Wps\Secrets\SecretMasker;
+use Wps\Time\Clock;
+use Wps\Time\SystemClock;
 
 /**
  * Runtime state of one process execution: the source event, variables and their metadata.
@@ -20,9 +22,20 @@ final class ExecutionContext
     public const OBJECT = 'object';
     /** old values of the changed fields of the event, null when unknown (6.1); read-only */
     public const OBJECT_BEFORE = 'object_before';
-    /** system values written by the engine (sys.last_error, sys.errors_count — 7.1; more in 5.2.9); read-only */
+    /** virtual system variable computed by the engine (5.2.9); read-only */
     public const SYS = 'sys';
-    public const READ_ONLY = [self::OBJECT_BEFORE, self::SYS];
+    /** virtual process constants from definition.constants (5.2.9); read-only */
+    public const CONFIG = 'config';
+    /** names that cannot be declared as process variables (5.2.9) */
+    public const RESERVED = [self::OBJECT, self::OBJECT_BEFORE, self::SYS, self::CONFIG];
+    /** reserved names that cannot be written at all ("object" may be modified and saved) */
+    public const READ_ONLY = [self::OBJECT_BEFORE, self::SYS, self::CONFIG];
+    /** fields of sys.* (5.2.9 §4.1), including the handled-error fields of 7.1 */
+    public const SYS_FIELDS = [
+        'execution_id', 'parent_execution_id', 'process_id', 'process_name', 'process_version',
+        'event_id', 'trigger', 'depth', 'module', 'record_id', 'event_type', 'changed_fields',
+        'user_id', 'now', 'started_at', 'last_error', 'errors_count',
+    ];
     /** a process variable that is not a CRM record (set_variable, 4.13): never dirty, cannot be saved */
     public const SOURCE_LOCAL = 'local';
     /** a record list of find_records (4.10): {items, count, has_more, ids}; cannot be modified or saved */
@@ -35,6 +48,12 @@ final class ExecutionContext
     /** Runtime info about the step being executed (not persisted, set by the Execution Engine). */
     public ?string $executionId = null;
     public ?int $processId = null;
+    /** sys.* runtime values of the calling execution (5.2.9); not persisted */
+    public string $trigger = '';
+    public string $parentExecutionId = '';
+    public ?string $processName = null;
+    public ?int $processVersion = null;
+    public string $startedAt = '';
     /** audit sequence number of the current step (seq); used e.g. in the idempotency key of child processes */
     public int $stepIndex = 0;
     /** pc of the current instruction and the loop iteration ("2/0" — indexes of nested loops, "" outside loops) */
@@ -46,6 +65,10 @@ final class ExecutionContext
     public ?string $attemptToken = null;
     /** test run: external calls are not made (md/tasks_list/7.6-dry-run.md) */
     public bool $dryRun = false;
+
+    /** @var array<string, mixed> process constants, exposed as config.* (5.2.9) */
+    private array $constants = [];
+    private Clock $clock;
 
     /**
      * @param array<string, mixed> $event
@@ -61,7 +84,9 @@ final class ExecutionContext
         private array $dirty = [],
         public int $depth = 0,
         public readonly EventInfo $eventInfo = new EventInfo(),
+        ?Clock $clock = null,
     ) {
+        $this->clock = $clock ?? new SystemClock();
     }
 
     /**
@@ -98,6 +123,54 @@ final class ExecutionContext
     public function handledErrors(): int
     {
         return (int)($this->variables[self::SYS]['errors_count'] ?? 0);
+    }
+
+    /**
+     * Values of the virtual sys.* variable (5.2.9 §4.1). sys.now is read at the moment of the call;
+     * sys.last_error / sys.errors_count come from the handled-error state of 7.1.
+     *
+     * @return array<string, mixed>
+     */
+    public function systemValues(): array
+    {
+        $stored = is_array($this->variables[self::SYS] ?? null) ? $this->variables[self::SYS] : [];
+        $rawUserId = $this->event['user_id'] ?? $this->event['wps_user_id'] ?? '';
+        $rawRecordId = $this->event['id'] ?? '';
+        $values = [
+            'execution_id' => $this->executionId ?? '',
+            'parent_execution_id' => $this->parentExecutionId,
+            'process_id' => $this->processId ?? 0,
+            'process_name' => $this->processName ?? '',
+            'process_version' => $this->processVersion ?? 0,
+            'event_id' => $this->eventId,
+            'trigger' => $this->trigger,
+            'depth' => $this->depth,
+            'module' => $this->getModule(self::OBJECT) ?? '',
+            'record_id' => is_scalar($rawRecordId) ? (string)$rawRecordId : '',
+            'event_type' => $this->eventInfo->eventType,
+            'changed_fields' => $this->eventInfo->changedFields ?? [],
+            'user_id' => is_scalar($rawUserId) ? (string)$rawUserId : '',
+            'now' => $this->clock->now()->format('Y-m-d H:i:s'),
+            'started_at' => $this->startedAt,
+            'errors_count' => $this->handledErrors(),
+        ];
+        if (array_key_exists('last_error', $stored)) {
+            $values['last_error'] = $stored['last_error'];
+        }
+        return $values;
+    }
+
+    /**
+     * @param array<string, mixed> $constants
+     */
+    public function setConstants(array $constants): void
+    {
+        $this->constants = $constants;
+    }
+
+    public function setClock(Clock $clock): void
+    {
+        $this->clock = $clock;
     }
 
     public static function isReadOnly(string $variable): bool
@@ -148,7 +221,7 @@ final class ExecutionContext
 
     public function hasVariable(string $name): bool
     {
-        return array_key_exists($name, $this->variables);
+        return $name === self::SYS || $name === self::CONFIG || array_key_exists($name, $this->variables);
     }
 
     /**
@@ -156,6 +229,12 @@ final class ExecutionContext
      */
     public function getVariable(string $name): ?array
     {
+        if ($name === self::SYS) {
+            return $this->systemValues();
+        }
+        if ($name === self::CONFIG) {
+            return $this->constants;
+        }
         return $this->variables[$name] ?? null;
     }
 
@@ -184,6 +263,12 @@ final class ExecutionContext
     public function resolve(string $path): array
     {
         [$var, $field] = self::splitPath($path);
+        if ($var === self::SYS) {
+            return self::resolveField($this->systemValues(), $field);
+        }
+        if ($var === self::CONFIG) {
+            return self::resolveField($this->constants, $field);
+        }
         if (!array_key_exists($var, $this->variables)) {
             return [false, null];
         }
@@ -191,13 +276,22 @@ final class ExecutionContext
         if ($field === null) {
             return [$value !== null, $value];
         }
-        if (!is_array($value)) {
-            return [false, null];
+        return self::resolveField(is_array($value) ? $value : [], $field);
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @return array{0: bool, 1: mixed}
+     */
+    private static function resolveField(array $value, ?string $field): array
+    {
+        if ($field === null) {
+            return [true, $value];
         }
         if (array_key_exists($field, $value)) {
             return [true, $value[$field]];
         }
-        // nested fields ("address.city") for non-flat objects
+        // nested fields ("address.city", "sys.last_error.code")
         $current = $value;
         foreach (explode('.', $field) as $segment) {
             if (!is_array($current) || !array_key_exists($segment, $current)) {
@@ -368,11 +462,12 @@ final class ExecutionContext
     }
 
     /**
-     * Copy for a child process: same event and variables, nothing is dirty.
+     * Copy for a child process: same event and variables, nothing is dirty. The child gets its own runtime fields
+     * and constants when the engine starts it (5.2.9).
      */
     public function forChild(): self
     {
-        return new self($this->eventId, $this->event, $this->variables, $this->meta, [], $this->depth + 1, $this->eventInfo);
+        return new self($this->eventId, $this->event, $this->variables, $this->meta, [], $this->depth + 1, $this->eventInfo, $this->clock);
     }
 
     /**
@@ -394,7 +489,7 @@ final class ExecutionContext
     /**
      * @param array<string, mixed> $data
      */
-    public static function fromArray(array $data): self
+    public static function fromArray(array $data, ?Clock $clock = null): self
     {
         $dirty = [];
         foreach ((array)($data['dirty'] ?? []) as $var => $fields) {
@@ -410,6 +505,7 @@ final class ExecutionContext
             dirty: $dirty,
             depth: (int)($data['depth'] ?? 0),
             eventInfo: EventInfo::fromArray(is_array($data['event_info'] ?? null) ? $data['event_info'] : []),
+            clock: $clock,
         );
     }
 }

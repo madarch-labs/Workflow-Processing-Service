@@ -1,14 +1,19 @@
 # Справочник API: эндпоинты
 
-Все 28 эндпоинтов API WPS: роли, параметры, примеры запросов и ответов.
+Все 55 маршрутов API WPS (54 под `/api` и `/metrics`): роли, параметры, тела запросов, ответы, коды ошибок и примеры.
 
 <!-- lang-switch -->
 [🇬🇧 English](../../en/06-api-reference/endpoints.md) | 🇷🇺 Русский
 <!-- /lang-switch -->
 
 В примерах используются `http://localhost:9501` и `$TOKEN` из раздела [Аутентификация](index.md#аутентификация).
-Ответы получены на работающем стенде и сокращены (`…`). Общий формат ответа (`success`, `data`, `error`, `meta`) описан в
-разделе [Основы API](index.md).
+Ответы получены на работающем стенде (режим mock-CRM, 27.10.2026) и сокращены (`…`). Общий формат ответа (`success`, `data`,
+`error`, `meta`), пагинация и полный список кодов ошибок — в разделе [Основы API](index.md).
+
+Каждый маршрут реализован отдельным классом в `back/src/Controllers/**` с атрибутом `#[Route(uri, method)]`; права
+доступа — в `Wps\Auth\AccessPolicy` (см. [Роли](index.md#роли)). Ошибки, общие для всех защищённых маршрутов (`401` без
+токена или с просроченным токеном, `403` для чужой роли, `400` для некорректного JSON, `404 NOT_FOUND` для неизвестного
+маршрута), в описаниях ниже не повторяются.
 
 ## Сводка
 
@@ -63,6 +68,7 @@
 | `GET` | [`/api/dictionaries/event-types`](#get-apidictionariesevent-types) | любая | Типы событий для `trigger_on` |
 | `GET` | [`/api/dictionaries/preload-sources`](#get-apidictionariespreload-sources) | любая | Источники предзагрузки |
 | `GET` | [`/api/dictionaries/casts`](#get-apidictionariescasts) | любая | Типы приведения для условий (`cast`) |
+| `GET` | [`/api/dictionaries/system-variables`](#get-apidictionariessystem-variables) | любая | Системные переменные `sys.*` |
 | `GET` | [`/api/dictionaries/delivery-policies`](#get-apidictionariesdelivery-policies) | любая | Политики доставки внешних действий (`delivery`) |
 | `GET` | [`/api/dictionaries/secret-kinds`](#get-apidictionariessecret-kinds) | любая | Виды секретов и их поля |
 | `GET` | [`/api/dictionaries/mail-transports`](#get-apidictionariesmail-transports) | admin, editor | Транспорты почты для `send_email` |
@@ -97,7 +103,8 @@
   "definition": {
     "conditions": [ { "field": "object.status", "operator": "equals", "value_type": "static", "value": "Active" } ],
     "preload": [ { "var": "v1", "source": "object_field", "module": "Accounts", "by_field": "id", "value": "object.account_id" } ],
-    "actions": [ { "type": "modify", "target": "v1.rating", "change_type": "set_value", "value": "VIP", "save_to_crm": true } ]
+    "actions": [ { "type": "modify", "target": "v1.rating", "change_type": "set_value", "value": "VIP", "save_to_crm": true } ],
+    "constants": { "vip_threshold": 100000 }
   },
   "created_at": "2026-10-15T07:49:36+00:00",
   "updated_at": "2026-10-15T07:49:36+00:00"
@@ -113,18 +120,31 @@
 | `run_once` | Не больше одного запуска для записи CRM (`object_type` + `id` объекта) |
 | `trigger_on` | Типы событий CRM, на которые запускается процесс: подмножество `create`, `update`, `delete`, по умолчанию `["create", "update"]`; `[]` — только вручную. У ведомых процессов игнорируется, ручной запуск его не проверяет. См. [Тип события](../03-user-guide/triggers-and-conditions.md#тип-события-и-поле-запускать-при-trigger_on) |
 | `version` | Увеличивается при каждом `PUT`; выполнения хранят версию, с которой работали |
+| `definition.constants` | Константы процесса `имя → значение` (скаляр или список скаляров), читаются как `config.<имя>`; см. [Системные переменные и константы](../03-user-guide/change-types-and-expressions.md#системные-переменные-и-константы). Без констант API отдаёт `"constants": []` (пустой объект PHP сериализуется как массив) |
 | `definition` | `conditions` (строка условия: `field`, `operator`, `value_type`, `value`, необязательные `cast`, `cast_options`, `on_cast_error` — см. [Тип сравнения (cast)](../03-user-guide/triggers-and-conditions.md#тип-сравнения-cast)), `preload`, `actions` — см. [Триггеры и условия](../03-user-guide/triggers-and-conditions.md), [Действия](../03-user-guide/actions.md), [Типы изменений и выражения](../03-user-guide/change-types-and-expressions.md). Элементы `actions` могут быть блоками с вложенными списками (`{"type":"condition","branches":[{"conditions":[…],"actions":[…]}],"else":[…]}`); у любого шага — необязательные `id` и `name`, см. [Вложенные блоки](../03-user-guide/actions.md#вложенные-блоки-и-поля-шага), а также `on_error` и `retry`, см. [Ошибки шага](../03-user-guide/actions.md#ошибки-шага-on_error-и-повторы) |
 
 ### `Execution` и `ExecutionAction`
 
 ```json
 {
-  "id": "7a0d6f22-aa92-4fef-ac54-5674b6b138eb", "process_id": 9, "process_name": "API doc test", "process_version": 2,
-  "parent_execution_id": null, "trigger": "manual", "event_id": "manual-ce71f9d2-…",
-  "object_type": "Tasks", "object_id": "T-1", "status": "completed", "retry_count": 0, "handled_errors": 0, "error_message": null,
-  "started_at": "2026-10-15T08:02:39+00:00", "finished_at": "2026-10-15T08:02:39+00:00", "duration_ms": 3
+  "id": "17ab587a-8751-4ec6-aff2-86829ee3c18d", "process_id": 3786, "process_name": "API doc demo", "process_version": 1,
+  "parent_execution_id": null, "trigger": "manual", "event_id": "manual-784844a3-fcec-4011-9817-e53f4ca04950",
+  "object_type": "Tasks", "object_id": "T-doc-1", "status": "completed", "retry_count": 0, "handled_errors": 0,
+  "waiting_until": null, "wait_reason": null, "error_message": null,
+  "started_at": "2026-10-27T19:27:31+00:00", "finished_at": "2026-10-27T19:27:32+00:00", "duration_ms": 43
 }
 ```
+
+| Поле | Описание |
+|---|---|
+| `id` | UUID выполнения |
+| `process_id`, `process_name`, `process_version` | процесс и версия определения, с которой шло выполнение |
+| `parent_execution_id` | выполнение-родитель (для `trigger: child`), иначе `null` |
+| `event_id` | id сообщения Redis Stream; у ручного запуска — `manual-<uuid>`, у ведомого — id события родителя |
+| `object_type`, `object_id` | модуль и id записи CRM из события |
+| `retry_count` | число повторов выполнения после временных ошибок |
+| `error_message` | текст ошибки у `failed` / `cancelled`, иначе `null` |
+| `duration_ms` | длительность от `started_at` до `finished_at`; `null`, пока выполнение не завершилось |
 
 - `trigger`: `stream` (событие CRM) | `manual` | `child`.
 - `status`: `running` | `retrying` | `waiting` | `completed` | `failed` | `cancelled`. У ожидающего выполнения
@@ -142,7 +162,9 @@
 }
 ```
 
-- `action_type`: `preload` | `modify` | `save_object` | `start_process` (или свой тип).
+- `action_type`: значение `type` шага — действие или блок из справочника [`action-types`](#get-apidictionariesaction-types)
+  (`preload`, `modify`, `save_object`, `set_variable`, `find_records`, `update_records`, `delay`, `send_email`, `http_request`,
+  `assign`, `notify`, `link_records`, `unlink_records`, `start_process`, `condition`, `stop_process`, `foreach`) или свой тип.
 - `status`: `success` | `waiting` | `failed` | `skipped`. `attempts` = 1 + число повторов.
 - `step_index` — порядковый номер записи аудита (`seq`); `pc` — номер инструкции программы; `step_path` — место шага в
   определении (`actions[1].branches[0].actions[0]`); `iteration` — номер итерации цикла `foreach`, во вложенных циклах `"2/0"` (`""` вне циклов);
@@ -165,11 +187,39 @@
 - `action_type: delay` — `request_data`: `mode`, поля срока, `due_at` (UTC), `due_at_local`; `result_data`: `waited`,
   `waited_seconds`, `inline` (пауза в корутине), `lateness_ms` (после парковки), `past_due` (момент уже прошёл). Пока
   выполнение ждёт, шаг в статусе `waiting`. См. [Пауза](../03-user-guide/actions.md#пауза-delay).
+- `action_type: http_request` (подробно — [Действия → HTTP-запрос](../03-user-guide/actions.md#http-запрос)): `request_data` —
+  `method`, `url`, `headers` (только имена), `body_size`, `body_preview`, `delivery`; `result_data` — `status`, `duration_ms`,
+  `var`, `replayed`, `response`. Переменная `var` в `context.variables`: `status`, `ok`, `headers`, `body` / `body_text` /
+  `body_truncated` и поля `response.extract`; в `context.meta.<var>.source` — `http`. Пример записи шага:
+
+  ```json
+  {"id":8686,"step_index":1,"action_type":"http_request","status":"success","attempts":1,"duration_ms":7,
+   "request_data":{"url":"http://mock:9502/mock/echo/doc","method":"POST","headers":["Content-Type","Accept","User-Agent"],
+                   "delivery":"at_most_once","body_size":18,"body_preview":"{\"task\":\"T-doc-1\"}"},
+   "result_data":{"var":"erp","status":200,"replayed":false,"duration_ms":7,
+                  "response":{"ok":true,"status":200,"headers":{"content-type":"application/json",…},"body":{"data":{…}}}},
+   "pc":1,"step_path":"actions[1]","iteration":"","step_id":"notify_erp","error_code":null,"handled":null}
+  ```
+
+- `action_type: link_records` / `unlink_records` (подробно — [Действия → Связать / отвязать записи](../03-user-guide/actions.md#связать--отвязать-записи)):
+  `request_data` — `record`, `link`, `module`, `record_id`, `related_module`, `related_ids` (первые 100), `related_count`, для
+  `link_records` — `fields`, `batches`; `result_data` — `linked`, `updated`, `not_found`, `warnings` (для `unlink_records` —
+  `removed`, `not_linked`), `missing_paths`. Без `id` у записи или без связанных id шаг `skipped`. Нужен контракт CRM 2.0
+  (`relationships`), иначе `CRM_CAPABILITY_MISSING`.
+- `action_type: find_records` (подробно — [Действия → Найти записи](../03-user-guide/actions.md#найти-записи)): `request_data` — `var`,
+  `limit`, `module` / `related_to`, `filter`, `sort`, `fields`, в режиме модуля — `crm_filter` (что ушло в CRM) и `crm_requests`;
+  `result_data` — `count`, `has_more`, первые 100 `ids`, `reason`, `warnings`. Переменная-список `{items, count, has_more, ids}` в
+  `context.variables`, в `context.meta.<имя>.source` — `list`.
+- `action_type: set_variable` (подробно — [Действия → Записать в переменную процесса](../03-user-guide/actions.md#записать-в-переменную-процесса)):
+  `request_data` — `var`, `fields` (`имя → {change_type, value}`); `result_data.fields.<имя>` — `old_value`, `new_value`.
+  Переменная в `context.variables`, в `context.meta.<имя>.source` — `local`.
 
 - У упавшего шага `error_code` (`HTTP_503`, `TIMEOUT`, `CONFIG`, `UNKNOWN_OUTCOME` …) и `handled` (`null` — ошибка
   остановила выполнение, `continue`, `goto`, `item_continue` — цикл `foreach` перешёл к следующему элементу); `result_data` содержит `error_class`, `recoverable`, `error_code`, `error`
   (`{code, message, transient, http_status?, retry_after?}`), `details`, при `goto` — `goto` (id цели). Внешние действия (`send_email`, `http_request`, `notify`) добавляют
-  `idempotency_key` и `replayed` (`true` — ответ взят из журнала побочных эффектов без повторного вызова).
+  в `result_data` `replayed` (`true` — ответ взят из журнала побочных эффектов без повторного вызова). Ключ идемпотентности
+  `{execution_id}:{effect_key}` в аудит не пишется: `http_request` передаёт его внешней системе заголовком `Idempotency-Key`
+  (по умолчанию для `POST` / `PATCH`).
 
 ### `ProcessObjectRun` (отметка однократного запуска)
 
@@ -357,6 +407,17 @@ Editor или admin. Тело: `{ name, object_type, is_child, is_active?, prior
 `The process runs only on delete: the deleted record cannot be saved` (поле `definition.actions[k]`). Definition проверяется в порядке выполнения,
 все ошибки возвращаются сразу.
 
+| Поле тела | Тип | Обязательно | Проверка и сообщение об ошибке (`422`) |
+|---|---|---|---|
+| `name` | string | да | непустое после `trim`, ≤ 255 символов — `Process name is required`, `Process name is too long (max 255)` |
+| `object_type` | string | да | `^[A-Za-z][A-Za-z0-9_]*$` — `Object type (CRM module) is required` |
+| `is_child` | bool | нет (`false`) | `true` / `false` (также `1` / `0`, `"true"` / `"false"`) — `Must be true or false` |
+| `is_active` | bool | нет (`true`) | как `is_child` |
+| `priority` | int | нет (`0`) | целое или строка из цифр — `Priority must be an integer` |
+| `run_once` | bool | нет (`false`) | как `is_child` |
+| `trigger_on` | string[] | нет (`["create","update"]`) | подмножество `create`, `update`, `delete`; `[]` — только ручной запуск |
+| `definition` | object | да | `Definition must be an object`; `preload` / `actions` — `Must be an array`; `conditions` — массив или группа условий; другой ключ верхнего уровня — `Unknown key "x" (allowed: conditions, preload, actions, constants)` (поле `definition.x`); `constants` — см. [Системные переменные и константы](../03-user-guide/change-types-and-expressions.md#системные-переменные-и-константы) |
+
 ```bash
 curl -s -X POST http://localhost:9501/api/processes -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{
   "name": "API doc test", "object_type": "Tasks", "is_child": false, "is_active": false, "priority": 5,
@@ -376,20 +437,38 @@ curl -s -X POST http://localhost:9501/api/processes -H "Authorization: Bearer $T
 `"warnings":[{"field":"definition.actions[1].value","message":"Variable \"task\" may be undefined here: it is set only in some branches"}]`.
 Ошибки:
 
+```bash
+curl -s -X POST http://localhost:9501/api/processes -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{
+  "name": "", "object_type": "1x", "is_child": "yes", "trigger_on": ["link"], "priority": "a",
+  "definition": {"constants": {"api_key": "x"},
+                 "conditions": [{"field":"v9.x","operator":"equals","value_type":"static","value":"1"}],
+                 "actions": [{"type":"modify","target":"sys.now","change_type":"calculate","value":"foo(1)"}]}}'
+```
+
 ```json
 {"success":false,"data":null,"error":{"code":"VALIDATION_ERROR","message":"Validation failed","details":[
   {"field":"name","message":"Process name is required"},
+  {"field":"object_type","message":"Object type (CRM module) is required"},
+  {"field":"is_child","message":"Must be true or false"},
+  {"field":"trigger_on","message":"Unknown event type \"link\" (allowed: create, update, delete)"},
+  {"field":"priority","message":"Priority must be an integer"},
+  {"field":"definition.constants.api_key","message":"Constant \"api_key\" looks like a secret; use a secret reference (secret://name)"},
   {"field":"definition.conditions[0].field","message":"Variable \"v9\" is not defined at this point"},
-  {"field":"definition.actions[0].value","message":"Unknown function \"foo\""}]}}
+  {"field":"definition.actions[0].value","message":"Unknown function \"foo\""},
+  {"field":"definition.actions[0].target","message":"Variable \"sys\" is read-only"}]}}
 ```
 
-- `422 VALIDATION_ERROR` — также `Process 6 "…" is not a child process`, `Process 42 not found`, `A process cannot start itself`.
+- `422 VALIDATION_ERROR` — также `Process 6 "…" is not a child process`, `Process 42 not found`, `A process cannot start itself`;
+  секрет вне поля учётных данных — `Secrets can only be used in credential fields`, несуществующий секрет — `Secret "x" does not exist`;
+  в `http_request` схема и хост URL должны быть литералом — `Scheme and host of the URL must be literal (https://host/...)`.
 - `422 CYCLE_DETECTED` — см. `PUT`.
 - `400 BAD_REQUEST` — тело не является корректным JSON или это JSON-скаляр.
 
 ### `PUT /api/processes/{id}`
 
-Editor или admin. Тело такое же, как у `POST` (процесс целиком); если `trigger_on` не передан, сохраняется текущее значение. `version` увеличивается. Кэш процессов для старого и нового
+Editor или admin. Тело такое же, как у `POST` (процесс целиком), `version` увеличивается. Это полная замена: пропущенные
+`is_active`, `priority` и `run_once` получают значения по умолчанию (`true`, `0`, `false`), а не сохраняют прежние. Исключение —
+`trigger_on`: если ключа нет, сохраняется текущее значение (старые клиенты его не знают). Кэш процессов для старого и нового
 типа объекта сбрасывается, поэтому следующее событие использует новое definition; идущие выполнения сохраняют свою версию.
 
 ```bash
@@ -400,7 +479,15 @@ curl -s -X PUT http://localhost:9501/api/processes/9 -H "Authorization: Bearer $
                  "actions":[{"type":"modify","target":"object.description","change_type":"set_value","value":"closed by WPS","save_to_crm":false}]}}'
 ```
 
-`200 Process` (`"version": 2`), при необходимости с `warnings`, как у `POST`. Ошибки: `404 PROCESS_NOT_FOUND`, `422 VALIDATION_ERROR` (в том числе при попытке сделать
+`200 Process` (`"version": 2`), при необходимости с `warnings`, как у `POST`. Реальный ответ с предупреждением (переменная
+задаётся только в одной ветке блока `condition`):
+
+```json
+{"success":true,"data":{"id":3786,"name":"API doc demo",…,"version":2,"definition":{…},
+ "warnings":[{"field":"definition.actions[1].value","message":"Variable \"note\" may be undefined here: it is set only in some branches"}]},"error":null}
+```
+
+ Ошибки: `404 PROCESS_NOT_FOUND`, `422 VALIDATION_ERROR` (в том числе при попытке сделать
 процессом верхнего уровня ведомый процесс, который запускают другие), `422 CYCLE_DETECTED`:
 
 ```json
@@ -420,7 +507,9 @@ curl -s -X PUT http://localhost:9501/api/processes/9 -H "Authorization: Bearer $
 curl -s -X DELETE http://localhost:9501/api/processes/10 -H "Authorization: Bearer $TOKEN"
 ```
 
-`200 {"deleted": true}`. Ошибки: `404 PROCESS_NOT_FOUND`, `409 PROCESS_HAS_WAITING_EXECUTIONS` (без `force=true`):
+`200 {"deleted": true}`; повторное удаление — `404 PROCESS_NOT_FOUND`. Проверки идут в порядке: процесс существует →
+нет ожидающих выполнений (или `force=true`) → его не запускают другие процессы. Ошибки: `404 PROCESS_NOT_FOUND`,
+`409 PROCESS_HAS_WAITING_EXECUTIONS` (без `force=true`):
 
 ```json
 {"success":false,"data":null,"error":{"code":"PROCESS_HAS_WAITING_EXECUTIONS",
@@ -455,18 +544,25 @@ Editor или admin. Ручной запуск с тестовым объект�
 и `context.event_info` выполнения. Без них запуск считается событием старого формата (`object_before` = `null`).
 
 ```bash
-curl -s -X POST http://localhost:9501/api/processes/9/run -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"object":{"id":"T-1","module":"Tasks","status":"Done"}}'
+curl -s -X POST http://localhost:9501/api/processes/3786/run -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"object":{"id":"T-doc-1","status":"Done","event_type":"update","before":{"status":"Open"},"changed_fields":["status"]}}'
+```
+
+```json
+{"success":true,"data":{"conditions_met":true,"execution_id":"17ab587a-8751-4ec6-aff2-86829ee3c18d",
+ "conditions":[{"field":"object.status","operator":"equals","value_type":"static","value":"Done","actual":"Done","expected":"Done","result":true}],
+ "run_once_applied":true,"run_once_blocked":false,"previous_execution_id":null},"error":null}
 ```
 
 | Результат | HTTP | `data` |
 |---|---|---|
-| Условия выполнены, выполнение создано | `201` | `{"conditions_met":true,"execution_id":"7a0d6f22-…","conditions":[ConditionTrace],"run_once_applied":true,"run_once_blocked":false,"previous_execution_id":null}` |
-| Условия не выполнены | `200` | `{"conditions_met":false,"execution_id":null,"conditions":[{"field":"object.status",…,"actual":"Open","expected":"Done","result":false}],…}` |
-| Заблокировано однократным запуском | `200` | `{"conditions_met":true,"execution_id":null,"conditions":[],"run_once_applied":true,"run_once_blocked":true,"previous_execution_id":"7a0d6f22-…"}` |
+| Условия выполнены, выполнение создано | `201` | `{"conditions_met":true,"execution_id":"17ab587a-…","conditions":[ConditionTrace],"run_once_applied":true,"run_once_blocked":false,"previous_execution_id":null}` |
+| Условия не выполнены | `200` | `{"conditions_met":false,"execution_id":null,"conditions":[{"field":"object.status",…,"actual":"Open","expected":"Done","result":false}],"run_once_applied":false,"run_once_blocked":false,"previous_execution_id":null}` |
+| Заблокировано однократным запуском (даже с `force: true`) | `200` | `{"conditions_met":true,"execution_id":null,"conditions":[],"run_once_applied":true,"run_once_blocked":true,"previous_execution_id":"17ab587a-…"}` |
 | Строгое условие не смогло привести значение (`on_cast_error: "error"`) | `200` | `{"conditions_met":false,"execution_id":null,"conditions":[{…,"cast_error":{"side":"actual","message":"…"}}],…,"error":"CAST_ERROR","error_message":"Condition on object.amount: Value \"12.5\" is not an integer"}` |
 
-`run_once_applied` равен `true`, когда у процесса включён `run_once` и у объекта есть `id`. За ходом выполнения следите через
+`run_once_applied` равен `true`, когда проверка однократного запуска выполнялась: у процесса включён `run_once`, у объекта есть
+`id` и условия выполнены (или `force: true`). Если условия не выполнены, отметка не проверяется и поле равно `false`. За ходом выполнения следите через
 `GET /api/executions/{execution_id}`. Ошибки: `404 PROCESS_NOT_FOUND`, `422 VALIDATION_ERROR`
 (`object`: «A JSON object is required»; `object.id`: «The object must have an \"id\"»).
 
@@ -477,11 +573,15 @@ curl -s -X POST http://localhost:9501/api/processes/9/run -H "Authorization: Bea
 `page`, `per_page`. Сортировка — `started_at DESC`.
 
 ```bash
-curl -s 'http://localhost:9501/api/processes/9/executions?status=completed' -H "Authorization: Bearer $TOKEN"
+curl -s 'http://localhost:9501/api/processes/3786/executions?status=completed' -H "Authorization: Bearer $TOKEN"
 ```
 
 ```json
-{"success":true,"data":[{"id":"7a0d6f22-…","process_id":9,"process_name":"API doc test","process_version":2,"parent_execution_id":null,"trigger":"manual","event_id":"manual-ce71f9d2-…","object_type":"Tasks","object_id":"T-1","status":"completed","retry_count":0,"error_message":null,"started_at":"…","finished_at":"…","duration_ms":3}],"error":null,"meta":{"page":1,"per_page":20,"total":1}}
+{"success":true,"data":[{"id":"17ab587a-8751-4ec6-aff2-86829ee3c18d","process_id":3786,"process_name":"API doc demo","process_version":1,
+ "parent_execution_id":null,"trigger":"manual","event_id":"manual-784844a3-…","object_type":"Tasks","object_id":"T-doc-1",
+ "status":"completed","retry_count":0,"handled_errors":0,"waiting_until":null,"wait_reason":null,"error_message":null,
+ "started_at":"2026-10-27T19:27:31+00:00","finished_at":"2026-10-27T19:27:32+00:00","duration_ms":43}],
+ "error":null,"meta":{"page":1,"per_page":20,"total":1}}
 ```
 
 Ошибки: `404 PROCESS_NOT_FOUND`; `422` («Status must be one of: running, retrying, waiting, completed, failed, cancelled», «Invalid date»).
@@ -492,22 +592,28 @@ curl -s 'http://localhost:9501/api/processes/9/executions?status=completed' -H "
 `page`, `per_page`.
 
 ```bash
-curl -s http://localhost:9501/api/processes/9/runs -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:9501/api/processes/3786/runs -H "Authorization: Bearer $TOKEN"
 ```
 
 ```json
-{"success":true,"data":[{"process_id":9,"object_type":"Tasks","object_id":"T-1","execution_id":"7a0d6f22-…","event_id":"manual-ce71f9d2-…","trigger":"manual","created_at":"…","blocked_count":1,"last_blocked_at":"…"}],"error":null,"meta":{"page":1,"per_page":20,"total":1}}
+{"success":true,"data":[{"process_id":3786,"object_type":"Tasks","object_id":"T-doc-1","execution_id":"17ab587a-8751-4ec6-aff2-86829ee3c18d",
+ "event_id":"manual-784844a3-…","trigger":"manual","created_at":"2026-10-27T19:27:31+00:00","blocked_count":1,
+ "last_blocked_at":"2026-10-27T19:27:32+00:00"}],"error":null,"meta":{"page":1,"per_page":20,"total":1}}
 ```
+
+`blocked_count` — сколько раз запуск был заблокирован отметкой (здесь — повторный ручной запуск с `force: true`).
+Ошибки: `404 PROCESS_NOT_FOUND`.
 
 ### `DELETE /api/processes/{id}/runs/{object_type}/{object_id}`
 
 Editor или admin. Снимает отметку: следующее событие этой записи снова запустит процесс. Сегменты пути кодируйте для URL.
 
 ```bash
-curl -s -X DELETE http://localhost:9501/api/processes/9/runs/Tasks/T-1 -H "Authorization: Bearer $TOKEN"
+curl -s -X DELETE http://localhost:9501/api/processes/3786/runs/Tasks/T-doc-1 -H "Authorization: Bearer $TOKEN"
 ```
 
-`200 {"deleted": true}`. Ошибки: `404 PROCESS_NOT_FOUND`; `404 NOT_FOUND` («Process 9 has no run mark for Tasks T-1»).
+`200 {"deleted": true}`; снятие отметки пишется в лог (`run_once mark reset`, с e-mail пользователя). Ошибки:
+`404 PROCESS_NOT_FOUND`; `404 NOT_FOUND` («Process 3786 has no run mark for Tasks T-doc-1») — например, при повторном вызове.
 
 ## Выполнения
 
@@ -528,6 +634,9 @@ curl -s 'http://localhost:9501/api/executions?status=waiting&due_before=2026-11-
 ```
 
 Ошибки: `422` («Status must be one of: running, retrying, waiting, completed, failed, cancelled», `due_before` — «Invalid date»).
+В отличие от журнала процесса, `date_from` / `date_to` здесь заранее не проверяются: нераспознанная дата
+(`date_from=garbage`) сейчас приводит к `500 INTERNAL_ERROR`. Нечисловой `process_id` даёт пустой список. Сортировка —
+`started_at DESC`.
 
 ### `GET /api/executions/{id}`
 
@@ -535,7 +644,7 @@ curl -s 'http://localhost:9501/api/executions?status=waiting&due_before=2026-11-
 
 | Поле | Описание |
 |---|---|
-| `context` | `{event, variables, meta, event_info, conditions, stop?}` — итоговый снимок; во время выполнения — живое состояние из Redis. `event` и `variables.object` — запись без служебных ключей события; `variables.object_before` — старые значения изменённых полей или `null`; `event_info` — `{event_type, changed_fields, has_before, origin, legacy}` (`changed_fields: null` — неизвестно, `origin` — `wps_origin` события); `stop` — `{status, code, message}`, если выполнение завершил шаг `stop_process` |
+| `context` | `{event, variables, meta, event_info, conditions, system, frames?, stop?}` — итоговый снимок (колонка `executions.context_snapshot`). `event` и `variables.object` — запись без служебных ключей события; `variables.object_before` — старые значения изменённых полей или `null`; `meta.<переменная>` — `{module, source}` (`event`, `event_before`, `preload`, `local`, `list`, `http`, `loop` …); `event_info` — `{event_type, changed_fields, has_before, origin, legacy}` (`changed_fields: null` — неизвестно, `origin` — `wps_origin` события); `conditions` — трасса условий запуска; `system` — значения `sys.*` на момент завершения; `stop` — `{status, code, message}`, если выполнение завершил шаг `stop_process`. Пока выполнение идёт, вместо снимка отдаётся живое состояние из Redis `exec:{id}`, а у ожидающего — состояние из `execution_waits`: в обоих случаях только `event`, `variables`, `meta`, `conditions` |
 | `current_step` | Только во время выполнения: `pc` следующей инструкции программы |
 | `seq` | Только во время выполнения: номер следующей записи аудита |
 | `frames` | Только во время выполнения: фреймы открытых циклов `foreach` (`[]` вне циклов): `begin`, `next`, `end`, `as`, `loop_var`, `module`, `items_key`, `index`, `count`, `audit_seq`, `stats` … — без самих элементов (они в снимке `exec:{id}:loop:{pc}`) |
@@ -543,20 +652,46 @@ curl -s 'http://localhost:9501/api/executions?status=waiting&due_before=2026-11-
 | `actions` | `ExecutionAction[]` по `step_index` |
 | `children` | `Execution[]`, запущенные действием `start_process` этого выполнения |
 
+Пример — выполнение процесса из трёх шагов (`modify` с шаблоном на `sys.*` и `config.*`, `http_request` на мок, `set_variable`),
+запущенного вручную с `event_type`, `before` и `changed_fields`:
+
 ```bash
-curl -s http://localhost:9501/api/executions/7a0d6f22-aa92-4fef-ac54-5674b6b138eb -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:9501/api/executions/17ab587a-8751-4ec6-aff2-86829ee3c18d -H "Authorization: Bearer $TOKEN"
 ```
 
 ```json
-{"success":true,"data":{"id":"7a0d6f22-…","process_id":9,…,"status":"completed",
- "context":{"meta":{"object":{"module":"Tasks","source":"event"},"object_before":{"module":"Tasks","source":"event_before"}},
-            "event":{"id":"T-1","module":"Tasks","status":"Done"},
-            "variables":{"object":{"id":"T-1","module":"Tasks","status":"Done","description":"closed by WPS"},"object_before":null},
-            "event_info":{"event_type":"update","changed_fields":null,"has_before":false,"origin":null,"legacy":true},
-            "conditions":[{"field":"object.status","value":"Done","actual":"Done","result":true,"expected":"Done","operator":"equals","value_type":"static"}]},
- "actions":[{"id":27,"step_index":0,"action_type":"modify","status":"success","attempts":1,…}],
+{"success":true,"data":{"id":"17ab587a-8751-4ec6-aff2-86829ee3c18d","process_id":3786,"process_name":"API doc demo",
+ "process_version":1,"parent_execution_id":null,"trigger":"manual","event_id":"manual-784844a3-…","object_type":"Tasks",
+ "object_id":"T-doc-1","status":"completed","retry_count":0,"handled_errors":0,"waiting_until":null,"wait_reason":null,
+ "error_message":null,"started_at":"2026-10-27T19:27:31+00:00","finished_at":"2026-10-27T19:27:32+00:00","duration_ms":43,
+ "context":{
+   "meta":{"erp":{"module":null,"source":"http"},"object":{"module":"Tasks","source":"event"},
+           "summary":{"module":null,"source":"local"},"object_before":{"module":"Tasks","source":"event_before"}},
+   "event":{"id":"T-doc-1","status":"Done"},
+   "system":{"now":"2026-10-27 19:27:32","depth":0,"module":"Tasks","trigger":"manual","user_id":"","event_id":"manual-784844a3-…",
+             "record_id":"T-doc-1","event_type":"update","process_id":3786,"started_at":"2026-10-27 19:27:31","errors_count":0,
+             "execution_id":"17ab587a-8751-4ec6-aff2-86829ee3c18d","process_name":"API doc demo","changed_fields":["status"],
+             "process_version":1,"parent_execution_id":""},
+   "variables":{"erp":{"ok":true,"status":200,"headers":{…},"body":{"data":{…}}},
+                "object":{"id":"T-doc-1","status":"Done","description":"closed by API doc demo (manual, EU)"},
+                "summary":{"status":200},
+                "object_before":{"status":"Open"}},
+   "conditions":[{"field":"object.status","value":"Done","actual":"Done","result":true,"expected":"Done","operator":"equals","value_type":"static"}],
+   "event_info":{"legacy":false,"origin":null,"event_type":"update","has_before":true,"changed_fields":["status"]}},
+ "actions":[
+   {"id":8685,"step_index":0,"action_type":"modify","status":"success","attempts":1,"started_at":"2026-10-27T19:27:31+00:00","duration_ms":4,
+    "request_data":{"value":"closed by {{ sys.process_name }} ({{ sys.trigger }}, {{ config.region }})","target":"object.description","change_type":"template"},
+    "result_data":{"new_value":"closed by API doc demo (manual, EU)","old_value":null},
+    "error_message":null,"pc":0,"step_path":"actions[0]","iteration":"","step_id":null,"error_code":null,"handled":null},
+   {"id":8686,"step_index":1,"action_type":"http_request","status":"success",…,"step_id":"notify_erp"},
+   {"id":8687,"step_index":2,"action_type":"set_variable","status":"success","attempts":1,"duration_ms":0,
+    "request_data":{"var":"summary","fields":{"status":{"value":"erp.status","change_type":"calculate"}}},
+    "result_data":{"fields":{"status":{"new_value":200,"old_value":null}}},…}],
  "children":[]},"error":null}
 ```
+
+Ключи объектов в `context` и `request_data` идут не в порядке определения: снимок хранится в `jsonb`, который порядок
+ключей не сохраняет.
 
 `404 EXECUTION_NOT_FOUND` (в том числе для id, который не является UUID).
 
@@ -565,10 +700,11 @@ curl -s http://localhost:9501/api/executions/7a0d6f22-aa92-4fef-ac54-5674b6b138e
 Любая роль. Только шаги (`ExecutionAction[]`).
 
 ```bash
-curl -s http://localhost:9501/api/executions/7a0d6f22-aa92-4fef-ac54-5674b6b138eb/actions -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:9501/api/executions/17ab587a-8751-4ec6-aff2-86829ee3c18d/actions -H "Authorization: Bearer $TOKEN"
 ```
 
-`404 EXECUTION_NOT_FOUND`.
+`200`: `{"success":true,"data":[ExecutionAction, …],"error":null}` — те же элементы, что в `actions` у
+`GET /api/executions/{id}`, по `step_index`. `404 EXECUTION_NOT_FOUND` («Execution not-a-uuid not found»).
 
 ### `GET /api/executions/{id}/side-effects`
 
@@ -576,14 +712,17 @@ curl -s http://localhost:9501/api/executions/7a0d6f22-aa92-4fef-ac54-5674b6b138e
 `UNKNOWN_OUTCOME` и повторов ([Надёжность](../04-operations/reliability.md#побочные-эффекты-и-повторы)).
 
 ```bash
-curl -s http://localhost:9501/api/executions/7a0d6f22-aa92-4fef-ac54-5674b6b138eb/side-effects -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:9501/api/executions/17ab587a-8751-4ec6-aff2-86829ee3c18d/side-effects -H "Authorization: Bearer $TOKEN"
 ```
 
 ```json
 {"success":true,"data":[
-  {"effect_key":"3","action_type":"send_email","delivery":"at_most_once","status":"done","attempts":1,
-   "started_at":"2026-10-19T19:40:02+00:00","finished_at":"2026-10-19T19:40:03+00:00","error_message":null}]}
+  {"effect_key":"1","action_type":"http_request","delivery":"at_most_once","status":"done","attempts":1,
+   "started_at":"2026-10-27T19:27:31+00:00","finished_at":"2026-10-27T19:27:31+00:00","error_message":null}],"error":null}
 ```
+
+Сортировка — `started_at`, затем `effect_key`. Ключ идемпотентности, который получила внешняя система, — `{execution_id}:{effect_key}`
+(здесь заголовок `Idempotency-Key: 17ab587a-…:1`).
 
 - `effect_key` — `{pc}`, `{pc}@{iteration}` в циклах, `#{sub}` для нескольких вызовов в шаге.
 - `status`: `started` (вызов начат, исход неизвестен), `done`, `failed`.
@@ -617,22 +756,53 @@ admin, editor. `Secret[]`, отсортированы по имени, у каж
 ### `GET /api/secrets/{name}`
 
 admin, editor. `Secret` + `usages: [{process_id, process_name, path}]` (`path` — поле в определении, например
-`definition.actions[1].auth.token`). Нет секрета — `404 NOT_FOUND`.
+`definition.actions[1].auth.token`). Нет секрета — `404 NOT_FOUND` («Secret "x" not found»).
+
+```bash
+curl -s http://localhost:9501/api/secrets/doc_erp_token -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"success":true,"data":{"name":"doc_erp_token","kind":"bearer","description":"ERP API","mask":"****cdef","allowed_hosts":[],
+ "version":1,"created_at":"2026-10-27T19:28:29+00:00","updated_at":"2026-10-27T19:28:29+00:00","last_used_at":null,
+ "usages":[{"process_id":3786,"process_name":"API doc demo","path":"definition.actions[0].auth.token"}]},"error":null}
+```
 
 ### `POST /api/secrets`
 
 admin. Тело `{ name, kind?, value, description?, allowed_hosts? }` → `201 Secret` (без значения).
 
+| Поле | Тип | Описание |
+|---|---|---|
+| `name` | string | `^[a-z][a-z0-9_]{1,63}$`; на него ссылаются процессы (`secret://name`), поменять нельзя |
+| `kind` | string | вид из [`secret-kinds`](#get-apidictionariessecret-kinds), по умолчанию `generic`; поменять нельзя |
+| `value` | string \| object | строка (не короче 4 символов) или объект для составных видов (`basic_auth`, `oauth2_client`) |
+| `description` | string | необязательное описание |
+| `allowed_hosts` | string[] | хосты, на которые разрешено отправлять секрет (`http_request`); пусто — без ограничения |
+
 ```bash
 curl -s -X POST http://localhost:9501/api/secrets -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"erp_basic","kind":"basic_auth","value":{"username":"erp","password":"p@ssw0rd"}}'
+  -d '{"name":"doc_basic","kind":"basic_auth","value":{"username":"erp","password":"p@ssw0rd"},"description":"ERP basic","allowed_hosts":["erp.example.com"]}'
+```
+
+```json
+{"success":true,"data":{"name":"doc_basic","kind":"basic_auth","description":"ERP basic","mask":{"username":"erp","password":"********"},
+ "allowed_hosts":["erp.example.com"],"version":1,"created_at":"2026-10-27T19:28:19+00:00","updated_at":"2026-10-27T19:28:19+00:00",
+ "last_used_at":null},"error":null}
 ```
 
 Ошибки валидации (`422`, поле → сообщение): `name` — `Secret name must match ^[a-z][a-z0-9_]{1,63}$`; `kind` —
 `Unknown secret kind (allowed: …)`; `value` — `Secret value is required`, `Secret value is too short (min 4 characters)`,
 `Value must be a string`, `Value must be an object for kind "basic_auth"`, `Invalid mailer DSN (…)`,
 `Value must be an http(s) URL`; `value.password` — `Field "password" is required for kind "basic_auth"`;
-`value.token_url` — `Token URL must use https`; `allowed_hosts[0]` — `Invalid host "…"`. Имя занято — `409 SECRET_EXISTS`.
+`value.token_url` — `Token URL must use https`; `allowed_hosts[0]` — `Invalid host "…"`. Имя занято — `409 SECRET_EXISTS`
+(«Secret "doc_basic" already exists»). Пример ответа `422`:
+
+```json
+{"success":false,"data":null,"error":{"code":"VALIDATION_ERROR","message":"Validation failed","details":[
+  {"field":"name","message":"Secret name must match ^[a-z][a-z0-9_]{1,63}$"},
+  {"field":"kind","message":"Unknown secret kind (allowed: generic, smtp_dsn, basic_auth, bearer, api_key, oauth2_client, webhook_url, telegram_bot)"}]}}
+```
 
 ### `PUT /api/secrets/{name}`
 
@@ -640,15 +810,30 @@ admin. Тело `{ value?, description?, allowed_hosts? }` → `Secret`. Нов�
 поменять нельзя (`422`: `A secret cannot be renamed (processes refer to it by name)`,
 `The kind of a secret cannot be changed`). Воркеры подхватывают новое значение в пределах `SECRETS_CACHE_TTL`.
 
+```bash
+curl -s -X PUT http://localhost:9501/api/secrets/doc_basic -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"value":{"username":"erp","password":"n3w-pass"},"description":"ERP basic v2"}'
+```
+
+`200`: тот же `Secret` с `"version":2` и `"description":"ERP basic v2"`.
+
 ### `DELETE /api/secrets/{name}`
 
 admin. `{ "deleted": true }`. Если на секрет ссылаются неудалённые процессы — `409 SECRET_IN_USE`, в `details` —
-`{ "usages": [{process_id, process_name, path}] }`.
+`{ "usages": [{process_id, process_name, path}] }`:
+
+```json
+{"success":false,"data":null,"error":{"code":"SECRET_IN_USE","message":"Secret \"doc_erp_token\" is used by processes",
+ "details":{"usages":[{"process_id":3786,"process_name":"API doc demo","path":"definition.actions[0].auth.token"}]}}}
+```
+
+Мягко удалённые процессы ссылками не считаются. Нет секрета — `404 NOT_FOUND`.
 
 ### `POST /api/secrets/rotate`
 
 admin. Перешифровывает текущим ключом все секреты, зашифрованные прежним (`WPS_SECRETS_KEY_PREVIOUS`) →
-`{ "reencrypted": N }`. Строка, которую нельзя расшифровать ни одним ключом, — `409 ROTATION_FAILED`.
+`{ "reencrypted": N }` (`0`, если всё уже зашифровано текущим ключом). Строка, которую нельзя расшифровать ни одним ключом, —
+`409 ROTATION_FAILED`. Ключ генерирует `php bin/secrets-key.php` (см. [Безопасность](../04-operations/security.md)).
 
 ## Почта
 
@@ -666,7 +851,14 @@ curl -s -X POST http://localhost:9501/api/mail/test -H "Authorization: Bearer $T
 {"success":true,"data":{"sent":true,"to":"you@company.ru","message_id":"27xdaVLBnTJG95wPWc7fmU"},"error":null}
 ```
 
-Ошибка отправки — тоже `200`: `{ "sent": false, "error": "<текст ошибки SMTP, пароль замаскирован>", "error_code": "SMTP_AUTH" }`.
+Письмо уходит от `MAILER_FROM` с темой «WPS: проверка отправки почты» (на стенде его ловит Mailpit, http://localhost:8025).
+Ошибка отправки — тоже `200`: `{ "sent": false, "error": "<текст ошибки SMTP, пароль замаскирован>", "error_code": "SMTP_AUTH" }`;
+ошибка конфигурации транспорта — `error_code: null`:
+
+```json
+{"success":true,"data":{"sent":false,"error":"Secret \"nope\" not found","error_code":null},"error":null}
+```
+
 Неверный адрес — `422` (`to`: `Invalid email address`). Роль editor или viewer — `403`.
 
 ## Уведомления
@@ -686,13 +878,47 @@ curl -s -X POST http://localhost:9501/api/notify/test -H "Authorization: Bearer 
 {"success":true,"data":{"sent":true,"result":{"channels":[{"channel":"telegram","status":"success","deliveries":[{"connection":"secret://sales_bot","chat_id":"-1001234567890","message_id":42,"replayed":false}]}]}},"error":null}
 ```
 
+Slack (вебхук из секрета вида `webhook_url`) и колокольчик CRM — ответы со стенда:
+
+```json
+{"success":true,"data":{"sent":true,"result":{"channels":[{"channel":"slack","status":"success","deliveries":[{"connection":"secret://test_slack","status":200,"replayed":false}]}]}},"error":null}
+{"success":true,"data":{"sent":true,"result":{"channels":[{"channel":"crm_alert","status":"success","deliveries":[{"module":"Alerts","user":"1","record":"482228","replayed":false}]}]}},"error":null}
+```
+
+Отправка настоящая: `crm_alert` создаёт запись `Alerts` в CRM (её id — `record`), мессенджер получает сообщение.
+
 Ошибка отправки — тоже `200`: `{ "sent": false, "error": "notify: 1 of 1 channels failed: telegram: HTTP 403 …" }`
-(секреты замаскированы). Ошибки конфигурации канала — `422` с полями `channel.…` (`channel.connection`: `Connection
-secret is required (secret://name)` и др.). Роль viewer — `403`.
+(секреты замаскированы). Ошибки конфигурации канала — `422` с полями `channel.…` — те же правила, что у шага `notify` при
+сохранении процесса:
+
+```json
+{"success":false,"data":null,"error":{"code":"VALIDATION_ERROR","message":"Validation failed","details":[
+  {"field":"channel.connection","message":"Connection secret is required (secret://name)"},
+  {"field":"channel.chat_id","message":"Chat id is required"}]}}
+```
+
+Роль viewer — `403`.
 
 ## Справочники
 
-Все возвращают `[{ "value", "label" }]`, у типов действий есть ещё `description`. Подписи — на русском; переводите по `value`.
+Большинство справочников возвращают `[{ "value", "label" }]` (подписи — на русском; клиенты переводят по `value`).
+Исключения: `crm-capabilities`, `relative-dates` и `mail-transports` отдают объект; `functions` — список функций с `meta.operators`;
+у `action-types`, `operators`, `casts`, `template-filters`, `notify-channels`, `secret-kinds` и `system-variables` есть
+дополнительные поля (описаны в разделах). Справочники, кроме `modules` и `crm-capabilities`, строятся из кода (реестров и
+констант контроллеров `back/src/Controllers/Dictionaries/*`) и не обращаются к CRM.
+
+| Справочник | Источник в коде |
+|---|---|
+| `modules` | `DictionaryService::modules()` — `MOCK_SERVICE_URL/modules` или `GET {CRM}/modules`, кэш Redis `dict:modules` |
+| `crm-capabilities` | `CrmCapabilitiesService::describe()` — `GET {CRM}/capabilities`, кэш Redis `crm:capabilities` |
+| `operators` | `ComparatorRegistry` (`Container::comparators()`) |
+| `functions` | `ExpressionEngine::functionSpecs()` (`FunctionSpec` каждой функции) |
+| `template-filters` | `TemplateEngine::filterDictionary()` (функции выражений + `raw`) |
+| `action-types` | `ActionHandlerRegistry` и `BlockTypeRegistry` |
+| `change-types` | `ChangeTypeRegistry` |
+| `notify-channels` | `ChannelRegistry` |
+| `system-variables` | `ExecutionContext::SYS_FIELDS` + подписи контроллера |
+| остальные | константы контроллеров и перечисления (`CastType`, `DeliveryPolicy`, `SecretKind`, `DateUnit` …) |
 
 ### `GET /api/dictionaries/modules`
 
@@ -726,14 +952,15 @@ curl -s http://localhost:9501/api/dictionaries/crm-capabilities -H "Authorizatio
 
 ```json
 {"success":true,"data":{"contract_version":"2.0",
- "features":["filter_operators","sort","cursor_pagination","fields","count","delete","relationships","relationship_fields","event_v2","delete_events","origin_headers"],
+ "features":["filter_operators","filter_nin","sort","cursor_pagination","fields","count","delete","relationships","relationship_fields","event_v2","delete_events","origin_headers"],
  "limits":{"max_page_size":100,"max_link_batch":100,"max_in_values":100},
  "crm":{"name":"SuiteCRM","version":"8.10.2","plugin_version":"1.2.0"},
  "source":"crm","cached_at":"2026-10-20T09:00:00+00:00"},"error":null}
 ```
 
 `source`: `crm` — ответ `GET {CRM}/capabilities`; `fallback` — у CRM нет этого эндпоинта (старый плагин): `contract_version: "1.0"`,
-`features: []`. Если CRM недоступна — `503 CRM_UNAVAILABLE`.
+`features: []`. Если CRM недоступна — `503 CRM_UNAVAILABLE` («The CRM is not reachable: …»). На mock-CRM `crm` —
+`{"name":"WPS mock CRM","version":"2.0","plugin_version":"mock"}`.
 
 ### `GET /api/dictionaries/operators`
 
@@ -791,24 +1018,18 @@ curl -s http://localhost:9501/api/dictionaries/functions -H "Authorization: Bear
 ```json
 {"success":true,"data":[
  {"name":"add_days","category":"date","signature":"add_days(d, n)","min_args":2,"max_args":2,"returns":"date|datetime","description":"Прибавляет календарные дни; местное время сохраняется","example":"add_days(today(), 3)","pure":true},
- {"name":"date_diff","category":"date","signature":"date_diff(from, to, unit)","min_args":3,"max_args":3,"returns":"number","description":"…","example":"date_diff(object.date_modified, now(), 'days')","pure":true},
  {"name":"now","category":"date","signature":"now()","min_args":0,"max_args":0,"returns":"datetime","description":"Текущий момент, UTC","example":"now()","pure":false},
- … остальные функции дат …,
+ {"name":"pluck","category":"list","signature":"pluck(list, field)","min_args":2,"max_args":2,"returns":"list","description":"Значения поля из списка записей; отсутствующее поле — ''; поле может быть вложенным ('address.city')","example":"pluck(tasks.items, 'name')","pure":true},
+ {"name":"to_list","category":"list","signature":"to_list(s[, separator[, wrapper]])","min_args":1,"max_args":3,"returns":"list","description":"Приводит значение к списку: массив — как есть, пустое — [], JSON-массив — декодированный, строка — один элемент; с separator — делит строку (wrapper снимает обрамление каждого элемента, мультисписок ^a^,^b^)","example":"to_list(object.tags_c, ',', '^')","pure":true},
  {"name":"coalesce","category":"logic","signature":"coalesce(a, b, …)","min_args":1,"max_args":null,"returns":"any","description":"Первое непустое значение (не null и не пустая строка)","example":"coalesce(object.phone_mobile, object.phone_work, v1.phone_office)","pure":true},
  {"name":"if","category":"logic","signature":"if(cond, then[, else])","min_args":2,"max_args":3,"returns":"any","description":"Значение then, если cond истинно, иначе else (или пустая строка)","example":"if(object.amount > 100000, 'VIP', 'Regular')","pure":true},
- {"name":"ifempty","category":"logic","signature":"ifempty(a, default)","min_args":2,"max_args":2,"returns":"any","description":"…","example":"ifempty(object.title, 'Без названия')","pure":true},
- {"name":"ifs","category":"logic","signature":"ifs(cond1, value1, cond2, value2, …[, default])","min_args":2,"max_args":null,"returns":"any","description":"…","example":"…","pure":true},
- {"name":"switch","category":"logic","signature":"switch(x, key1, value1, key2, value2, …[, default])","min_args":3,"max_args":null,"returns":"any","description":"…","example":"…","pure":true},
- {"name":"abs","category":"number","signature":"abs(x)","min_args":1,"max_args":1,"returns":"number","description":"Модуль числа","example":"abs(object.balance)","pure":true},
- {"name":"max","category":"number","signature":"max(a, b, …)","min_args":1,"max_args":null,"returns":"number","description":"…","example":"…","pure":true},
- {"name":"min","category":"number","signature":"min(a, b, …)","min_args":1,"max_args":null,"returns":"number","description":"…","example":"…","pure":true},
- {"name":"round","category":"number","signature":"round(x[, digits])","min_args":1,"max_args":2,"returns":"number","description":"Округление до digits знаков","example":"round(object.amount * 0.9, 2)","pure":true},
+ {"name":"percent","category":"number","signature":"percent(x, p)","min_args":2,"max_args":2,"returns":"number","description":"p процентов от x","example":"percent(object.amount, 15)","pure":true},
+ {"name":"round","category":"number","signature":"round(x[, digits])","min_args":1,"max_args":2,"returns":"number","description":"Округление до digits знаков, половина — от нуля (2.5 → 3); digits может быть отрицательным (1250, -2 → 1300)","example":"round(object.amount * 1.2, 2)","pure":true},
  {"name":"concat","category":"string","signature":"concat(a, b, …)","min_args":1,"max_args":null,"returns":"string","description":"Склеивает значения в одну строку","example":"concat(v1.first_name, ' ', v1.last_name)","pure":true},
- {"name":"len","category":"string","signature":"len(s)","min_args":1,"max_args":1,"returns":"number","description":"…","example":"…","pure":true},
- {"name":"lower","category":"string","signature":"lower(s)","min_args":1,"max_args":1,"returns":"string","description":"…","example":"…","pure":true},
- {"name":"substr","category":"string","signature":"substr(s, start[, length])","min_args":2,"max_args":3,"returns":"string","description":"…","example":"…","pure":true},
- {"name":"trim","category":"string","signature":"trim(s)","min_args":1,"max_args":1,"returns":"string","description":"…","example":"…","pure":true},
- {"name":"upper","category":"string","signature":"upper(s)","min_args":1,"max_args":1,"returns":"string","description":"…","example":"…","pure":true}],
+ {"name":"regex_replace","category":"string","signature":"regex_replace(s, pattern, replacement[, flags])","min_args":3,"max_args":4,"returns":"string","description":"Заменяет совпадения; в replacement допустимы ссылки $1, флаги i/m/s","example":"regex_replace(object.phone, '[^0-9+]', '')","pure":true},
+ {"name":"json_get","category":"type","signature":"json_get(json, path[, default])","min_args":2,"max_args":3,"returns":"any","description":"Первое совпадение JSONPath в массиве или JSON-строке; нет совпадения — default (пустая строка)","example":"json_get(resp.body, '$.data.customer.id')","pure":true},
+ {"name":"to_bool","category":"type","signature":"to_bool(x)","min_args":1,"max_args":1,"returns":"boolean","description":"bool: '1'/'yes'/'да' → true, '0'/'no'/'нет' → false, пустое → false","example":"to_bool(object.do_not_call)","pure":true},
+ … всего 121 функций …],
  "meta":{"operators":[
  {"op":"or","synonyms":["||"],"precedence":1},
  {"op":"and","synonyms":["&&"],"precedence":2},
@@ -826,15 +1047,28 @@ curl -s http://localhost:9501/api/dictionaries/functions -H "Authorization: Bear
  {"op":"%","synonyms":[],"precedence":6}]},"error":null}
 ```
 
-Элементы `data` отсортированы по `category`, затем по `name`. Функции дат (категория `date`) описаны в разделе [Даты и время](../03-user-guide/change-types-and-expressions.md#даты-и-время); `format_date_locale` есть, только если в образе установлен `intl`:
+Элементы `data` отсортированы по `category`, затем по `name`.
+
+Состав на момент написания (121 функция; список строится из реестра, поэтому новые функции появляются в ответе автоматически):
+
+| `category` | Назначение | Функции |
+|---|---|---|
+| `date` | даты и время | `add_days`, `add_hours`, `add_minutes`, `add_months`, `add_weeks`, `add_years`, `date`, `date_diff`, `datetime`, `day`, `end_of_day`, `end_of_month`, `end_of_quarter`, `end_of_week`, `end_of_year`, `format_date`, `format_date_locale`, `hour`, `is_weekend`, `minute`, `month`, `now`, `quarter`, `start_of_day`, `start_of_month`, `start_of_quarter`, `start_of_week`, `start_of_year`, `today`, `week`, `weekday`, `year` |
+| `list` | списки | `avg`, `concat_lists`, `count`, `first`, `in`, `index_of_item`, `last`, `list`, `nth`, `pluck`, `reverse`, `slice`, `sort`, `sum`, `to_list`, `unique`, `where`, `without` |
+| `logic` | условные | `coalesce`, `if`, `ifempty`, `ifs`, `switch` |
+| `number` | числа | `abs`, `ceil`, `floor`, `max`, `min`, `number_format`, `percent`, `pow`, `round`, `sign`, `sqrt`, `to_int`, `to_number`, `trunc` |
+| `string` | строки | `after`, `before`, `capitalize`, `concat`, `contains`, `default`, `ends_with`, `index_of`, `join`, `json`, `left`, `len`, `lower`, `nl2br`, `number`, `pad_left`, `pad_right`, `regex_extract`, `regex_match`, `regex_replace`, `repeat`, `replace`, `replace_ci`, `right`, `slug`, `split`, `starts_with`, `strip_tags`, `substr`, `title_case`, `translit`, `trim`, `truncate`, `upper`, `urlencode` |
+| `type` | проверка и приведение типов, JSON | `is_bool`, `is_date`, `is_empty`, `is_int`, `is_list`, `is_not_empty`, `is_number`, `is_numeric_text`, `is_object`, `json_decode`, `json_encode`, `json_get`, `json_get_all`, `to_bool`, `to_date`, `to_datetime`, `to_string` |
+
+Функции дат (категория `date`) описаны в разделе [Даты и время](../03-user-guide/change-types-and-expressions.md#даты-и-время); `format_date_locale` есть, только если в образе установлен `intl`:
 
 | Поле | Описание |
 |---|---|
 | `name` | имя функции (нижний регистр) |
-| `category` | `logic`, `string`, `number`, `date`, `list`, `type`, `system` или `custom` (функция, зарегистрированная без описания) |
+| `category` | `logic`, `string`, `number`, `date`, `list`, `type` или `custom` (функция, зарегистрированная через `registerFunction()` без `FunctionSpec`) |
 | `signature` | сигнатура; `[…]` — необязательные аргументы, `…` — переменное число |
-| `min_args`, `max_args` | допустимое число аргументов; `max_args: null` — без верхней границы. Проверяется при сохранении процесса: `Function "if" expects 2..3 arguments, got 1` → `422` |
-| `returns` | тип результата: `string`, `number`, `bool`, `date`, `datetime`, `date\|datetime` (как у аргумента), `any` |
+| `min_args`, `max_args` | допустимое число аргументов; `max_args: null` — без верхней границы. Проверяется при сохранении процесса: `Function "if" expects 2..3 arguments, got 1` → `422`. Кроме числа аргументов, у части функций есть валидатор литеральных аргументов (`FunctionSpec::$validator`): единица `date_diff`, часовой пояс, шаблон регулярного выражения, путь JSONPath — ошибки тоже возвращаются при сохранении |
+| `returns` | тип результата: `string`, `number`, `bool` / `boolean` (оба написания встречаются в текущих описаниях), `list`, `date`, `datetime`, `date\|datetime` (как у аргумента), `any` |
 | `description`, `example` | описание и пример вызова |
 | `pure` | `true` — результат зависит только от аргументов; `false` — от текущего времени (`now`, `today`): при повторе шага значение вычисляется заново |
 
@@ -851,21 +1085,21 @@ curl -s http://localhost:9501/api/dictionaries/action-types -H "Authorization: B
 ```json
 {"success":true,"data":[
  {"value":"preload","label":"Предзагрузка объекта","description":"Загружает объект из CRM по ID или другому полю в переменную процесса","kind":"action"},
- {"value":"modify","label":"Изменить объект/переменную","description":"…","kind":"action"},
- {"value":"save_object","label":"Сохранить объект в CRM","description":"…","kind":"action"},
- {"value":"start_process","label":"Запустить следующий процесс","description":"…","kind":"action"},
- {"value":"send_email","label":"Отправить письмо","description":"Отправляет письмо через SMTP: получатели, тема и тело — шаблоны с подстановками","kind":"action"},
- {"value":"http_request","label":"HTTP-запрос","description":"Вызывает внешний API (вебхук): URL, заголовки и тело — шаблоны, ответ сохраняется в переменную","kind":"action"},
- {"value":"link_records","label":"Связать записи","description":"Связывает запись с другими записями через link-поле CRM (участники встречи, контакты контрагента), можно с полями связи","kind":"action"},
- {"value":"unlink_records","label":"Отвязать записи","description":"Удаляет связи записи с другими записями через link-поле CRM","kind":"action"},
+ {"value":"modify","label":"Изменить объект/переменную","description":"Изменяет поле объекта или переменной: значение, копия поля другой переменной, расчёт или шаблон","kind":"action"},
+ {"value":"save_object","label":"Сохранить объект в CRM","description":"Отправляет изменённые поля переменной в CRM (PUT; для нового объекта — POST)","kind":"action"},
  {"value":"set_variable","label":"Записать в переменную процесса","description":"Сохраняет промежуточное значение в переменную, которая не является записью CRM","kind":"action"},
  {"value":"find_records","label":"Найти записи","description":"Находит записи CRM по фильтру или связанные записи и сохраняет список в переменную","kind":"action"},
  {"value":"update_records","label":"Изменить записи списка","description":"Меняет поля у всех записей списка, найденного шагом «Найти записи», одним шагом","kind":"action"},
+ {"value":"delay","label":"Пауза","description":"Приостанавливает выполнение на срок или до даты; длинная пауза не занимает воркер и переживает перезапуск","kind":"action"},
+ {"value":"send_email","label":"Отправить письмо","description":"Отправляет письмо через SMTP: получатели, тема и тело — шаблоны с подстановками","kind":"action"},
+ {"value":"http_request","label":"HTTP-запрос","description":"Вызывает внешний API (вебхук): URL, заголовки и тело — шаблоны, ответ сохраняется в переменную","kind":"action"},
  {"value":"assign","label":"Назначить ответственного","description":"Назначает ответственного по правилу: по кругу, наименее загруженного, случайно, руководителя","kind":"action"},
  {"value":"notify","label":"Уведомление","description":"Отправляет короткое уведомление в колокольчик CRM, Telegram, Slack или Microsoft Teams","kind":"action"},
- {"value":"delay","label":"Пауза","description":"Приостанавливает выполнение на срок или до даты; длинная пауза не занимает воркер и переживает перезапуск","kind":"action"},
- {"value":"condition","label":"Условие (если / иначе)","description":"…","kind":"block"},
- {"value":"stop_process","label":"Завершить процесс","description":"…","kind":"block"},
+ {"value":"link_records","label":"Связать записи","description":"Связывает запись с другими записями через link-поле CRM (участники встречи, контакты контрагента), можно с полями связи","kind":"action"},
+ {"value":"unlink_records","label":"Отвязать записи","description":"Удаляет связи записи с другими записями через link-поле CRM","kind":"action"},
+ {"value":"start_process","label":"Запустить следующий процесс","description":"Асинхронно запускает ведомый процесс, передавая ему событие и все переменные","kind":"action"},
+ {"value":"condition","label":"Условие (если / иначе)","description":"Выполняет действия первой ветки, условия которой выполнены, иначе — действия блока «иначе»","kind":"block"},
+ {"value":"stop_process","label":"Завершить процесс","description":"Досрочно завершает выполнение — успешно или с ошибкой и сообщением","kind":"block"},
  {"value":"foreach","label":"Для каждого элемента","description":"Выполняет вложенные действия для каждого элемента списка","kind":"block"}],"error":null}
 ```
 
@@ -992,7 +1226,7 @@ curl -s http://localhost:9501/api/dictionaries/event-types -H "Authorization: Be
 
 Фильтры шаблонов ([Шаблон](../03-user-guide/change-types-and-expressions.md#шаблон)): `{{ x | f:a:b }}` вызывает функцию
 выражений `f(x, a, b)`, поэтому в списке — все функции, принимающие значение первым аргументом (без `now()`), и
-псевдофильтр `raw`.
+псевдофильтр `raw` (на стенде — 121 элемент: 120 функций и `raw`).
 
 ```bash
 curl -s http://localhost:9501/api/dictionaries/template-filters -H "Authorization: Bearer $TOKEN"
@@ -1046,38 +1280,58 @@ curl -s http://localhost:9501/api/dictionaries/casts -H "Authorization: Bearer $
 параметры `cast_options` со значениями по умолчанию. `case_sensitive: false` — складывание регистра Unicode обеих сторон,
 `trim: true` — обрезка краёв с неразрывным пробелом и BOM (см. [Регистр и пробелы](../03-user-guide/triggers-and-conditions.md#регистр-и-пробелы)).
 
+### `GET /api/dictionaries/system-variables`
+
+Любая роль. Системные переменные `sys.*` для панели переменных редактора ([Системные переменные и константы](../03-user-guide/change-types-and-expressions.md#системные-переменные-и-константы)).
+Значения вычисляются движком при чтении, записывать в `sys` нельзя (`422 Variable "sys" is read-only`).
+
+```bash
+curl -s http://localhost:9501/api/dictionaries/system-variables -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"success":true,"data":[
+ {"value":"sys.execution_id","label":"ID выполнения","type":"string"},
+ {"value":"sys.parent_execution_id","label":"ID родительского выполнения","type":"string"},
+ {"value":"sys.process_id","label":"ID процесса","type":"integer"},
+ {"value":"sys.process_name","label":"Название процесса","type":"string"},
+ {"value":"sys.process_version","label":"Версия процесса","type":"integer"},
+ {"value":"sys.event_id","label":"ID события","type":"string"},
+ {"value":"sys.trigger","label":"Способ запуска","type":"string","values":["stream","manual","child"]},
+ {"value":"sys.depth","label":"Глубина вложенности","type":"integer"},
+ {"value":"sys.module","label":"Модуль CRM","type":"string"},
+ {"value":"sys.record_id","label":"ID записи","type":"string"},
+ {"value":"sys.event_type","label":"Тип события","type":"string","values":["create","update","delete"]},
+ {"value":"sys.changed_fields","label":"Изменённые поля","type":"list"},
+ {"value":"sys.user_id","label":"ID пользователя CRM","type":"string"},
+ {"value":"sys.now","label":"Текущее время (UTC)","type":"datetime"},
+ {"value":"sys.started_at","label":"Начало выполнения (UTC)","type":"datetime"},
+ {"value":"sys.last_error","label":"Последняя обработанная ошибка","type":"object"},
+ {"value":"sys.errors_count","label":"Обработано ошибок","type":"integer"}],"error":null}
+```
+
+| Поле | Описание |
+|---|---|
+| `value` | путь для условий, выражений и шаблонов (`sys.<поле>`) |
+| `label` | подпись (на русском) |
+| `type` | `string`, `integer`, `list`, `datetime` (`Y-m-d H:i:s`, UTC) или `object` |
+| `values` | только у `sys.trigger` и `sys.event_type` — допустимые значения |
+
+Порядок и состав совпадают с `ExecutionContext::SYS_FIELDS`. Фактические значения конкретного выполнения — в
+`context.system` ответа [`GET /api/executions/{id}`](#get-apiexecutionsid).
+
 ### `GET /api/dictionaries/delivery-policies`
 
 Любая роль. Значения поля `delivery` действий с внешними эффектами.
 
 ```json
-{"success":true,"data":[{"value":"at_most_once","label":"Не более одного раза"},{"value":"at_least_once","label":"Не менее одного раза"}]}
+{"success":true,"data":[{"value":"at_most_once","label":"Не более одного раза"},{"value":"at_least_once","label":"Не менее одного раза"}],"error":null}
 ```
 
 По умолчанию `send_email` — `at_most_once`, `http_request` — `at_most_once` для `POST`/`PATCH` и `at_least_once` для
 остальных методов. Поле `delivery` допустимо только у действий с внешними эффектами (`send_email`, `http_request`, `notify`); у остальных
 сохранение процесса отклоняется: `Action "modify" does not support "delivery"`. Неверное значение —
 `Delivery must be "at_most_once" or "at_least_once"`.
-
-Шаг `http_request` (подробно — [Действия → HTTP-запрос](../03-user-guide/actions.md#http-запрос)): `request_data` —
-`method`, `url`, `headers` (только имена), `body_size`, `body_preview`, `delivery`; `result_data` — `status`, `duration_ms`,
-`var`, `replayed`, `response`. Переменная `var` в `context.variables`: `status`, `ok`, `headers`, `body` / `body_text` /
-`body_truncated` и поля `response.extract`.
-
-Шаги `link_records` / `unlink_records` (подробно — [Действия → Связать / отвязать записи](../03-user-guide/actions.md#связать--отвязать-записи)):
-`request_data` — `record`, `link`, `module`, `record_id`, `related_module`, `related_ids` (первые 100), `related_count`, для
-`link_records` — `fields`, `batches`; `result_data` — `linked`, `updated`, `not_found`, `warnings` (для `unlink_records` —
-`removed`, `not_linked`), `missing_paths`. Без `id` у записи или без связанных id шаг `skipped`. Нужен контракт CRM 2.0
-(`relationships`), иначе `CRM_CAPABILITY_MISSING`.
-
-Шаг `find_records` (подробно — [Действия → Найти записи](../03-user-guide/actions.md#найти-записи)): `request_data` — `var`,
-`limit`, `module` / `related_to`, `filter`, `sort`, `fields`, в режиме модуля — `crm_filter` (что ушло в CRM) и `crm_requests`;
-`result_data` — `count`, `has_more`, первые 100 `ids`, `reason`, `warnings`. Переменная-список `{items, count, has_more, ids}` в
-`context.variables`, в `context.meta.<имя>.source` — `list`.
-
-Шаг `set_variable` (подробно — [Действия → Записать в переменную процесса](../03-user-guide/actions.md#записать-в-переменную-процесса)):
-`request_data` — `var`, `fields` (`имя → {change_type, value}`); `result_data.fields.<имя>` — `old_value`, `new_value`.
-Переменная в `context.variables`, в `context.meta.<имя>.source` — `local`.
 
 ### `GET /api/dictionaries/mail-transports`
 
@@ -1087,6 +1341,8 @@ admin, editor. Есть ли транспорт по умолчанию (`MAILER
 ```json
 {"success":true,"data":{"default_configured":true,"secrets":["smtp_main","smtp_support"]},"error":null}
 ```
+
+На стенде без секретов `smtp_dsn` — `{"default_configured":true,"secrets":[]}` (`MAILER_DSN=smtp://mailpit:1025`). Роль viewer — `403`.
 
 ### `GET /api/dictionaries/secret-kinds`
 

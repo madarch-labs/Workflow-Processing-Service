@@ -29,14 +29,29 @@ for any process: inactive and child processes too.
 
 *Manual run of process #1: the template contains `id`, `module`, `status` from the condition and `account_id` from the preload.*
 
-The editor checks the JSON as you type (**JSON is valid** / **Invalid JSON: …**); **Format** pretty-prints it.
+The editor checks the JSON as you type (**JSON is valid** / **Invalid JSON: …**); **Format** pretty-prints it. A JSON
+object `{ … }` is expected: an array or a number gives **Expected a JSON object { … }**, and **Run** shows **Fix the
+object JSON: …** and sends nothing. The dialog does not close on a click outside it — only with **Cancel** or the cross,
+so that a typed object is not lost by accident.
+
+How the object template is built:
+
+| Source | What gets into the template |
+|---|---|
+| always | `id: "1"` and `module` = the object type of the process |
+| condition rows `object.<field>` | the field; for **Equals** with a value — the expected value, for others — `""` |
+| preload rows **From object field** | the source field (`account_id`) with the value `""` |
+| advanced conditions (groups / OR), fields used in actions | **not** added — add them yourself |
+
+Replace `"1"` with a real record `id` if the process saves `object` to the CRM: otherwise the save goes to a
+non-existent record and the step fails with the CRM answer `404`.
 
 ### What happens next
 
 | Result | Response | In the UI |
 |---|---|---|
-| Conditions met | `201`, `execution_id` | **Process started** and a link to the execution. The steps run in the background, the execution page updates live |
-| Conditions not met | `200`, `conditions_met: false` | **Start conditions not met — process was not started** and a table: **Field**, **Operator**, **Expected**, **Actual**, **Result** |
+| Conditions met | `201`, `execution_id` | The **Process started** message; the dialog closes and the execution page opens at once. The steps run in the background, the page refreshes itself every 2 seconds while the execution runs |
+| Conditions not met | `200`, `conditions_met: false` | **Start conditions not met — process was not started** and a table: **Field**, **Operator**, **Expected**, **Actual**, **Result** (`OK`, `FAIL` or **not checked**). The dialog stays open: fix the JSON and run again |
 | Run once already used for this record | `200`, `run_once_blocked: true`, `previous_execution_id` | **The process has already run for this record — no new run was created** and a link to the earlier execution |
 | Object without `id` | `422 VALIDATION_ERROR`, field `object.id` | Error message |
 
@@ -112,6 +127,23 @@ a `["delete"]` process can be tried manually with `"event_type":"delete"` (`save
 `not_changed`) are checked the same way: with the fields from the example above, `object.status` **Changed from** `New` is met
 and the trace has `conditions[k].changed = true`. Without `event_type` / `changed_fields` there is no change info: all four
 operators are false and the trace has `"change_info": "missing"`.
+
+### Testing processes with the newer features
+
+| What you test | What to pass and what to expect |
+|---|---|
+| **Changed** / **Changed to** conditions | `event_type`, `changed_fields` and `before` — without them there is no change info and the rows are false. A `create` also needs `changed_fields` with the filled fields |
+| `trigger_on` | A manual run does not check it: a process with `["delete"]` or `[]` runs manually all the same |
+| `sys.*` | `sys.trigger = manual`, `sys.event_id = manual-<uuid>`, `sys.event_type` — from `event_type` (default `update`), `sys.user_id` — from `object.user_id` if passed, `sys.depth = 0` |
+| `config.*` | Constants come from the saved process definition — save the process before running it |
+| A `delay` pause | Really waits: the execution becomes **Waiting** and wakes up on time. To test, set a short time (`"duration": "1m"`) or drop the wait by deleting the process with `force=true` |
+| `send_email` | The letter is really sent: on the stack — to Mailpit (`http://localhost:8025`), in production — to the real recipient |
+| `http_request`, `notify` | The request and the message go to the external system; to test, use a test webhook or the mock (`http://mock:9502/mock/echo/…`, `/mock/slack/…`) |
+| `find_records`, `foreach`, `update_records` | They work with CRM data, not with the passed object: you need a record with a real `id` and related records in the CRM |
+
+> **Tip**
+> To check the conditions without running the actions, make a copy of the process (**Clone**), remove the actions in the
+> copy and run it: the response shows the condition trace, and the CRM is not changed.
 
 ## Run once per record
 

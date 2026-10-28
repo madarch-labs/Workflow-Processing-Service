@@ -28,9 +28,49 @@ The data a process works with lives in **variables**:
 
 - `object` — the object from the event (the record that was saved in the CRM);
 - variables loaded by **Preload**, e.g. `v1`;
-- variables created by **Modify** when it writes to a new name, e.g. `task.name`.
+- variables created by **Modify** when it writes to a new name, e.g. `task.name`;
+- `sys` — system variables of the execution (`sys.execution_id`, `sys.trigger`, `sys.user_id`, `sys.now`…), read-only;
+- `config` — process constants (`config.vip_threshold`), read-only.
 
 Fields are addressed with a dot: `object.phone`, `v1.contact_id`. The **Variables** panel on the right of the editor shows what is available at the current point.
+
+`object`, `object_before`, `sys` and `config` are **reserved** names: they cannot be declared in preload, created by **Modify** or written with `set_variable`. A save with such a write is rejected (`Variable "sys" is read-only`, `Name "config" is reserved`). The full table of `sys.*` fields is in [System variables and constants](change-types-and-expressions.md#system-variables-and-constants).
+
+### All step types
+
+The editor shows the three sections above; the other types are set through the API (`definition.actions`), and the
+editor keeps such rows unchanged. The type dictionary is `GET /api/dictionaries/action-types` (`kind`: `action` or `block`).
+
+| `type` | Name | What it does | Writes to the CRM | External call (side-effect journal) | `delivery` |
+|---|---|---|---|---|---|
+| `preload` | [Preload](#preload) | Loads one CRM record into a variable | no | no | — |
+| `modify` | [Modify object / variable](#modify-object--variable) | Changes one field in memory; with `save_to_crm` saves at once | with `save_to_crm` | no | — |
+| `save_object` | [Save to CRM](#save-to-crm) | `PUT` of the changed fields or `POST` of a new record | yes | no | — |
+| `set_variable` | [Set a process variable](#set-a-process-variable) | A local variable for calculations | no | no | — |
+| `find_records` | [Find records](#find-records) | A list of records by a filter or a relationship | no | no | — |
+| `update_records` | [Update list records](#update-list-records) | The same fields on all records of a list | yes | no | — |
+| `link_records`, `unlink_records` | [Link / unlink records](#link--unlink-records) | Relationships through a link field | yes (relationships) | no | — |
+| `assign` | [Assign an owner](#assign-an-owner) | An owner chosen by a rule | with `save_to_crm` | no | — |
+| `start_process` | [Start next process](#start-next-process) | Starts child processes asynchronously | no | no | — |
+| `send_email` | [Send an e-mail](#send-an-e-mail) | A letter over SMTP | with `save_to_crm` (history) | yes | `at_most_once` |
+| `http_request` | [HTTP request](#http-request) | A call of an external API | no | yes | `at_most_once` for `POST`/`PATCH`, otherwise `at_least_once` |
+| `notify` | [Notification](#notification) | CRM bell, Telegram, Slack, Teams | `crm_alert` — an `Alerts` record | yes (per delivery) | `at_most_once` |
+| `delay` | [Delay](#delay) | Waits for a period or a date | no | no | — |
+| `condition` | [Condition](#condition-if--else) (block) | "if / else if / else" branches | — | — | — |
+| `foreach` | [Loop](#loop-for-each-item) (block) | The body for every item of a list | — | — | — |
+| `stop_process` | [Stop the process](#stop-the-process) (block) | Ends the execution early | — | — | — |
+
+The fields `id`, `name`, `on_error`, `retry` common to all steps are described in
+[Nested blocks and step fields](#nested-blocks-and-step-fields) and [Step errors](#step-errors-on_error-and-retries).
+`delivery` is allowed only on actions with an external call; on the others saving returns
+`Action "modify" does not support "delivery"`.
+
+**Repeating a step.** A step may run again — by its `retry` profile or after a crashed worker is recovered. For CRM
+writes this is safe (`PUT` of the same values; `link_records` is idempotent; the `assign` decision is remembered per
+step). E-mails, HTTP requests and notifications are protected by the side-effect journal: a call already made is not
+repeated, and an unknown outcome follows the `delivery` policy ([Reliability → Side effects and repeats](../04-operations/reliability.md#side-effects-and-repeats)).
+Creating a new record (`save_object` without an `id`) repeated after a worker crash may create a duplicate if the CRM had
+already processed the first request. There is no dry-run mode (running without performing actions) yet.
 
 ## Preload
 
@@ -78,6 +118,45 @@ Errors when saving the process:
 | `path must start with object.` / `For "from object field" the path must start with "object."` | Wrong path for **From object field** |
 | `variable “v2” must be declared above` / `Variable "v2" is not defined at this point` | **From variable field** refers to a later or unknown variable |
 | `For "from variable field" the path must reference a variable (e.g. v1.contact_id)` | **From variable field** with an `object.` path |
+| `Name "config" is reserved` (server) | Name `config` — process constants |
+| `Source must be one of: object_field, variable_field, manual` (server) | Unknown `source` |
+| `Search field must be a non-empty string` (server) | Empty or non-string `by_field` |
+| `Unknown load strategy` (server) | `strategy` is not `by_id` / `by_field` |
+
+### Preload row fields in JSON
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `var` | string | yes | — | Variable name: Latin letters, digits, `_`, not starting with a digit; not `object`, `object_before`, `sys`, `config`; unique |
+| `source` | string | no | `object_field` | `object_field`, `variable_field` or `manual` |
+| `value` | string | yes | — | A path (`object.account_id`, `v1.contact_id`) or the value itself for `manual` |
+| `module` | string | yes | — | CRM module (`Accounts`) |
+| `by_field` | string | no | `id` | Lookup field |
+| `strategy` | string | no | from `by_field` | `by_id` or `by_field` |
+
+**Step audit.** `request_data`: `var`, `module`, `strategy`, `by_field`, `source`, `value`, `lookup_value` (the value
+searched for). `result_data`: `found` (`true` / `false`), `object` (the loaded record or `null`), for an empty lookup
+value — `reason: "Lookup value is empty"` (no CRM request). CRM `5xx`, timeouts and network errors are retried; `404`
+when loading by `id` means "not found", not an error.
+
+Example: a deal loads its account, and through it the account's main contact by a field:
+
+```json
+{
+  "object_type": "Opportunities",
+  "definition": {
+    "preload": [
+      { "var": "account", "source": "object_field", "module": "Accounts", "by_field": "id", "value": "object.account_id" },
+      { "var": "contact", "source": "variable_field", "module": "Contacts", "by_field": "email1", "value": "account.email1" }
+    ],
+    "conditions": [ { "field": "account.id", "operator": "is_not_empty" } ],
+    "actions": [
+      { "type": "modify", "target": "object.next_step", "change_type": "template",
+        "value": "Contact {{ contact.first_name | default:'contact not found' }} ({{ account.name }})", "save_to_crm": true }
+    ]
+  }
+}
+```
 
 ### Preload inside actions (API only)
 
@@ -106,7 +185,35 @@ Add a row with **Change**. The audit stores `old_value` and `new_value` of every
 
 Writing to a variable that does not exist yet (e.g. `task.name`) creates it; the **Variables** panel marks it **created in process**. Such a variable has no module — give one in the **Save to CRM** row.
 
-Errors: `Action 1: specify a target field (object.field or v1.field)`, `Action 1: specify a value` (for **Set from variable** and **Calculate**); server: `"object" must point to a field, e.g. object.name`, `Change type must be one of: set_value, set_from_variable, calculate`, `Must be true or false` (`save_to_crm`), `Variable "object_before" is read-only` (a target `object_before.*`; the same for `save_object`).
+In JSON a modify row is a `modify` step:
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `target` | string | yes | — | Path `<variable>.<field>`; nested fields with dots |
+| `change_type` | string | yes | — | One of 13 types: `set_value`, `set_from_variable`, `calculate`, `template`, `date_shift`, `increment`, `decrement`, `clear`, `append`, `prepend`, `remove`, `map`, `aggregate` (dictionary `GET /api/dictionaries/change-types`). Parameters of each type are in [Change types and expressions](change-types-and-expressions.md) |
+| `value` and type parameters | | by type | — | A value, a path, an expression or a template |
+| `save_to_crm` | `true` / `false` | no | `false` | Save the variable at once (like `save_object`) |
+| `module` | string | no | the variable's module | Module for `save_to_crm` when it is unknown (a variable created in the process) |
+
+**Step audit.** `request_data`: `target`, `change_type`, `value` (or `expression`), when saving — `save` (`method`,
+`module`, `id`, `attributes`). `result_data`: `old_value`, `new_value`, extra details of the change type (e.g. the record
+count of `aggregate`), when saving — `save` with the save status.
+
+Example: build a task for a lead with one row per field and save it with the last row, giving the module:
+
+```json
+{
+  "trigger_on": ["create"],
+  "definition": { "actions": [
+    { "type": "modify", "target": "task.name", "change_type": "template", "value": "Call {{ object.first_name }} {{ object.last_name }}" },
+    { "type": "modify", "target": "task.date_due", "change_type": "date_shift", "base": "today", "shift": "+1 day", "set_time": "12:00" },
+    { "type": "modify", "target": "task.parent_type", "change_type": "set_value", "value": "Leads" },
+    { "type": "modify", "target": "task.parent_id", "change_type": "set_from_variable", "value": "object.id", "save_to_crm": true, "module": "Tasks" }
+  ] }
+}
+```
+
+Errors: `Action 1: specify a target field (object.field or v1.field)`, `Action 1: specify a value` (for **Set from variable** and **Calculate**); server: `"object" must point to a field, e.g. object.name`, `Change type must be one of: set_value, set_from_variable, calculate, template, date_shift, increment, decrement, clear, append, prepend, remove, map, aggregate`, `Must be true or false` (`save_to_crm`), `Variable "object_before" is read-only` (a target `object_before.*`, `sys.*`, `config.*`; the same for `save_object`), `Variable "deals" is a record list; use foreach to change its records` (the target is a `find_records` list), `Variable "calc" is local (set_variable) and cannot be saved to the CRM` (`save_to_crm` of a local variable), `The process runs only on delete: the deleted record cannot be saved` (`save_to_crm` of `object` in a process with `trigger_on: ["delete"]`).
 
 ## Save to CRM
 
@@ -126,6 +233,11 @@ What happens:
 | Variable has no `id` (created in the process, or a not-found preload modified later) | `POST /{module}` with all fields — a new record; the new `id` is written back into the variable |
 | Variable is empty (preload found nothing) | Step **Skipped**: `Variable "v1" is empty (object was not loaded) — nothing to save` |
 | Module is unknown | Step **Failed**: `Cannot save "task": CRM module is unknown (set "module" in the save action)` |
+| `object` in a delete event (`event_type: delete`) | Step **Skipped**: `Record was deleted in the CRM — nothing to save` |
+| A list variable, a local variable or loop iteration data | Step **Failed** (usually rejected already when the process is saved) |
+
+**Step audit.** `request_data`: `target`, `method` (`PUT` / `POST`), `module`, `id` (for `PUT`), `attributes` — the
+fields sent. `result_data`: `saved: true`, `response` (the CRM answer), for `POST` — `created_id`.
 
 The module is taken from the row, otherwise from the variable: `object` → the event module, a preload variable → its preload module.
 
@@ -139,15 +251,29 @@ Through the API you can send all fields instead of only changed ones: `"mode": "
 
 CRM answers: 5xx, timeouts and network errors are retried; 4xx (validation in the CRM, missing record on PUT) fail the step immediately.
 
-Errors: `Action 2: specify the variable to save`; server: `Invalid CRM module`, `Mode must be "changed" or "full"`, `Variable "x" is not defined at this point`.
+Repeating after a record was created (`POST`): if the CRM answered `5xx` or the worker crashed after the CRM had created
+the record, the repeated step sends `POST` again and may create a second record — CRM writes have no side-effect
+journal. For important creations check for a duplicate first (`find_records` by a unique field + `condition`).
+
+Errors: `Action 2: specify the variable to save`; server: `Invalid CRM module`, `Mode must be "changed" or "full"`, `Variable "x" is not defined at this point`, `Variable "sys" is read-only`, `Variable "deals" is a record list; use foreach to change its records`, `Variable "calc" is local (set_variable) and cannot be saved to the CRM`, `The process runs only on delete: the deleted record cannot be saved`.
 
 ## Start next process
 
-Starts one or more **child** processes asynchronously; the current process does not wait for them. The child receives the same event and all variables. Details, limits and examples are in [Child processes](subprocesses.md).
+Starts one or more **child** processes asynchronously; the current process does not wait for them. The child receives the same event and a copy of all variables. Details, limits and examples are in [Child processes](subprocesses.md).
 
 ```json
 { "type": "start_process", "process_id": 4 }
 ```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `process_id` | integer | `process_id` or `process_ids` | Id of a child process (`is_child: true`) |
+| `process_ids` | list of integers | `process_id` or `process_ids` | Several children, in order; repeats are removed |
+
+- An inactive child is skipped, the step succeeds: `result_data.children[i] = {process_id, name, status: "skipped", reason: "Process is inactive"}`; a started one — `status: "started"`.
+- A repeated step after a crash does not start the child again; in a loop — one child execution per iteration.
+- The chain depth is at most `MAX_CHILD_DEPTH` (10): `Maximum child process depth (10) exceeded`.
+- Save errors: `Child process is required`, `Process id must be an integer`, `A process cannot start itself`, `Process 42 not found`, `Process 42 "…" is not a child process`, `422 CYCLE_DETECTED`.
 
 ## Send an e-mail
 
@@ -174,7 +300,7 @@ send the letter again.
 
 | Field | Required | Description |
 |---|---|---|
-| `transport` | no | A secret reference `secret://name` of kind `smtp_dsn` holding the connection string (`smtp://user:pass@host:587`, `smtps://…`). Not set — the default transport `MAILER_DSN`. Neither — the process cannot be saved |
+| `transport` | no | A secret reference `secret://name` of kind `smtp_dsn` (or `generic`) holding the connection string (`smtp://user:pass@host:587`, `smtps://…`). Not set — the default transport `MAILER_DSN`. Neither — the process cannot be saved |
 | `from` | no | `"crm@company.ru"` or `{ "email": …, "name": "<template>" }`. Default — `MAILER_FROM` / `MAILER_FROM_NAME`. When `MAILER_ALLOWED_FROM` is set (addresses or domains `@company.ru`), another sender is not accepted — protection against spoofing |
 | `to` | yes | List of recipients, at least one (forms below) |
 | `cc`, `bcc`, `reply_to` | no | Lists of recipients |
@@ -269,6 +395,14 @@ Step request: `transport`, `from`, `to`, `cc`, `bcc` — **only the count** (`["
 Result: `sent`, `message_id`, `recipients`, `replayed`, when needed `invalid_recipients`, `rate_limited`,
 `crm_history_id` / `crm_history_error`.
 
+![send_email step in the execution log](../../images/screenshots/en/23-execution-detail-email.png)
+
+*The expanded `send_email` step: "Request" shows recipients, subject and delivery policy, "Result" the recipient count and Message-ID.*
+
+![The letter in Mailpit](../../images/screenshots/en/24-mailpit-letter.png)
+
+*The same letter in Mailpit on the demo stack: subject and HTML templates are filled in, `{{ config.manager_email }}` comes from the process constants.*
+
 ### Example: a welcome letter to a new lead
 
 ```json
@@ -304,17 +438,23 @@ letter and returns `sent: true` or the SMTP error text. On the stand every lette
 | Error | Field |
 |---|---|
 | `At least one recipient is required` | `…to` |
+| `Must be a list of recipients` | `…cc`, `…bcc`, `…reply_to` |
 | `Recipient must be an email, a template or {"path": ...}`, `Invalid email address "abc"` | `…to[i]`, `…cc[i]`, … |
 | `Variable "owner" is not defined at this point` | `…to[i].path` |
 | `Subject is required` | `…subject` |
 | `Email body is required (text or html)` | the step |
+| `Template must be a string` | `…text`, `…html`, `…headers.<name>`, `…save_to_crm.fields.<field>` |
 | `Unknown template filter "foo"` and other template errors | `…subject`, `…text`, `…html`, `…headers.*` |
 | `Sender must be an email or {"email": ..., "name": ...}`, `Sender address is not allowed`, `Sender is required (set "from" or MAILER_FROM)` | `…from` |
 | `Transport must be a secret reference (secret://name)`, `No mail transport configured (set MAILER_DSN or "transport")`, `Secret must be of kind smtp_dsn, got …`, `Secret "x" does not exist` | `…transport` |
+| `Must be an object of header => template` | `…headers` |
 | `Header "From" cannot be set here`, `Invalid header name` | `…headers.<name>` |
 | `Must be "skip" or "fail"` | `…on_empty_recipients` |
 | `Attachments are not supported yet`, `CRM e-mail templates are not supported yet` | `…attachments`, `…template` |
-| `Invalid CRM module`, `Variable "x" is not defined at this point` | `…save_to_crm.module`, `…save_to_crm.parent` |
+| `Must be an object {"module": ..., "parent": ...}` | `…save_to_crm` |
+| `Invalid CRM module`, `Must be a variable name`, `Variable "x" is not defined at this point` | `…save_to_crm.module`, `…save_to_crm.parent` |
+| `Must be an object of field => template` | `…save_to_crm.fields` |
+| `Delivery must be "at_most_once" or "at_least_once"` | `…delivery` |
 
 Execution errors: `Email body is empty`, `No valid recipients` (with `on_empty_recipients: fail`),
 `Too many recipients (N > 50)`, transport errors from the table above.
@@ -411,6 +551,8 @@ and **in the response variable** — even when the external service echoes them 
 - `extract` fields are top-level: `erp.order_id`. JSONPath in Goessner syntax (`$.data.id`, `$.items[0]`, `$..id`,
   filters `[?(@.qty > 3)]`): nothing found → `null`, one match → the value, several → a list. Fields cannot be named
   `status`, `ok`, `headers`, `body`, `body_text`, `body_truncated`.
+- The same JSONPath parser is used by the expression functions `json_get` / `json_get_all` (see [JSON](change-types-and-expressions.md#json)) —
+  they can pick a value out of `erp.body` later, in `calculate`.
 - Nested fields are read with a normal path: `erp.body.data.items`.
 - The variable has no CRM module; to save it to the CRM, set `module` in `save_object`.
 
@@ -438,6 +580,10 @@ finished (`done`), the response is taken from the journal, the variable is resto
 Step request: `method`, `url` (with the query; secrets masked), the list of header names, `body_size`, `body_preview`
 (500 characters), `delivery`. Result: `status`, `duration_ms`, `var`, `replayed`, `response` (the variable; a body longer
 than 2000 characters becomes a `body_preview`).
+
+![http_request step in the execution log](../../images/screenshots/en/22-execution-detail-http.png)
+
+*The expanded `http_request` step: the request (URL, method, header names, body preview) and the response with extracted values; the next `modify` step uses `erp.*`.*
 
 ### Example: a lead to the ERP and the order number back to the CRM
 
@@ -470,17 +616,19 @@ once, the lead description is unchanged. For such a request to be retried, the e
 |---|---|
 | `Method must be one of: GET, HEAD, POST, PUT, PATCH, DELETE` | `…method` |
 | `URL is required`, `Scheme and host of the URL must be literal (https://host/...)`, `Plain http is not allowed (HTTP_ALLOW_PLAIN_HTTP=false)`, `Secret must be of kind webhook_url, got …`, template errors, `Variable "v9" is not defined at this point` | `…url` |
-| `Must be an object of name => template`, `Header "Host" cannot be set here` | `…query`, `…headers.<name>` |
-| `Must be one of: none, bearer, basic, api_key, oauth2_client_credentials`, `Credentials must reference a secret (secret://name)`, `Must be "header" or "query"` | `…auth.*` |
-| `A body is not allowed for GET`, `Must be one of: json, form, raw`, `Content type is required for a raw body`, `Multipart body is not supported yet` | `…body.*` |
-| `Must be one of: auto, json, text, none`, `Invalid field name (reserved: …)`, `JSONPath must start with "$"`, `Invalid JSONPath: …` | `…response.*` |
+| `Must be an object of name => template`, `Header "Host" cannot be set here`, `Template must be a string` | `…query`, `…headers`, `…query.<name>`, `…headers.<name>` |
+| `Must be an object {"type": ...}`, `Must be one of: none, bearer, basic, api_key, oauth2_client_credentials`, `Credentials must reference a secret (secret://name)`, `Must be "header" or "query"`, `Invalid header or parameter name`, `Must be "header" or "body"` | `…auth`, `…auth.*` |
+| `A body is not allowed for GET`, `Must be an object {"type": "json" \| "form" \| "raw", "value": ...}`, `Must be one of: json, form, raw`, `Content type is required for a raw body`, `Multipart body is not supported yet` | `…body.*` |
+| `Must be an object {"type": ..., "extract": {...}}`, `Must be one of: auto, json, text, none`, `Must be an object of field => JSONPath`, `Invalid field name (reserved: …)`, `JSONPath must start with "$"`, `Invalid JSONPath: …` | `…response.*` |
 | `Must be "2xx" or a list of codes and ranges (200, "2xx")` | `…success_codes` |
 | `Must be an integer between 1 and 30` / `… 0 and 5` | `…timeout`, `…connect_timeout`, `…follow_redirects` |
 | `Must be a header name or null` | `…idempotency_header` |
-| `Variable name is required (letters, digits, "_"; not object, object_before, sys)` | `…var` |
+| `Variable name is required (letters, digits, "_"; not object, object_before, sys)` (also for `config`) | `…var` |
+| `Delivery must be "at_most_once" or "at_least_once"` | `…delivery` |
 
 Runtime errors: `Destination address is not allowed (private network)`, `Host "x" is not allowed`, `Port N is not allowed`,
-`DNS lookup failed for "x"`, `Secret "x" is not allowed for host "y"`, `Response is too large`,
+`DNS lookup failed for "x"`, `Secret "x" is not allowed for host "y"` (`SECRET_HOST`),
+`Request body is too large (more than 1048576 bytes)`, `Secret "x" has no field "y"`, `Response is too large`,
 `Response is not valid JSON`, `HTTP 4xx from host`, `UNKNOWN_OUTCOME` — see [Troubleshooting](../04-operations/troubleshooting.md).
 
 ## Notification
@@ -594,6 +742,7 @@ record was created in SuiteCRM 8 for the admin user — the title, the text with
 | `Chat id is required` | `…channels[i].chat_id` |
 | `Must be adaptive_card or message_card` | `…channels[i].format` |
 | `Must be "any" or "all"` | `…fail_on` |
+| `Delivery must be "at_most_once" or "at_least_once"` | `…delivery` |
 
 ## Set a process variable
 
@@ -684,6 +833,7 @@ A deal of 1 234 567.80 in Negotiation/Review gets `next_step` «Скидка 10%
 | unknown change type | `Change type must be one of: …` (path `…fields[k].change_type` / `…fields.<name>.change_type`) |
 | value errors | as of the change type, with the field path |
 | `save_object` / `save_to_crm` of a local variable | `Variable "calc" is local (set_variable) and cannot be saved to the CRM` |
+| an item of the `fields` object is not an object | `Must be an object {"change_type": ..., "value": ...}` |
 
 ## Link / unlink records
 
@@ -786,6 +936,10 @@ The second process of the case on `object.status changed_to Dead` finds the lead
 | `Relationship fields must be an object of scalar values`, `Fields are not used when unlinking` | `…fields` |
 | `Must be "warn" or "error"`, `Must be "skip" or "error"` | `…on_not_found`, `…on_missing_record` |
 
+**Run-time errors:** `Cannot link "meeting": CRM module is unknown (set "module")`,
+`Too many related ids (612 > 500)`, `Related records not found in the CRM: id1, id2` (with `on_not_found: error`; the
+full answer is in `details.result`), `CRM_CAPABILITY_MISSING` (a plugin without the `relationships` capability).
+
 ## Assign an owner
 
 The `assign` action puts into a user field of a record (`assigned_user_id` by default) an employee chosen **by a
@@ -880,7 +1034,7 @@ became the owner.
 | `Must be true or false` | `…only_active`, `…save_to_crm` |
 
 **Run-time errors:** `assign: pool is empty` and other reasons with `fallback: error`, `Security group "x" not found in
-CRM`, `assign: pool is too large (N > 200)`, `Pool is too large for least_busy (N > 50)`.
+CRM`, `assign: security group id is empty` (the `security_group.path` gave an empty value), `assign: pool is too large (N > 200)`, `Pool is too large for least_busy (N > 50)`.
 
 ## Find records
 
@@ -1036,6 +1190,10 @@ lead description is "Open tasks: 2+; nearest: <the task due on 1 November>; plan
 | `Must be one of: truncate, error`, `Must be one of: empty_result, ignore_condition, error` | `…on_limit`, `…on_empty_value` |
 | `Variable "deals" is a record list; use foreach to change its records` | `…target` of `modify` / `save_object` |
 
+**Run-time errors:** `find_records: CRM module of "x" is unknown (set related_to.module)`,
+`find_records: more than N records match (on_limit=error)`, `find_records: result is too large (…)`,
+`CRM_CAPABILITY_MISSING`, the empty-value error with `on_empty_value: error`.
+
 ## Update list records
 
 The `update_records` action changes **the same fields of every record** of a list found by
@@ -1150,6 +1308,10 @@ The `foreach` block runs nested actions **for every item of a list**: records fo
 related records, or values returned by an expression. It is the counterpart of the Bitrix24 "Iterator" and of changing
 related records in AOW. Bulk operations need it: "change the responsible user of all open deals of the account", "an
 e-mail to every meeting attendee", "a sum over the lines except cancelled ones".
+
+![find_records and foreach steps](../../images/screenshots/en/21-execution-detail-foreach.png)
+
+*An execution with `find_records` and `foreach`: the loop summary record (`count`, `processed`, `failed_items`) and the body steps for every contact found.*
 
 ### Format
 
@@ -1449,6 +1611,10 @@ released, the state is kept in PostgreSQL, and the wait survives a backend resta
 { "id": "remind", "type": "delay", "mode": "until", "until": "object.end_date", "cast": "date", "time": "09:00", "offset": "-P30D" }
 ```
 
+![Execution in the Waiting status](../../images/screenshots/en/20-execution-detail-waiting.png)
+
+*An execution parked on `delay`: status Waiting, the steps before the pause are done, the rest runs after wake-up.*
+
 ### Fields
 
 | Field | Required | Description |
@@ -1528,6 +1694,7 @@ Ready-made processes are in recipes [28](recipes.md#28-remind-30-days-before-the
 | The due time is beyond the limit | `delay: wait of 500 days exceeds the limit P400D` |
 | The moment has passed with `if_past: fail` | `delay: the moment 2026-01-01T00:00:00+00:00 has already passed` |
 | The expression returned an invalid duration | `delay: invalid duration "soon"` |
+| An invalid offset at run time | `delay: invalid offset "…"` |
 | The execution snapshot is too large to park | `Execution state is too large to wait (N bytes, limit M)` |
 
 Date errors with `on_invalid: continue` do not stop the execution: the step is `skipped` with `Delay skipped: …`.
@@ -1558,9 +1725,10 @@ the process returns a warning in the `warnings` field of the response:
 The warning does not block saving: at run time such a variable behaves like a not-found one (a condition on it is
 false, an expression gets an empty value, `save_object` is `skipped`).
 
-Save errors: `Step id must match ^[a-z][a-z0-9_]{0,63}$`, `Step id "x" is already used at …`,
+Save errors: `Action must be an object`, `Row must be an object` (a `definition.preload` row), `Step id must match ^[a-z][a-z0-9_]{0,63}$`, `Step id "x" is already used at …`,
 `Step name must be a string up to 255 characters`, `Nesting is too deep (max 5)`, `Unknown action type` (for an
-unknown type in a nested list); errors of the block itself are in [Condition](#save-errors-and-warnings).
+unknown type in a nested list), `Action "modify" does not support "delivery"` (`delivery` on an action without an
+external call), `Delivery must be "at_most_once" or "at_least_once"`; errors of the block itself are in [Condition](#save-errors-and-warnings).
 
 ## Step errors: on_error and retries
 

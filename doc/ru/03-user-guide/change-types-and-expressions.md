@@ -28,13 +28,24 @@
 
 Те же типы изменения работают в действии [Записать в переменную процесса](actions.md#записать-в-переменную-процесса)
 (`set_variable`) — для промежуточных значений, которые не сохраняются в CRM, — и в правилах
-[Изменить записи списка](actions.md#изменить-записи-списка) (`update_records`).
+[Изменить записи списка](actions.md#изменить-записи-списка) (`update_records`). Неизвестный код отклоняется при
+сохранении: `Change type must be one of: set_value, set_from_variable, calculate, template, date_shift, increment, decrement, clear, append, prepend, remove, map, aggregate`
+(список отдаёт [`GET /api/dictionaries/change-types`](../06-api-reference/endpoints.md)).
+
+Где используется язык выражений:
+
+| Место | Как записывается | Результат |
+|---|---|---|
+| **Расчёт** (`calculate`) в `modify`, `set_variable`, `update_records` | весь `value` (или `expression`) — выражение | значение любого типа: число, текст, булево, список |
+| Правая часть условия (`value_type: expression`) | `value` (или пара для `between`) | приводится `cast` строки перед сравнением |
+| Тег шаблона `{{= … }}` | выражение внутри тега | приводится к тексту |
+| Фильтры шаблона `{{ x \| f:a }}` | вызов функции `f(x, a)` | приводится к тексту |
 
 ## Равен значению
 
 Записывает текст из **Нового значения** в поле назначения как есть.
 
-- Допустимые значения: любой текст или число; пустое значение записывает пустую строку.
+- Допустимые значения: любой текст или число (через API также `true` / `false` и `null`); пустое значение записывает пустую строку.
 - Пример: цель `v1.rating`, значение `VIP`.
 - Ошибка сервера: `Value must be a string or a number` (возможна только через API, например если значение — массив).
 
@@ -60,12 +71,15 @@ concat('Discount applied, new amount: ', object.amount)
 upper(trim(object.name))
 ```
 
+Через API выражение передаётся в `value`; ключ `expression` — синоним (при обоих побеждает `expression`).
+Пустое выражение — ошибка сохранения `Expression is required`.
+
 ### Синтаксис
 
 | Элемент | Как записывается | Примеры |
 |---|---|---|
 | Число | цифры, можно с десятичной точкой | `10`, `0.9`, `.5` |
-| Строка | в одинарных или двойных кавычках; `\` экранирует следующий символ | `'abc'`, `"Call back: "`, `'it\'s'` |
+| Строка | в одинарных или двойных кавычках; `\` экранирует только кавычку и сам себя, остальные последовательности (`\d`, `\p{Lu}`) сохраняются как есть | `'abc'`, `"Call back: "`, `'it\'s'`, `'^\d{10}$'`, `'\\'` (один `\`) |
 | Путь к полю | `object.<поле>` или `<переменная>.<поле>`; вложенные поля — через дополнительные точки | `object.amount`, `v1.price`, `v1.address.city` |
 | Литералы | `true`, `false`, `null` | `object.is_active == true` |
 | Список | `[a, b, …]` | `[object.a, object.b] == [1, 2]` |
@@ -77,6 +91,17 @@ upper(trim(object.name))
 | Вызов функции | `имя(аргумент, …)`, регистр имени не важен | `round(object.amount, 2)` |
 
 **Синонимы:** `=` — то же, что `==`; `<>` — то же, что `!=`; `&&`, `||`, `!` — то же, что `and`, `or`, `not`.
+
+**Литералы подробнее.**
+
+- Число — только цифры и точка: `1e3`, `1 000`, `1,5` литералами не являются (`1,5` — это два аргумента через запятую).
+  Отрицательное число — унарный минус: `-5`. Литерал длиннее 100 цифр — ошибка сохранения `Number is too large at position …`.
+- В строке нет escape-последовательностей вроде `\n` или `\t`: `'a\nb'` — четыре символа `a`, `\`, `n`, `b`.
+  `\'` (или `\"` внутри двойных кавычек) — кавычка, `\\` — один обратный слэш; любой другой `\` остаётся как есть,
+  поэтому регулярные выражения пишутся без удвоения: `'^\d{10}$'` даёт шаблон `^\d{10}$`.
+- Пробелы и переводы строк между элементами выражения не важны.
+- Путь начинается с буквы или `_` и состоит из букв, цифр, `_` и точек; поле с дефисом или пробелом в имени путём
+  записать нельзя.
 
 **Приоритет операторов** (сверху вниз — от слабого к сильному; операторы одного уровня выполняются слева направо):
 
@@ -96,10 +121,77 @@ upper(trim(object.name))
 Слово с точкой — всегда путь: `object.or`, `object.and`, `v1.null` — это поля, а не операторы. Слово без точки, после
 которого нет `(`, — ошибка: пишите `object.amount`, а не `amount`.
 
+### Системные переменные и константы
+
+Кроме `object`, `object_before` и переменных процесса, в любом месте, где допустим путь — в условиях, выражениях
+**Расчёт**, шаблонах, фильтрах и `set_variable` — доступны две виртуальные переменные:
+
+- **`sys` — системные переменные выполнения.** Значения не хранятся в контексте, а вычисляются при чтении, поэтому
+  `sys.now` — это текущий момент, а не время старта. `sys` только для чтения.
+- **`config` — константы процесса.** Объявляются в `definition.constants` (см. [Константы процесса](processes.md#константы-процесса)),
+  только для чтения; набор имён проверяется при сохранении.
+
+| Поле | Тип | Значение | Пример |
+|---|---|---|---|
+| `sys.execution_id` | string | UUID выполнения | `f270393e-8d59-4142-8a46-9084b6d0149f` |
+| `sys.parent_execution_id` | string | UUID родительского выполнения; `''` у верхнего уровня | `''` |
+| `sys.process_id` | integer | ID процесса | `508` |
+| `sys.process_name` | string | Название процесса | `VIP-контрагенты` |
+| `sys.process_version` | integer | Версия определения, с которой идёт выполнение | `3` |
+| `sys.event_id` | string | ID события CRM (`manual-<uuid>` при ручном запуске) | `1792043807117-0` |
+| `sys.trigger` | string | Источник запуска: `stream`, `manual`, `child` | `stream` |
+| `sys.depth` | integer | Глубина вложенности: `0` — верхний уровень | `1` |
+| `sys.module` | string | Модуль объекта события | `Accounts` |
+| `sys.record_id` | string | `id` записи CRM из события | `9185c76a-…` |
+| `sys.event_type` | string | `create`, `update` или `delete` | `update` |
+| `sys.changed_fields` | list | Список изменённых полей; `[]`, если событие его не передало | `["phone_office"]` |
+| `sys.user_id` | string | ID пользователя CRM, сохранившего запись; иначе `''` | `1` |
+| `sys.now` | datetime | Текущий момент, UTC `Y-m-d H:i:s`; вычисляется при каждом чтении | `2026-10-26 20:03:37` |
+| `sys.started_at` | datetime | Начало выполнения, UTC `Y-m-d H:i:s` | `2026-10-26 20:03:37` |
+| `sys.errors_count` | integer | Сколько ошибок шагов обработано `on_error` / циклом | `0` |
+| `sys.last_error` | object | Последняя обработанная ошибка — объект с полями `step_id`, `step_path`, `action_type`, `code`, `message`, `http_status`, `attempts`, `at` (и `iteration` внутри цикла); поля нет, пока ошибок не было. Читайте поле: `sys.last_error.code`, `sys.last_error.message`; см. [Ошибки шага](actions.md#переменная-sys-последняя-ошибка) | `sys.last_error.code` → `HTTP_503` |
+
+Список с типами отдаёт [`GET /api/dictionaries/system-variables`](../06-api-reference/endpoints.md); завершённое
+выполнение хранит снимок значений в `context.system` (см. [Выполнения и аудит](executions-and-audit.md)).
+
+![Значения sys.* в результате шага](../../images/screenshots/ru/26-execution-context-system.png)
+
+*Шаг с шаблоном `{{ sys.trigger }} run of «{{ sys.process_name }}» v{{ sys.process_version }} at {{ sys.now }}`: в «Результат (result_data)» видны подставленные значения. Снимок `context.system` возвращает API (`GET /api/executions/{id}`); в интерфейсе на вкладках контекста его нет.*
+
+Примеры:
+
+```text
+object.processed_at   = sys.now
+object.correlation_id = sys.execution_id
+object.segment        = if(object.annual_revenue >= config.vip_threshold, 'VIP', 'Regular')
+object.stages         = join(config.open_stages, ', ')
+```
+
+Особенности:
+
+- **До создания выполнения** (`sys.execution_id`, `sys.started_at`) значения пустые: условия проверяются раньше, чем
+  появляется строка выполнения. В снимке завершённого выполнения оба поля заполнены.
+- **Ручной запуск**: `sys.trigger = manual`; `sys.user_id` берётся из `object.user_id`, если он передан.
+- **Потоковое событие**: `sys.user_id` — из `wps_user_id` (пользователь, сохранивший запись), `sys.changed_fields` — из
+  события контракта 2.0; старый плагин списка не передаёт — будет `[]`.
+- **Дочерний процесс** получает свои `sys.execution_id`, `sys.depth` (`+1`), `sys.trigger = child`, `sys.process_*`,
+  `sys.parent_execution_id` родителя и **свои** константы.
+- **`sys.now` не «замораживается»**: два обращения подряд могут дать разное время. Для единой отметки сохраните его в
+  переменную (`set_variable`) и используйте её.
+- `sys` и `config` без поля в выражении недоступны — указывайте конкретное поле (`sys.trigger`, `config.threshold`).
+  Вложенные поля читаются через точку: `sys.last_error.code`, а элемент списка-константы — функциями списков
+  (`first(config.open_stages)`, `in(object.sales_stage, config.open_stages)`).
+- **В условиях** `sys.*` и `config.*` известны сразу и никогда не запускают [ленивую предзагрузку](triggers-and-conditions.md#условия-по-предзагруженным-переменным-ленивая-предзагрузка):
+  строка `sys.trigger` **Равен** `manual` или правая часть-выражение `config.vip_threshold` проверяются в первом проходе.
+- **Типы значений сохраняются**: `config.vip_threshold` из `100000` — число, `config.open_stages` — список, `sys.depth`
+  — целое. В шаблоне список подставляется как JSON — используйте фильтр `join`.
+- **Ошибки сохранения**: `Unknown system variable "sys.x"; available: …`, `Constant "x" is not defined in
+  definition.constants`, `Variable "sys" is read-only`, `Name "config" is reserved`.
+
 ### Значения и типы
 
 - **Отсутствующее поле даёт пустую строку** (расчёт из-за этого не останавливается).
-- `+` **складывает**, если оба операнда — числа строгого формата (число или текст вида `"10"`, `"-0.5"`, `" 3 "`), и **склеивает** в остальных случаях: `'10' + 5` → `15`, `object.name + 5` → `Deal5`. Текст `'1 234,56'` (пробел, запятая) и `'1e3'` числами не считаются — без `to_number()` получится склейка. `'' + 5` → `5` (склейка).
+- `+` **складывает**, если оба операнда — числа строгого формата (число или текст вида `"10"`, `"-0.5"`, `" 3 "`), и **склеивает** в остальных случаях: `'10' + 5` → `15`, `object.name + 5` → `Deal5`. Текст `'1 234,56'` (пробел, запятая) и `'1e3'` числами не считаются — без `to_number()` получится склейка. `'' + 5` → текст `'5'` (склейка: пустая строка — не число).
 - `-` `*` `/` `%` требуют чисел. Пустое значение считается `0`. Текст, который не является числом, завершает шаг ошибкой: `Operator "*" requires numbers, got "abc"`.
 - Деление или остаток от деления на ноль завершают шаг ошибкой: `Division by zero in expression`, `Modulo by zero in expression`. Остаток имеет знак делимого: `-7 % 3` → `-1`.
 - **Арифметика точная десятичная** (bcmath), а не с плавающей точкой: `0.1 + 0.2` → `0.3`, `19.99 * 3` → `59.97`, `0.1 + 0.2 == 0.3` → `true`. Промежуточные результаты хранятся с точностью 10 знаков после запятой; деление округляется до 10 знаков, половина — от нуля (`1 / 3` → `0.3333333333`, `2 / 3` → `0.6666666667`).
@@ -116,7 +208,7 @@ upper(trim(object.name))
 |---|---|---|---|
 | 1 | Пустые значения | `null` и `''` равны (отсутствующее поле — тоже `''`) | `object.missing == ''` → `true`, `null == ''` → `true` |
 | 2 | `<` `<=` `>` `>=` и хотя бы один операнд пустой | всегда `false` | `object.missing > 5` → `false`, `object.missing < 5` → `false` |
-| 3 | Один из операндов — `true` / `false` | второй приводится к булеву (`1`, `yes`, `да` → `true`; `0`, `no`, `нет` → `false`) | `'yes' == true` → `true`, `'abc' == true` → `false` |
+| 3 | Один из операндов — `true` / `false` | второй приводится к булеву по таблице [истинности](#истинность-условий) (`1`, `yes`, `да` → `true`; `0`, `no`, `нет` → `false`) | `'yes' == true` → `true`, `'abc' == true` → `false` |
 | 4 | Оба операнда — числа строгого формата | точное десятичное сравнение (без погрешностей float) | `'100' == 100.00` → `true`, `'9' < '10'` → `true` |
 | 5 | Оба — списки | `==` / `!=` поэлементно; `<` и другие — ошибка | `[1, 2] == ['1', '2']` → `true` |
 | 6 | Всё остальное | как строки, побайтово; **регистр важен** | `'abc' == 'ABC'` → `false`, `'b' > 'a'` → `true` |
@@ -138,9 +230,10 @@ upper(trim(object.name))
 
 | Считается истиной | Считается ложью |
 |---|---|
-| `true`, `1`, `yes`, `on`, `да` | `false`, `0`, `no`, `off`, `нет`, `''`, `null` (и отсутствующее поле) |
+| `true`, `1`, `t`, `yes`, `y`, `on`, `да` | `false`, `0`, `f`, `no`, `n`, `off`, `нет`, `''`, строка из пробелов, `null` (и отсутствующее поле) |
 
-Любое другое значение завершает шаг ошибкой `Condition must be boolean, got "abc"` — опечатка в условии не превращается
+Текст сравнивается без учёта регистра и пробелов по краям (`' YES '`, `'Да'` — истина). Из чисел допустимы только `1`
+и `0`: `if(2, …)` — ошибка. Любое другое значение завершает шаг ошибкой `Condition must be boolean, got "abc"` — опечатка в условии не превращается
 молча в «ложь». Обычно в условие ставят сравнение: не `if(object.status, …)`, а `if(object.status == 'Active', …)`.
 
 `and` и `or` вычисляют правую часть, только если она нужна (`false and …` → `false` без вычисления правой части), и
@@ -173,39 +266,141 @@ if(object.amount > 0, round(object.discount / object.amount * 100, 1), 0)
 
 ### Функции
 
+В языке выражений 121 функция. Имя функции пишется в любом регистре (`ROUND(…)` = `round(…)`). Число аргументов
+проверяется **при сохранении процесса**: `substr(object.name)` не сохранится с ошибкой
+`Function "substr" expects 2..3 arguments, got 1`. Литеральные аргументы, которые можно проверить заранее (точность
+округления, флаги и шаблон регулярного выражения, JSONPath, единица `date_diff`, часовой пояс, порядок `sort`, длина
+`pad_*` / `repeat`), тоже проверяются при сохранении; вычисленные — во время выполнения. Аргументы обычных функций
+вычисляются заранее, аргументы [условных функций](#условные-функции) — лениво.
+
+Каждая функция описана один раз — в разделе своей категории:
+
+| Категория | Функции | Раздел |
+|---|---|---|
+| Условные (5) | `if`, `coalesce`, `ifempty`, `ifs`, `switch` | [Условные функции](#условные-функции) |
+| Строки (32) | `concat`, `upper`, `lower`, `trim`, `len`, `substr`, `left`, `right`, `capitalize`, `title_case`, `truncate`, `pad_left`, `pad_right`, `repeat`, `contains`, `starts_with`, `ends_with`, `index_of`, `before`, `after`, `replace`, `replace_ci`, `split`, `join`, `strip_tags`, `nl2br`, `urlencode`, `json`, `translit`, `slug`, `default`, `number` | [Строки](#строки) |
+| Регулярные выражения (3) | `regex_match`, `regex_extract`, `regex_replace` | [Регулярные выражения](#регулярные-выражения) |
+| Числа (14) | `round`, `floor`, `ceil`, `trunc`, `abs`, `sign`, `min`, `max`, `pow`, `sqrt`, `percent`, `to_number`, `to_int`, `number_format` | [Числа](#числа) |
+| Списки (18) | `list`, `to_list`, `count`, `in`, `first`, `last`, `nth`, `slice`, `unique`, `sort`, `reverse`, `concat_lists`, `without`, `sum`, `avg`, `pluck`, `where`, `index_of_item` | [Списки](#списки) |
+| Проверки и приведение (13) | `is_empty`, `is_not_empty`, `is_number`, `is_numeric_text`, `is_int`, `is_date`, `is_bool`, `is_list`, `is_object`, `to_string`, `to_bool`, `to_date`, `to_datetime` (а также `to_number`, `to_int`, `to_list` из своих разделов) | [Проверки и приведение типов](#проверки-и-приведение-типов) |
+| JSON (4) | `json_encode`, `json_decode`, `json_get`, `json_get_all` | [JSON](#json) |
+| Даты и время (32) | `now`, `today`, `date`, `datetime`, `add_minutes`, `add_hours`, `add_days`, `add_weeks`, `add_months`, `add_years`, `date_diff`, `year`, `month`, `day`, `hour`, `minute`, `weekday`, `week`, `quarter`, `start_of_*` / `end_of_*` (day, week, month, quarter, year), `is_weekend`, `format_date`, `format_date_locale` | [Даты и время](#даты-и-время) |
+
+Полный список с сигнатурами, описаниями и примерами отдаёт
+[`GET /api/dictionaries/functions`](../06-api-reference/endpoints.md#get-apidictionariesfunctions) (поля `name`,
+`category`, `signature`, `min_args`, `max_args`, `returns`, `description`, `example`). Разработчик может добавить новые
+функции: [Функции выражений](../07-developer-guide/extending/expression-functions.md).
+
+#### Строки
+
+Строковые функции работают с символами Unicode (кириллица — один символ, а не два байта). Аргумент любого типа
+сначала превращается в текст: `null` и отсутствующее поле → `''`, `true` / `false` → `true` / `false`, список или
+запись → JSON. Сравнение подстрок — **с учётом регистра**, кроме `replace_ci`. Примеры проверены на работающем WPS.
+
 | Функция | Результат | Пример | Результат примера |
 |---|---|---|---|
-| `if(cond, then[, else])` | см. [Условные функции](#условные-функции) | `if(object.amount > 100, 'VIP', 'Regular')` | `VIP` |
-| `coalesce(a, b, …)` | первое непустое значение | `coalesce(object.missing, object.name)` | `Deal` |
-| `ifempty(a, default)` | `a` или значение по умолчанию | `ifempty(object.missing, 'нет')` | `нет` |
-| `ifs(cond1, value1, …[, default])` | значение первой истинной пары | `ifs(object.amount > 1000, 'B', 'C')` | `C` |
-| `switch(x, key1, value1, …[, default])` | значение для совпавшего ключа | `switch(object.name, 'Deal', 1, 0)` | `1` |
-| `concat(a, b, …)` | все аргументы, склеенные в текст | `concat('Call back: ', object.name)` | `Call back: Ivan Petrov` |
-| `upper(s)` | верхний регистр | `upper('hello')` | `HELLO` |
-| `lower(s)` | нижний регистр | `lower('ABC')` | `abc` |
-| `trim(s)` | текст без пробелов в начале и в конце | `trim('  x  ')` | `x` |
-| `len(s)` | длина в символах | `len('Привет')` | `6` |
-| `substr(s, start[, length])` | часть текста; `start` считается от 0, отрицательный — от конца | `substr('hello world', 0, 5)` | `hello` |
-| `round(x[, digits])` | число, округлённое до `digits` знаков (по умолчанию 0) | `round(10.456, 2)` | `10.46` |
-| `abs(x)` | модуль числа | `abs(-5)` | `5` |
-| `min(a, b, …)` | наименьшее число | `min(object.amount, 1000)` | например, `500` |
-| `max(a, b, …)` | наибольшее число | `max(object.amount, 0)` | например, `500` |
-| `default(a, fallback)` | `a`, если оно не пустое, иначе `fallback` (как `ifempty`; удобно как фильтр шаблона) | `default(object.missing, '—')` | `—` |
-| `number(x[, decimals[, dec_sep[, thousands_sep]]])` | синоним `number_format` | `number(1234.5, 2, ',', ' ')` | `1 234,50` |
-| `capitalize(s)` | первая буква — заглавная | `capitalize('иван')` | `Иван` |
-| `truncate(s, length[, suffix])` | текст не длиннее `length` символов вместе с `suffix` (по умолчанию `…`) | `truncate('Big deal', 5)` | `Big …` |
-| `nl2br(s)` | переводы строк → `<br>` (для HTML-писем) | `nl2br(object.description)` | `line1<br>line2` |
-| `json(v)` | значение в виде JSON | `json([1, 'a'])` | `[1,"a"]` |
-| `urlencode(s)` | текст, закодированный для URL (RFC 3986) | `urlencode('a b&c')` | `a%20b%26c` |
-| `join(list[, separator])` | элементы списка через `separator` (по умолчанию `, `); понимает массив, JSON-массив и multienum `^a^,^b^` | `join('^Banking^,^Retail^')` | `Banking, Retail` |
+| `concat(a, b, …)` | все аргументы, склеенные в текст (минимум один аргумент) | `concat('Call back: ', object.name)` при `name = Deal`; `concat(1, true, null, [1,2])` | `Call back: Deal`; `1true[1,2]` |
+| `upper(s)`, `lower(s)` | верхний / нижний регистр | `upper('привет')`, `lower('ABC')` | `ПРИВЕТ`, `abc` |
+| `trim(s)` | текст без пробелов и переводов строк по краям | `trim('  x  ')` | `x` |
+| `len(s)` | длина в символах; пустое значение — `0` | `len('Привет')`, `len(object.missing)` | `6`, `0` |
+| `substr(s, start[, length])` | часть текста; `start` от 0, отрицательный — от конца; `length` — сколько символов (отрицательная — сколько отбросить с конца). Аргументы приводятся к целому без проверки (`'x'` → `0`) | `substr('hello world', 0, 5)`, `substr('hello world', -5)` | `hello`, `world` |
+| `left(s, n)`, `right(s, n)` | первые / последние `n` символов; `n` больше длины — весь текст | `left('+79991234567', 2)`, `right('+79991234567', 10)` | `+7`, `9991234567` |
+| `capitalize(s)` | первая буква — заглавная, остальные не меняются | `capitalize('иван')`, `capitalize('иВАН')` | `Иван`, `ИВАН` |
+| `title_case(s)` | каждое слово с заглавной, остальные буквы — строчные | `title_case('иван петров')`, `title_case('IVAN PETROV')` | `Иван Петров`, `Ivan Petrov` |
+| `truncate(s, length[, suffix])` | текст не длиннее `length` символов **вместе** с `suffix` (по умолчанию `…`); короткий текст не меняется | `truncate('Big deal', 5)`, `truncate('Big deal', 5, '...')`, `truncate('Big deal', 20)` | `Big …`, `Bi...`, `Big deal` |
+| `pad_left(s, length[, char])`, `pad_right(…)` | дополняет до `length` символов слева / справа; `char` — ровно один символ (по умолчанию пробел); длинный текст не обрезается | `pad_left('42', 5, '0')`, `pad_right('42', 5, '.')`, `pad_left('12345', 3, '0')` | `00042`, `42...`, `12345` |
+| `repeat(s, count)` | строка, повторённая `count` раз (`0…1000`, результат ≤ 1 МБ) | `repeat('-', 3)`, `repeat('ab', 0)` | `---`, `''` |
+| `contains(s, part)` | есть ли подстрока | `contains('ivan@gmail.com', '@')`, `contains('ABC', 'b')` | `true`, `false` |
+| `starts_with(s, part)`, `ends_with(s, part)` | начинается / заканчивается ли строка подстрокой | `starts_with('A-1', 'A-')`, `ends_with('ivan@gmail.com', '@gmail.com')` | `true`, `true` |
+| `index_of(s, part)` | позиция первого вхождения (в символах, с 0) или `-1` | `index_of('a@b.c', '@')`, `index_of('Привет', 'в')`, `index_of('abc', 'z')` | `1`, `3`, `-1` |
+| `before(s, sep)` | часть до первого вхождения; нет вхождения — вся строка | `before('a@b.c', '@')`, `before('abc', '@')` | `a`, `abc` |
+| `after(s, sep)` | часть после первого вхождения; нет вхождения — `''` | `after('a@b.c', '@')`, `after('abc', '@')` | `b.c`, `''` |
+| `replace(s, search, replacement)` | замена всех вхождений; пустой `search` ничего не меняет | `replace('999-123-45-67', '-', '')`, `replace('abc', '', 'x')` | `9991234567`, `abc` |
+| `replace_ci(s, search, replacement)` | то же без учёта регистра (Unicode); остальной текст сохраняет регистр | `replace_ci('Активен', 'активен', 'Active')`, `replace_ci('AaAa', 'a', '-')` | `Active`, `----` |
+| `split(s, separator[, wrapper])` | список: делит строку, обрезает элементы, отбрасывает пустые; `wrapper` снимает обрамление (multienum) | `split('^vip^,^partner^', ',', '^')`, `split(' a , ,b ', ',')`, `split('', ',')` | `["vip","partner"]`, `["a","b"]`, `[]` |
+| `join(list[, separator[, wrapper]])` | элементы списка через `separator` (по умолчанию `, `); понимает массив, JSON-массив в строке и multienum `^a^,^b^`; другая строка — один элемент; `wrapper` оборачивает каждый элемент | `join(['vip', 'partner'], ',', '^')`, `join('^vip^,^partner^', '; ')`, `join('["a","b"]', '\|')`, `join(object.missing)` | `^vip^,^partner^`, `vip; partner`, `a\|b`, `''` |
+| `strip_tags(s)` | удаляет HTML-теги; HTML-сущности (`&amp;`) остаются | `strip_tags('<p>Привет</p>')`, `strip_tags('<b>a</b> &amp; <br/>b')` | `Привет`, `a &amp; b` |
+| `nl2br(s)` | вставляет `<br>` перед каждым переводом строки (сам перевод остаётся) — для HTML-писем | `nl2br(object.description)` при `"line1\nline2"` | `line1<br>` + перевод строки + `line2` |
+| `urlencode(s)` | кодирование для URL по RFC 3986 (пробел → `%20`, кириллица → UTF-8) | `urlencode('a b&c')`, `urlencode('Привет')` | `a%20b%26c`, `%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82` |
+| `json(v)` | значение в виде JSON (как `json_encode`, но без ошибки на невалидных данных); удобно как фильтр шаблона | `json([1, 'a'])`, `json('a/b')` | `[1,"a"]`, `"a/b"` |
+| `translit(s)` | кириллица → латиница (ГОСТ 7.79-2000, система Б); прочие символы не меняются | `translit('Щука')`, `translit('Йошкар-Ола, Юрий, Цой, Ёлка')` | `Shchuka`, `Yoshkar-Ola, Yuriy, Tsoy, Yolka` |
+| `slug(s)` | транслитерация, нижний регистр, всё кроме `a-z` и `0-9` → `-` (серии схлопываются), без `-` по краям | `slug('Заказ №42')`, `slug('  Привет, Мир! 2026 ')` | `zakaz-42`, `privet-mir-2026` |
+| `default(a, fallback)` | `a`, если оно не `null` и не `''`, иначе `fallback` (как `ifempty`, но аргументы вычисляются оба; удобно как фильтр `{{ x \| default:'—' }}`) | `default(object.missing, '—')`, `default(' ', '—')`, `default(0, '—')` | `—`, `' '`, `0` |
+| `number(x[, decimals[, dec_sep[, thousands_sep]]])` | синоним [`number_format`](#числа) | `number(1234.5, 2, ',', ' ')` | `1 234,50` |
 
-Текстовые функции работают с любым языком, в том числе с кириллицей. Число аргументов проверяется **при сохранении
-процесса**: `substr(object.name)` не сохранится с ошибкой `Function "substr" expects 2..3 arguments, got 1`.
-Числовые функции описаны в разделе [Числа](#числа).
+**Особенности и ошибки строковых функций** (ошибки выполнения завершают шаг):
 
-Полный список функций с сигнатурами и описаниями отдаёт [`GET /api/dictionaries/functions`](../06-api-reference/endpoints.md#get-apidictionariesfunctions).
-Разработчик может добавить новые функции: [Функции выражений](../07-developer-guide/extending/expression-functions.md).
-Функции дат (`today`, `add_days`, `date_diff`, `format_date` …) описаны в разделе [Даты и время](#даты-и-время).
+- `translit` переводит заглавную многобуквенную букву как `Shch`, `Zh`, `Kh`…, поэтому слово заглавными получается
+  смешанным: `translit('ЩУКА')` → `ShchUKA`. Если нужен верхний регистр, примените `upper(translit(…))`.
+- `truncate`: длина — неотрицательное целое, иначе `Function "truncate": length must be a non-negative integer, got "x"`.
+  Если `suffix` длиннее `length`, остаётся только `suffix`: `truncate('Big deal', 2, '...')` → `...`.
+- `left` / `right`: `Function "left": count must be a non-negative integer, got "-1"` (дробное число — та же ошибка).
+- `pad_left` / `pad_right` и `repeat`: длина 0…1000 — `Function "pad_left": length must be an integer between 0 and 1000, got "1001"`,
+  `Function "repeat": count must be an integer between 0 and 1000, got "1001"` (литерал — при сохранении);
+  `char` не из одного символа — `pad_left(): pad character must be exactly one character`.
+- `split`: пустой разделитель — `split(): separator must not be empty`; больше 10 000 элементов —
+  `List is too large (max 10000 items)`.
+- В строке нет escape-последовательностей: `'a\nb'` — это четыре символа `a`, `\`, `n`, `b`, а не перевод строки
+  (см. [Синтаксис](#синтаксис)). Перевод строки приходит только из данных (поле CRM, шаблон).
+
+### Регулярные выражения
+
+Функции `regex_match`, `regex_extract` и `regex_replace` принимают шаблон **без разделителей**: движок сам
+оборачивает его в `~…~u` (Unicode включён всегда) и экранирует `~` внутри. Поэтому шаблон записывается как обычная
+строка, без удвоения слэшей: `'^\d{10}$'` (см. [Синтаксис](#синтаксис)).
+
+| Функция | Результат | Пример |
+|---|---|---|
+| `regex_match(s, pattern[, flags])` | `true`, если есть хотя бы одно совпадение | `regex_match(object.inn, '^\d{10}(\d{2})?$')` |
+| `regex_extract(s, pattern[, group[, flags]])` | первое совпадение или указанная группа (`0` — всё совпадение); нет совпадения — `''` | `regex_extract(object.subject, '#(\d+)', 1)` |
+| `regex_replace(s, pattern, replacement[, flags])` | заменяет все совпадения; в замене можно ссылаться на группы `$1`, `$2` … | `regex_replace(object.phone, '[^0-9+]', '')` |
+
+Флаги — необязательный аргумент: `i` (без учёта регистра, Unicode), `m` (`^` и `$` на каждой строке), `s` (точка
+совпадает и с переводом строки). Флаги можно комбинировать: `'im'`. Другие флаги (`u`, `e` …) не нужны и отклоняются.
+
+```text
+regex_replace(object.phone, '[^0-9+]', '')                          '+7 (999) 123-45-67' → '+79991234567'
+regex_match(object.inn, '^\d{10}(\d{2})?$')                        ИНН из 10 или 12 цифр
+regex_extract(object.subject, '#(\d+)', 1)                          'Заказ #42' → '42'
+regex_replace(object.date, '^(\d{4})-(\d{2})-(\d{2})$', '$3.$2.$1')  '2026-10-26' → '26.10.2026'
+```
+
+**Ограничения.** Они защищают воркер от катастрофических шаблонов: шаблон — не длиннее 500 символов, строка — не
+длиннее 100 000 символов, backtracking — 100 000, recursion — 10 000. При превышении шаг падает с ошибкой
+`Regular expression failed: backtrack limit exceeded`, а не зависает. Литеральный шаблон и флаги проверяются **при
+сохранении процесса**:
+
+| Выражение | Ошибка при сохранении |
+|---|---|
+| `regex_match(object.x, '(')` | `Invalid regular expression in regex_match(): missing closing parenthesis` |
+| `regex_match(object.x, 'a', 'x')` | `Function "regex_match": flags may contain only i, m, s, got "x"` |
+| шаблон длиннее 500 символов | `Regular expression in regex_match() is too long (max 500 characters)` |
+| `regex_extract(object.x, 'a', -1)` | `Function "regex_extract": group must be a non-negative integer, got "-1"` |
+
+Если шаблон, флаги или номер группы **вычисляются** (берутся из поля или собираются `concat`), те же проверки
+выполняются при выполнении шага, и ошибка завершает шаг. Ошибки выполнения:
+
+| Ситуация | Сообщение |
+|---|---|
+| Вычисленный шаблон не компилируется | `Invalid regular expression in regex_match(): missing closing parenthesis` |
+| Строка длиннее 100 000 символов | `Regular expression input in regex_match() is too long (max 100000 characters)` |
+| Превышен лимит backtracking (`regex_match('aaaa…ab', '(a+)+$')`) | `Regular expression failed: backtrack limit exceeded` |
+| Превышен лимит рекурсии | `Regular expression failed: recursion limit exceeded` |
+| Отрицательная или дробная группа | `Function "regex_extract": group must be a non-negative integer, got "…"` |
+
+Поведение на краях (проверено на работающем WPS):
+
+| Выражение | Результат | Почему |
+|---|---|---|
+| `regex_match('ABC', 'abc', 'i')` | `true` | флаг `i` |
+| `regex_match('a~b', 'a~b')` | `true` | `~` экранируется движком |
+| `regex_extract('order #42', '#(\d+)')` | `#42` | без группы — всё совпадение |
+| `regex_extract('order #42', '#(\d+)', 5)` | `''` | группы с таким номером нет |
+| `regex_replace('Привет Мир', '\p{Lu}', '_')` | `_ривет _ир` | Unicode-классы работают всегда |
+| `regex_match('ab', 'a.b', 's')` | `false` | `s` влияет только на перевод строки; между `a` и `b` нет символа |
+
+Для multienum (`^vip^,^partner^`) регулярное выражение не нужно — используйте `split`/`join` с параметром `wrapper`
+(см. [Списки](#списки)): `join(split(object.tags_c, ',', '^'), '; ')` → `vip; partner`.
 
 ### Числа
 
@@ -244,6 +439,205 @@ number_format(object.amount, 2, ',', ' ')          1234567.891 → '1 234 567,89
 целой — иначе процесс не сохранится: `Function "round": precision must be an integer`,
 `Function "number_format": decimals must be an integer`. Вычисленная дробная точность — ошибка выполнения.
 
+**Граничные случаи и ошибки чисел** (проверено на работающем WPS):
+
+| Выражение | Результат |
+|---|---|
+| `round(object.missing)`, `sign(object.missing)` | `0`, `0` — пустое значение считается нулём |
+| `round('abc')` | ошибка `Function "round" requires a number, got "abc"` |
+| `round(1.5, 0.5)` | ошибка сохранения `Function "round": precision must be an integer` |
+| `ceil(-1.5)`, `trunc(10.459, 2)` | `-1`, `10.45` |
+| `max(['1 000', 2])` | ошибка `Function "max" requires a number, got "1 000"` — числа с пробелами сначала через `to_number` |
+| `min([])` | `''` |
+| `pow(2, 10)`, `pow(2, -1)` | `1024`, `0.5` |
+| `pow(-8, 0.5)` | ошибка `Expression result is not a finite number` |
+| `sqrt(16)`, `sqrt(-1)` | `4`, ошибка `sqrt() of a negative number` |
+| `percent(object.amount, 12.5)` при `amount = 500` | `62.5` |
+| `to_number('-0,5')`, `to_number(' 42 ')`, `to_number('')` | `-0.5`, `42`, `''` |
+| `to_number('1,234.56')` | ошибка `Cannot convert "1,234.56" to a number` — оба разделителя неоднозначны |
+| `to_number('1e3')`, `to_number(true)` | ошибка `Cannot convert "1e3" to a number`, `Cannot convert "true" to a number` |
+| `to_int('100.00')`, `to_int('1 200')`, `to_int('1.5')` | `100`, `1200`, ошибка `Cannot convert "1.5" to an integer` |
+| `number_format(1234567.891)` | `1 234 568` (по умолчанию 0 знаков и пробел между тысячами) |
+| `number_format(-1234.5, 1)` | `-1 234.5` |
+| `number_format(1234.5, -1)` | ошибка выполнения `Function "number_format": decimals must not be negative` |
+
+### Списки
+
+Список — обычное значение выражения: `[a, b, …]` (пустой `[]`, элементы могут быть вложенными) или функция
+`list(a, …)`. Списки приходят из трёх источников:
+
+- **multienum-поле CRM** — строку вида `^vip^,^partner^` разбирает `to_list(s, ',', '^')`;
+  автоматически формат CRM не распознаётся;
+- **результат `find_records`** — переменная `deals.items` (список записей) и `deals.count`;
+- **JSON-массив в строке** — например, значение поля-списка или результат HTTP-запроса.
+
+Приведение к списку: массив остаётся как есть, `''` и отсутствующее значение дают `[]`, JSON-массив декодируется,
+любая другая строка — один элемент. Поэтому `in('a', 'abc')` — `false` (проверка элемента, не подстроки).
+Итерация по списку — задача действия [Цикл `foreach`](actions.md#цикл-для-каждого-элемента), а не языка выражений.
+
+| Функция | Результат | Пример | Результат примера |
+|---|---|---|---|
+| `list(a, …)` | список из аргументов | `list('vip', 'partner')` | `["vip","partner"]` |
+| `to_list(s[, separator[, wrapper]])` | приведение к списку; с `separator` делит строку, `wrapper` снимает обрамление каждого элемента (multienum `^a^,^b^`) | `to_list('^a^,^b^', ',', '^')` | `["a","b"]` |
+| `count(list)` | число элементов; пустое — `0`, скаляр — `1` | `count(object.missing)` | `0` |
+| `in(x, list)` | есть ли `x` в списке (сравнение по правилам `==`, `'1' == 1`) | `in('vip', ['vip', 'x'])` | `true` |
+| `first(list)`, `last(list)` | первый / последний элемент; пустой список — `''` | `first(tasks.items)` | первая запись |
+| `nth(list, i)` | элемент с индексом `i` (с 0); отрицательный — с конца; вне диапазона — `''` | `nth(['a', 'b'], -1)` | `b` |
+| `slice(list, start[, length])` | подсписок (как `array_slice`: отрицательный `start` — с конца) | `slice([1, 2, 3, 4], 1, 2)` | `[2,3]` |
+| `unique(list)` | без повторов (сравнение `==`), порядок первого вхождения | `unique([1, '1', 2])` | `[1,2]` |
+| `sort(list[, 'asc'\|'desc'])` | числа — десятично, строки — побайтово; в смешанном списке числа идут перед строками | `sort([10, 2, 1])` | `[1,2,10]` |
+| `reverse(list)` | обратный порядок | `reverse([1, 2, 3])` | `[3,2,1]` |
+| `concat_lists(a, b, …)` | склейка списков (не путать со строковым `concat`) | `concat_lists([1], [2, 3])` | `[1,2,3]` |
+| `without(list, x)` | список без всех элементов, равных `x` | `without(['spam', 'vip'], 'spam')` | `["vip"]` |
+| `sum(list)`, `avg(list)` | сумма / среднее; пустые элементы пропускаются, `avg([])` — `''`; нечисловой элемент — ошибка | `sum(['0.1', '0.2'])` | `0.3` |
+| `min(list)`, `max(list)` | минимум / максимум по элементам (те же функции, что в разделе [Числа](#числа)) | `max([5, 2, 9])` | `9` |
+| `pluck(list, field)` | значения поля из списка записей; отсутствующее поле — `''`, вложенное — `'address.city'`; скаляры пропускаются | `pluck(tasks.items, 'name')` | `["Позвонить","Отправить КП"]` |
+| `where(list, field, value)` | записи, у которых поле равно `value` (правила `==`), — фильтрация без лямбд | `count(where(tasks.items, 'status', 'Not Started'))` | `2` |
+| `index_of_item(list, x)` | индекс первого элемента, равного `x`, или `-1` | `index_of_item(['a', 'b'], 'b')` | `1` |
+
+Типовые сценарии:
+
+```text
+in('vip', to_list(object.tags_c, ',', '^'))                                  есть ли тег VIP
+count(deals.items)                                                           сколько сделок нашёл find_records
+sum(pluck(deals.items, 'amount'))                                            сумма по найденным сделкам
+join(sort(unique(to_list(object.tags_c, ',', '^'))), ', ')                   теги без повторов, по алфавиту
+where(tasks.items, 'status', 'Not Started')                                  открытые задачи для update_records/foreach
+```
+
+**Граничные случаи.**
+
+| Выражение | Результат | Почему |
+|---|---|---|
+| `in('a', 'abc')` | `false` | строка — список из одного элемента, не подстрока |
+| `in('1', [1, 2])` | `true` | сравнение `==` приводит число и строку |
+| `sum(['1 234,56'])` | ошибка `sum(): element 1 is not a number: "1 234,56"` | строгая числовая проверка; текстовые числа разбирайте через `to_number` |
+| `pluck('abc', 'x')` | `[]` | скаляр — не запись |
+| `first([])`, `avg([])` | `''` | пустой список |
+| `[1] + 1` | `'[1]1'` | `+` склеивает всё, что не числа; для списков — `concat_lists` |
+| `[1, 2] == [2, 1]` | `false` | списки сравниваются поэлементно, порядок важен |
+| `sort([1], 'up')` | ошибка при сохранении `Function "sort": order must be "asc" or "desc"` | порядок — только `asc` или `desc` |
+| `sort([3, 1], concat('u', 'p'))` | `[1,3]` | вычисленный порядок, отличный от `desc`, — по возрастанию без ошибки |
+| `sort(['b', 10, 'a', 2])`, `sort(['b', 'B', 'a'])` | `[2,10,"a","b"]`, `["B","a","b"]` | числа перед строками; строки побайтово — заглавные раньше строчных |
+| `unique(['a', 'A'])` | `["a","A"]` | сравнение `==` учитывает регистр |
+| `count('abc')`, `count('[1,2]')` | `1`, `2` | строка — один элемент, JSON-массив в строке разбирается |
+| `to_list('a, b ,,c', ',')`, `to_list(5)` | `["a","b","c"]`, `[5]` | элементы обрезаются, пустые отбрасываются; скаляр — один элемент |
+| `to_list('a', '', '^')` | ошибка `to_list(): separator is required when wrapper is given` | обрамление без разделителя не имеет смысла |
+| `nth(['a', 'b'], 5)`, `nth(['a', 'b'], 1.5)` | `''`, ошибка `nth(): index must be an integer, got "1.5"` | вне диапазона — пусто; индекс — целое |
+| `slice([1, 2, 3, 4], -2)`, `slice([1, 2, 3, 4], 1, -1)` | `[3,4]`, `[2,3]` | отрицательная длина отбрасывает элементы с конца |
+| `sum([1, '', null, 2])`, `sum([])` | `3`, `0` | пустые пропускаются; сумма пустого списка — `0` |
+| `avg([1, 2, 2])` | `1.6666666667` | 10 знаков после запятой |
+| `without([1, '1', 2], 1)` | `[2]` | удаляются все элементы, равные по `==` |
+| `concat_lists([1], 'a', '')` | `[1,"a"]` | строка — один элемент, `''` — пустой список |
+| `pluck(list, 'address.city')` для трёх записей, где поле есть только у первой | `["Msk","",""]` | вложенное поле; у записей без него — `''` |
+
+**Лимиты и ошибки.** Функция списка принимает не больше 10 000 элементов — иначе ошибка выполнения
+`List is too large (max 10000 items)`. Числовые аргументы (`nth`, `slice`) должны быть целыми: `nth(): index must be
+an integer, got "x"`. Список, записанный в поле CRM, сохраняется как JSON-массив; чтобы получить multienum, соберите
+строку через `join`/`concat`, а не записывайте список напрямую. Переменные-списки из `find_records` доступны только
+для чтения.
+
+### Проверки и приведение типов
+
+Проверки (`is_*`) всегда возвращают `true`/`false` и не роняют шаг. Пустота считается так же, как у условия «Пусто»
+(см. [Операторы](triggers-and-conditions.md#операторы)): `null`, пустая строка или строка из пробелов, пустой список;
+`0` и `'0'` — **не** пусты.
+
+| Функция | Истина, когда | Пример | Результат |
+|---|---|---|---|
+| `is_empty(x)` | `null`, `''`, строка из пробелов или `[]` | `is_empty(object.phone_mobile)` | `true` |
+| `is_not_empty(x)` | значение не пусто | `is_not_empty(object.name)` | `true` |
+| `is_number(x)` | строгое число: `int`, `float` или текст вида `'12.5'`, `' 12 '`; `'1 234,56'` и `'1e3'` — нет | `is_number(object.discount_c)` | `false` |
+| `is_numeric_text(x)` | значение приводится к числу как `to_number` | `is_numeric_text('1 234,56')` | `true` |
+| `is_int(x)` | приводится к целому по правилам приведения `int` | `is_int(object.qty)` | `true` |
+| `is_date(x)` | разбирается как дата или дата-время (`date`, `datetime`) | `is_date(object.date_closed)` | `true` |
+| `is_bool(x)` | приводится к `bool` без ошибки (`true`/`1`/`t`/`yes`/`y`/`on`/`да`, `false`/`0`/`f`/`no`/`n`/`off`/`нет`, регистр не важен) | `is_bool(object.do_not_call)` | `true` |
+| `is_list(x)` | список (индексы `0…n`) | `is_list(object.tags)` | `true` |
+| `is_object(x)` | запись — ассоциативный массив | `is_object(resp.body)` | `true` |
+
+Приведения используют тот же `TypeCaster`, что и условия, поэтому результат совпадает с `cast`:
+
+| Функция | Результат | Пример | Результат примера |
+|---|---|---|---|
+| `to_string(x)` | текст: `true`/`false`, список или запись → JSON | `to_string([1, 2])` | `[1,2]` |
+| `to_bool(x)` | `bool`; пустое → `false`, недопустимое значение — ошибка `Cannot convert "abc" to boolean` | `to_bool(object.do_not_call)` | `true` |
+| `to_date(x[, format])`, `to_datetime(x[, format[, tz]])` | синонимы `date()` / `datetime()` — см. [Даты и время](#даты-и-время) | `to_date('16.10.2026')` | `2026-10-16` |
+| `to_number(x)`, `to_int(x)` | см. [Числа](#числа) | `to_number('1 234,56')` | `1234.56` |
+| `to_list(x[, sep[, wrapper]])` | см. [Списки](#списки) | `to_list('^a^,^b^', ',', '^')` | `["a","b"]` |
+
+Сценарии:
+
+```text
+if(is_empty(object.phone_mobile), object.phone_work, object.phone_mobile)   мобильный или рабочий телефон
+if(is_number(object.discount_c), object.amount * (1 - object.discount_c / 100), object.amount)
+if(to_bool(object.do_not_call), 'Не звонить', 'Можно звонить')
+```
+
+Граничные случаи проверок и приведений (проверено на работающем WPS):
+
+| Выражение | Результат | Почему |
+|---|---|---|
+| `is_empty(' ')`, `is_empty('0')`, `is_empty(false)` | `true`, `false`, `false` | пробелы — пусто; `'0'` и `false` — значения |
+| `is_number('')`, `is_number(true)`, `is_number('1e3')` | `false`, `false`, `false` | только строгий числовой формат |
+| `is_int('100.00')`, `is_int(' 1 200 ')`, `is_int('1.5')` | `true`, `true`, `false` | нулевая дробная часть и пробелы-разделители допустимы |
+| `is_date('2026-02-30')`, `is_date('2026-10-16T07:30:00Z')` | `false`, `true` | несуществующая дата — не дата; ISO 8601 понимается |
+| `is_bool('t')`, `is_bool(2)` | `true`, `false` | из чисел — только `0` и `1` |
+| `is_list('[1,2]')`, `is_list([])` | `false`, `true` | строка с JSON — текст, а не список; разберите её `to_list` |
+| `is_object([])`, `is_object(tasks.items)` | `false`, `false` | пустой массив и список записей — не запись |
+| `to_string(null)`, `to_string(1.50)` | `''`, `1.5` | |
+| `to_bool(' ')`, `to_bool('Y')`, `to_bool(0)` | `false`, `true`, `false` | |
+
+`is_number` проверяет **формат** (как сравнение с `cast: decimal`), `is_numeric_text` — **приводимость** (как
+`to_number`). Для `'1 234,56'` первая даёт `false`, вторая — `true`. Пустая строка для всех проверок, кроме
+`is_empty`, — `false`.
+
+### JSON
+
+JSON-функции работают с уже разобранным значением (`resp.body` после [HTTP-запроса](actions.md#http-запрос)) и со
+строкой JSON (поле CRM, `body_text`). `json_get` и `json_get_all` принимают обе формы. Путь — JSONPath в синтаксисе
+Goessner: `$.data.id`, `$.items[0]`, `$..id`, `$.items[*].id`, фильтры `$.items[?(@.qty > 3)]`.
+
+| Функция | Результат | Пример | Результат примера |
+|---|---|---|---|
+| `json_encode(x)` | значение в виде JSON; кириллица и `/` не экранируются, строка `'42'` остаётся строкой | `json_encode(list(1, 'a'))` | `[1,"a"]` |
+| `json_decode(s)` | строка → значение; запись становится ассоциативным массивом, пустая строка → `''` | `json_decode('[1, 2]')` | `[1,2]` |
+| `json_get(json, path[, default])` | первое совпадение; ничего не найдено — `default` (по умолчанию `''`) | `json_get(resp.body, '$.data.customer.id')` | `42` |
+| `json_get_all(json, path)` | список всех совпадений; ничего не найдено — `[]` | `json_get_all(resp.body, '$.items[*].id')` | `[1,2]` |
+
+```text
+json_get(object.payload, '$.customer.id')                    id из JSON в текстовом поле
+json_get(resp.body, '$.order.status', 'unknown')             статус из ответа вебхука
+json_get_all(resp.body, '$.items[*].id')                     все id из ответа
+join(json_get_all(object.payload, '$.tags[*]'), ', ')        теги из JSON
+json_encode(list(object.id, object.name))                    ['id', 'name'] для внешней системы
+```
+
+**Ограничения и ошибки.** Строка JSON — не длиннее 1 МБ, глубина вложенности — 64. Невалидный JSON в `json_decode`
+даёт ошибку `json_decode(): Syntax error`, в `json_get`/`json_get_all` — `json_get(): invalid JSON` / `json_get_all(): invalid JSON`; строка длиннее 1 МБ —
+`json_decode(): JSON is too long (max 1048576 bytes)` (и так же для `json_get`); данные, которые нельзя закодировать
+(например, невалидный UTF-8), — `json_encode(): …`. Литеральный
+JSONPath проверяется при сохранении процесса:
+
+| Выражение | Ошибка при сохранении |
+|---|---|
+| `json_get(object.x, 'data.id')` | `json_get(): JSONPath must start with "$"` |
+| `json_get(object.x, '$.items[?(@.id')` | `json_get(): Invalid JSONPath: …` |
+
+Граничные случаи (проверено на работающем WPS; `resp.body` = `{"data":{"customer":{"id":42}},"items":[{"id":1,"qty":2},{"id":2,"qty":5}]}`):
+
+| Выражение | Результат | Почему |
+|---|---|---|
+| `json_encode('42')`, `json_encode(null)` | `"42"`, `null` | строка остаётся строкой в кавычках |
+| `json_decode('"x"')`, `json_decode('42')`, `json_decode('')` | `x`, `42`, `''` | скалярный JSON допустим; пустая строка — пусто |
+| `json_get(resp.body, '$.items[0]')` | `{"id":1,"qty":2}` | совпадение может быть записью |
+| `json_get_all(resp.body, '$..id')` | `[42,1,2]` | рекурсивный спуск |
+| `json_get_all(resp.body, '$.items[?(@.qty > 3)].id')` | `[2]` | фильтр |
+| `json_get('', '$.a')`, `json_get(object.missing, '$.a', 'd')` | `''`, `d` | нет документа — значение по умолчанию |
+| `json_get('42', '$.a', 'd')` | `d` | скалярный JSON — не документ |
+| `json_get('{bad', '$.a')` | ошибка `json_get(): invalid JSON` | невалидный JSON — всегда ошибка, а не умолчание |
+
+Если ответ уже разобран действием `http_request`, простой путь работает и без JSONPath: `resp.body.data.id`.
+
 ### Даты и время
 
 **Формат значений.** Функции дат возвращают строки в каноническом формате — их можно сразу записать в CRM
@@ -275,12 +669,12 @@ number_format(object.amount, 2, ',', ' ')          1234567.891 → '1 234 567,89
 | `now()` | текущий момент, UTC | `now()` | `2026-10-16 07:30:00` |
 | `today([tz])` | сегодняшняя дата в поясе `tz` (по умолчанию local) | `today()` | `2026-10-16` |
 | `date(value[, format])` | календарная дата; из даты-времени — день в local; `format` — формат PHP для нестандартного ввода | `date('2026-10-15 22:30:00')`, `date('16/10/2026', 'd/m/Y')` | `2026-10-16`, `2026-10-16` |
-| `datetime(value[, format[, tz]])` | дата-время UTC; `tz` — в каком поясе записан ввод без смещения (по умолчанию UTC); дата без времени — полночь в `tz`, а без `tz` — в local | `datetime('2026-10-17 10:00', 'Y-m-d H:i', 'local')` | `2026-10-17 07:00:00` |
+| `datetime(value[, format[, tz]])` | дата-время UTC; `tz` — в каком поясе записан ввод без смещения (по умолчанию UTC); дата без времени — полночь в `tz`, а без `tz` — в local | `datetime('2026-10-17 10:00', 'Y-m-d H:i', 'local')`, `datetime('2026-10-17')`, `datetime('2026-10-16T10:30:00+03:00')` | `2026-10-17 07:00:00`, `2026-10-16 21:00:00`, `2026-10-16 07:30:00` |
 | `add_minutes(d, n)`, `add_hours(d, n)` | абсолютное время; дата становится датой-временем (от полуночи local) | `add_hours('2026-10-16', 2)` | `2026-10-15 23:00:00` |
 | `add_days(d, n)`, `add_weeks(d, n)` | календарные дни; у даты-времени сохраняется местное время | `add_days(today(), 3)` | `2026-10-19` |
 | `add_months(d, n)`, `add_years(d, n)` | месяцы с обрезкой конца месяца | `add_months('2026-01-31', 1)`, `add_years('2024-02-29', 1)` | `2026-02-28`, `2025-02-28` |
 | `date_diff(from, to, unit)` | `to − from` целым числом единиц, дробная часть отбрасывается к нулю; `unit`: `minutes`, `hours`, `days`, `weeks`, `months`, `years` | `date_diff('2026-10-16', '2026-10-15', 'days')` | `-1` |
-| `year(d[, tz])`, `month`, `day`, `hour`, `minute` | часть даты в local или `tz` | `hour('2026-10-16 07:30:00')`, `hour('2026-10-16 07:30:00', 'UTC')` | `10`, `7` |
+| `year(d[, tz])`, `month`, `day`, `hour`, `minute` | часть даты числом в local или `tz` | `hour('2026-10-16 07:30:00')`, `hour('2026-10-16 07:30:00', 'UTC')`, `minute('2026-10-16 07:30:00', 'Asia/Kolkata')` | `10`, `7`, `0` |
 | `weekday(d[, tz])` | день недели по ISO: 1 — понедельник … 7 — воскресенье | `weekday('2026-10-16')` | `5` |
 | `week(d[, tz])`, `quarter(d[, tz])` | номер недели по ISO, квартал 1–4 | `week('2026-10-16')`, `quarter('2026-10-16')` | `42`, `4` |
 | `start_of_day(d)`, `end_of_day(d)` | начало (`00:00:00`) / конец (`23:59:59`) дня | `end_of_day('2026-10-16 07:30:00')` | `2026-10-16 20:59:59` |
@@ -335,8 +729,18 @@ add_days()`, `Function "add_days": count must be an integer, got "x"` (дроб�
 | Размер выражения | 500 узлов (чисел, путей, операторов, вызовов) | `Expression is too complex (max 500 nodes)` |
 | Вложенность | 32 уровня скобок и вызовов | `Expression is nested too deeply (max 32 levels)` |
 | Длина результата | 1 МБ | `Expression result is too long` |
+| Выражение в правой части условия (`value_type: expression`) | 1000 символов | `Expression is too long (max 1000 characters)` |
+| Элементов в списке (любая функция списков, `split`, `list`) | 10 000 | `List is too large (max 10000 items)` |
+| Длина `pad_left` / `pad_right`, повторы `repeat` | 0…1000 | `Function "repeat": count must be an integer between 0 and 1000, got "…"` |
+| Шаблон регулярного выражения | 500 символов | `Regular expression in regex_match() is too long (max 500 characters)` |
+| Строка для регулярного выражения | 100 000 символов | `Regular expression input in regex_match() is too long (max 100000 characters)` |
+| Backtracking / рекурсия регулярного выражения | 100 000 / 10 000 | `Regular expression failed: backtrack limit exceeded` |
+| Строка JSON / глубина JSON | 1 МБ / 64 уровня | `json_decode(): JSON is too long (max 1048576 bytes)` |
+| Цифр в числе | 100 | `Number is too large` |
+| Точность деления, `avg`, `sqrt` | 10 знаков после запятой | — (округление половины от нуля) |
 
-Первые три проверяются при сохранении, длина результата — во время выполнения.
+Длина, размер и вложенность выражения проверяются при сохранении, остальное — во время выполнения (для литеральных
+аргументов — тоже при сохранении).
 
 ### Граничные случаи
 
@@ -389,6 +793,9 @@ add_days()`, `Function "add_days": count must be an integer, got "x"` (дроб�
 | `Unexpected character "#" at position …` | Символ, которого нет в синтаксисе |
 | `Expression is too long …`, `Expression is too complex …`, `Expression is nested too deeply …` | Превышен [лимит](#лимиты) |
 | `Variable "v3" is not defined at this point` | Выражение использует переменную, которая не объявлена до этой строки |
+| `Unknown system variable "sys.x"; available: …` | Неизвестное поле `sys.*` |
+| `Constant "x" is not defined in definition.constants` | В пути `config.x` константа не объявлена |
+| `Variable "sys" is read-only` / `Name "config" is reserved` | Попытка записи в системную переменную или константы |
 | `Function "round": precision must be an integer`, `Function "number_format": decimals must be an integer` | Дробная точность-литерал |
 | `Number is too large at position …` | Числовой литерал длиннее 100 цифр |
 
@@ -399,6 +806,13 @@ add_days()`, `Function "add_days": count must be an integer, got "x"` (дроб�
 (`Expression result is not a finite number`), число длиннее 100 цифр (`Number is too large`), нечисловой аргумент
 числовой функции (`Function "floor" requires a number, got "abc"`), неразбираемый текст в `to_number` / `to_int`
 (`Cannot convert "abc" to a number`).
+
+Ошибки конкретных функций (строк, регулярных выражений, списков, JSON, дат) собраны в их разделах:
+[Строки](#строки), [Регулярные выражения](#регулярные-выражения), [Числа](#числа), [Списки](#списки),
+[Проверки и приведение типов](#проверки-и-приведение-типов), [JSON](#json), [Даты и время](#даты-и-время).
+При сохранении также проверяются литеральные аргументы: флаги и шаблон регулярного выражения, JSONPath (`json_get(): JSONPath must start with "$"`),
+порядок сортировки (`Function "sort": order must be "asc" or "desc"`), длина `pad_*` / `repeat`, единица `date_diff`
+и часовой пояс (`Unknown timezone "Mars/Base"`).
 
 ## Шаблон
 

@@ -10,9 +10,11 @@ final class Process
 {
     public const TRIGGER_TYPES = ['create', 'update', 'delete'];
     public const DEFAULT_TRIGGER_ON = ['create', 'update'];
+    /** Keys a definition may have; normalizeDefinition() keeps only these, the validator rejects the rest */
+    public const DEFINITION_KEYS = ['conditions', 'preload', 'actions', 'constants'];
 
     /**
-     * @param array{conditions: array<mixed>, preload: array<mixed>, actions: array<mixed>} $definition
+     * @param array{conditions: array<mixed>, preload: array<mixed>, actions: array<mixed>, constants: array<string, mixed>} $definition
      */
     public function __construct(
         public readonly int $id,
@@ -112,7 +114,7 @@ final class Process
 
     /**
      * @param mixed $definition
-     * @return array{conditions: array<mixed>, preload: array<mixed>, actions: array<mixed>}
+     * @return array{conditions: array<mixed>, preload: array<mixed>, actions: array<mixed>, constants: array<string, mixed>}
      */
     public static function normalizeDefinition(mixed $definition): array
     {
@@ -121,6 +123,8 @@ final class Process
             'conditions' => is_array($definition['conditions'] ?? null) ? $definition['conditions'] : [],
             'preload' => array_values(is_array($definition['preload'] ?? null) ? $definition['preload'] : []),
             'actions' => array_values(is_array($definition['actions'] ?? null) ? $definition['actions'] : []),
+            // process constants (5.2.9): names are checked by the validator, values are read as config.*
+            'constants' => is_array($definition['constants'] ?? null) ? $definition['constants'] : [],
         ];
     }
 
@@ -135,7 +139,7 @@ final class Process
     }
 
     /**
-     * @param array{conditions: array<mixed>, preload: array<mixed>, actions: array<mixed>} $definition
+     * @param array{conditions: array<mixed>, preload: array<mixed>, actions: array<mixed>, constants: array<string, mixed>} $definition
      * @return list<array<string, mixed>>
      */
     public static function stepsOf(array $definition): array
@@ -169,6 +173,7 @@ final class Process
                 'conditions' => $this->definition['conditions'],
                 'preload' => $this->definition['preload'],
                 'actions' => $this->definition['actions'],
+                'constants' => $this->definition['constants'],
             ],
             'created_at' => $this->createdAt,
             'updated_at' => $this->updatedAt,

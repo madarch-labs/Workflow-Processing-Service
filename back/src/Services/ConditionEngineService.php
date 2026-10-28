@@ -99,7 +99,7 @@ final class ConditionEngineService
         foreach (self::leaves(self::normalize($conditions)) as $leaf) {
             foreach ($this->leafPaths($leaf) as $path) {
                 [$var] = ExecutionContext::splitPath($path);
-                if ($var !== ExecutionContext::OBJECT) {
+                if (!in_array($var, [ExecutionContext::OBJECT, ExecutionContext::SYS, ExecutionContext::CONFIG], true)) {
                     $vars[$var] = true;
                 }
             }
@@ -687,6 +687,10 @@ final class ConditionEngineService
             return false;
         }
         [$var] = ExecutionContext::splitPath($path);
+        if (in_array($var, [ExecutionContext::SYS, ExecutionContext::CONFIG], true)) {
+            // virtual values are always available: never trigger a lazy preload (5.2.9)
+            return false;
+        }
         return $var !== ExecutionContext::OBJECT && !$context->hasVariable($var);
     }
 }

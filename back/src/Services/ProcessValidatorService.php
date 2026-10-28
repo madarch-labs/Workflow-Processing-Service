@@ -7,6 +7,7 @@ namespace Wps\Services;
 use Wps\Actions\ActionHandlerRegistry;
 use Wps\Comparators\ComparatorRegistry;
 use Wps\Comparators\OperandKind;
+use Wps\Context\ExecutionContext;
 use Wps\Http\ApiException;
 use Wps\Persistence\Process;
 use Wps\Services\Errors\ErrorPolicy;
@@ -35,6 +36,9 @@ use Wps\Types\TypeCaster;
 final class ProcessValidatorService
 {
     private const MAX_CONDITION_EXPRESSION = 1000;
+    private const MAX_CONSTANTS = 100;
+    private const MAX_CONSTANTS_BYTES = 16 * 1024;
+    private const SECRET_LIKE_NAME = '/password|secret|token|api_key/i';
     public const STEP_ID_PATTERN = '/^[a-z][a-z0-9_]{0,63}$/';
 
     private readonly TypeCaster $caster;
@@ -111,6 +115,15 @@ final class ProcessValidatorService
             $errors[] = ['field' => 'definition', 'message' => 'Definition must be an object'];
             $rawDefinition = [];
         }
+        // normalizeDefinition() would drop an unknown key silently (a typo such as "constant" would lose data)
+        foreach (array_keys($rawDefinition) as $key) {
+            if (!in_array($key, Process::DEFINITION_KEYS, true)) {
+                $errors[] = [
+                    'field' => "definition.{$key}",
+                    'message' => "Unknown key \"{$key}\" (allowed: " . implode(', ', Process::DEFINITION_KEYS) . ')',
+                ];
+            }
+        }
         foreach (['preload', 'actions'] as $block) {
             if (isset($rawDefinition[$block]) && (!is_array($rawDefinition[$block]) || !array_is_list($rawDefinition[$block]))) {
                 $errors[] = ['field' => "definition.{$block}", 'message' => 'Must be an array'];
@@ -121,9 +134,17 @@ final class ProcessValidatorService
             $errors[] = ['field' => 'definition.conditions', 'message' => 'Must be an array or a condition group'];
             unset($rawDefinition['conditions']);
         }
+        $constantNames = array_key_exists('constants', $rawDefinition)
+            ? $this->validateConstants($rawDefinition['constants'], $errors)
+            : [];
         $definition = Process::normalizeDefinition($rawDefinition);
 
-        $scope = new DefinitionScope($processId, inheritsVariables: $isChild === true, triggerOn: $triggerOn);
+        $scope = new DefinitionScope(
+            $processId,
+            inheritsVariables: $isChild === true,
+            triggerOn: $triggerOn,
+            constants: $constantNames,
+        );
         $this->validateDefinition($definition, $scope);
         $this->checkGotoTargets($definition, $scope);
         $errors = array_merge($errors, $scope->errors());
@@ -148,6 +169,62 @@ final class ProcessValidatorService
             // not blocking: e.g. a variable read after a block that sets it only in some branches
             'warnings' => $scope->warnings(),
         ];
+    }
+
+    /**
+     * definition.constants (5.2.9 §4.2): an object of scalar / list-of-scalar values. Secrets must use the secret
+     * store instead, so a constant that looks like a secret is rejected.
+     *
+     * @param list<array{field: string, message: string}> $errors
+     * @return list<string> valid constant names (for config.* path validation)
+     */
+    private function validateConstants(mixed $constants, array &$errors): array
+    {
+        if (!is_array($constants) || ($constants !== [] && array_is_list($constants))) {
+            $errors[] = ['field' => 'definition.constants', 'message' => 'Constants must be an object'];
+            return [];
+        }
+        if (count($constants) > self::MAX_CONSTANTS) {
+            $errors[] = ['field' => 'definition.constants', 'message' => 'Too many constants (max ' . self::MAX_CONSTANTS . ')'];
+        }
+        $names = [];
+        foreach ($constants as $name => $value) {
+            $name = (string)$name;
+            $field = "definition.constants.{$name}";
+            if (!ExecutionContext::isValidVariableName($name)) {
+                $errors[] = ['field' => $field, 'message' => 'Invalid constant name (letters, digits, "_")'];
+                continue;
+            }
+            if (preg_match(self::SECRET_LIKE_NAME, $name) === 1) {
+                $errors[] = ['field' => $field, 'message' => "Constant \"{$name}\" looks like a secret; use a secret reference (secret://name)"];
+            }
+            if (!self::isScalarOrScalarList($value)) {
+                $errors[] = ['field' => $field, 'message' => 'Constant must be a scalar or a list of scalars'];
+                continue;
+            }
+            $names[] = $name;
+        }
+        $size = strlen((string)json_encode($constants, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        if ($size > self::MAX_CONSTANTS_BYTES) {
+            $errors[] = ['field' => 'definition.constants', 'message' => 'Constants are too large (max ' . (self::MAX_CONSTANTS_BYTES / 1024) . ' KB)'];
+        }
+        return $names;
+    }
+
+    private static function isScalarOrScalarList(mixed $value): bool
+    {
+        if ($value === null || is_scalar($value)) {
+            return true;
+        }
+        if (!is_array($value) || !array_is_list($value)) {
+            return false;
+        }
+        foreach ($value as $item) {
+            if ($item !== null && !is_scalar($item)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

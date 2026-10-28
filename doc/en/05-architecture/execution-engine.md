@@ -28,6 +28,38 @@ and stores the new `id`.
 
 A child process gets `forChild()`: the same event and variables, an empty `dirty` set and `depth + 1`.
 
+### System variables `sys.*` and constants `config.*`
+
+`sys` and `config` are **virtual** variables (task 5.2.9): they are not stored in `variables` but computed on read
+(`ExecutionContext::getVariable()` / `resolve()`), so they are available in launch conditions, expressions, templates and
+preload, but do not reach the Redis state (except `last_error` / `errors_count`). Both are read-only. The list of fields
+with labels is served by `GET /api/dictionaries/system-variables`.
+
+| `sys.*` field | Type | Value |
+|---|---|---|
+| `execution_id` | string | Execution UUID; empty while launch conditions are checked (no execution yet) |
+| `parent_execution_id` | string | Parent execution of a child process, otherwise empty |
+| `process_id`, `process_name`, `process_version` | integer / string / integer | The process and the version of its definition |
+| `event_id` | string | `event_id` of the event, the stream message id or `manual-{uuid}` |
+| `trigger` | string | `stream`, `manual`, `child` |
+| `depth` | integer | Nesting depth of child processes |
+| `module`, `record_id` | string | Module and `id` of the event record |
+| `event_type` | string | `create`, `update`, `delete` |
+| `changed_fields` | list | Changed fields (`[]` when unknown) |
+| `user_id` | string | Who saved the record: the `user_id` field of the event or `wps_user_id` |
+| `now` | datetime | Current UTC time (`Y-m-d H:i:s`) **at the moment of reading**, through `Wps\Time\Clock` |
+| `started_at` | datetime | Execution start, UTC; empty before `begin()` |
+| `last_error` | object | Last handled error (`on_error: continue/goto`, `on_item_error: continue`): `step_id`, `step_path`, `action_type`, `code`, `message`, `http_status`, `attempts`, `at`, `iteration`. No field — no errors |
+| `errors_count` | integer | Number of handled errors |
+
+The values are set by `ExecutionEngineService::configureContext()` before the conditions are checked (process, version,
+`trigger`, constants, clock) and by `begin()` / `resume()` (execution id, `started_at`). After recovery (`resume()`)
+`trigger`, `parent_execution_id` and `started_at` come from the Redis hash. A snapshot of `sys` is written to
+`context_snapshot.system` of a failed or finished execution.
+
+`config.<name>` is a value of `definition.constants` of the execution's definition snapshot: editing the constants does not
+affect running and waiting executions. On save the validator checks that `config.x` is declared in `constants`.
+
 ## Execution lifecycle
 
 ```mermaid
@@ -199,7 +231,7 @@ stateDiagram-v2
 |---|---|---|
 | `running` | Steps are being executed | blue, live updates |
 | `retrying` | A step failed with a recoverable error and waits for the next attempt | orange, live updates |
-| `waiting` | The execution is parked until `waiting_until`: its state is in PostgreSQL (`execution_waits`), no worker or Redis is used | purple, "Waiting" |
+| `waiting` | The execution is parked until `waiting_until`: its state is in PostgreSQL (`execution_waits`), no worker or Redis is used | grey (`info`), "Waiting"; not refreshed automatically |
 | `cancelled` | A waiting execution was cancelled by deleting the process (`DELETE /api/processes/{id}?force=true`) | grey, "Cancelled" |
 | `completed` | All steps finished with `success` or `skipped` | green |
 | `failed` | A step failed, or the execution was lost and could not be resumed | red |
@@ -342,6 +374,41 @@ flowchart TB
   crashes after the wake-up is picked up by `RecoveryJob` right away.
 - Metrics: `wps_executions_parked_total`, `wps_executions_woken_total`, `wps_wait_resume_failed_total`,
   `wps_wait_lateness_seconds`, `wps_executions_waiting` ([Monitoring](../04-operations/monitoring.md)).
+
+## Engine components
+
+| Class | Role |
+|---|---|
+| `Services\ExecutionEngineService` | Orchestrator: `handle()` (stream, children), `runManual()`, `resume()` (`RecoveryJob`, re-delivery), `resumeAfterWait()`; idempotency, conditions, `run_once`, the instruction loop, retries, `on_error`, `finish()` |
+| `Services\PreparedRun` | Result of the condition check: true/false, trace, steps run by lazy preload, cast error |
+| `Services\ExecutionHandle` | In-memory state of a running execution: id, process, context, program, `pc`, `seq`, `frames`, `retryCount`, `trigger`, `parentId` |
+| `Services\StepRecord` | Audit record of one step (`request`, `result`, `error_code`, `handled`, `pc`, `step_path`, `iteration`, `step_id`) |
+| `Services\ExecutionStateStore` | Redis: `exec:{uuid}`, `lock:exec:{uuid}`, `idem:*` |
+| `Services\AuditService` | Writes `execution_actions` (`INSERT … ON CONFLICT` — overwriting the record with the same `seq`) |
+| `Services\ConditionEngineService` | Conditions: type casting, operand kinds, relative dates, expressions, trace |
+| `Program\ProgramCompiler`, `ProgramEmitter`, `Program`, `Instruction` | Compiles the tree into a flat program (cached by the definition hash), instructions with paths |
+| `Program\Interpreter`, `InstructionOutcome` | One instruction: `branch`/`jump`/`halt` here, `action` — by a callback into the engine |
+| `Program\BlockTypeRegistry`, `Blocks\{Condition,Foreach,StopProcess}Block` | Blocks: compilation and validation on save |
+| `Program\LoopRunner`, `LoopItemsStore` | `loop_begin` / `loop_next`, item errors, closing loops, item snapshots |
+| `Services\Errors\ErrorClassifier`, `ErrorInfo` | Exception → code, transient / permanent, HTTP status, `Retry-After` |
+| `Services\Errors\RetryPolicy`, `ErrorPolicy` | The step `retry` profile and `on_error` (`stop` / `continue` / `goto`) |
+| `Services\WaitService`, `Persistence\ExecutionWaitRepository`, `CyclicJobs\WaitResumeJob` | Parking and waking waiting executions |
+| `SideEffects\SideEffectLedger`, `DeliveryPolicy` | Journal of external calls and the `delivery` policy |
+| `Services\CrmObjectSaver` | Saves variables to the CRM (`PUT` of changed fields / `POST` of a new record) |
+
+## Handling a final step error
+
+`handleFailure()` applies `on_error` of the failed instruction (`ErrorPolicy::fromStep()`):
+
+1. `stop` — when a loop with `on_item_error: continue` is open, `LoopRunner::itemError()` closes the inner loops and goes
+   to `loop_next` of that loop (`handled = item_continue`); otherwise `failFrom()` and `finish('failed')`.
+2. `goto` — `Program::pcOf(id)` looks for a top-level step; a target that is missing or not ahead (`target <= pc`) behaves
+   like `stop` (the validator rejects it, but an old definition may still carry it); otherwise open loops are closed
+   (`left_by: goto`), `iteration` is cleared and the engine jumps.
+3. `continue` — the next instruction; for a `branch` — the `end_target` of the block.
+
+For `continue`/`goto`/`item_continue` the error goes to `sys.last_error`; `sys.errors_count`,
+`executions.handled_errors` and the metric `wps_step_errors_handled_total` grow, the log gets `Step error handled`.
 
 ## Redis keys used by the engine
 

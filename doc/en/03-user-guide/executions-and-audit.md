@@ -49,13 +49,33 @@ Open the process card and scroll down to the **Execution log** tab.
 | **Trigger** | **CRM event** (`stream`), **Manual run** (`manual`), **Child** (`child`) |
 | **Status** | **Running**, **Retrying**, **Waiting**, **Completed**, **Failed**, **Cancelled** |
 | **Started** / **Finished** / **Duration** | Timings |
-| **Retry** | How many times steps of this execution were retried |
+| **Retry** | How many times steps of this execution were retried (the column title is the same in both languages) |
 
-Filters:
+Filters and buttons:
 
-- **Status** — show only executions with the selected status;
-- **Start date** — **End date** — period by the start time of the execution;
-- **Refresh** — reload the list.
+- **Status** — show only executions with the selected status: **Running**, **Retrying**, **Waiting**, **Cancelled**,
+  **Completed**, **Failed**; the cross in the field clears the filter;
+- **Start date** — **End date** — period by the start time of the execution (date and time; the end of the day defaults
+  to 23:59:59);
+- **Refresh** (above the table) — reload the list: the log does not refresh by itself, new runs appear after a click;
+- at the bottom — the total count, the page size (10, 20, 50, 100) and the pager.
+
+Clicking any cell of a row opens the execution page. Hover over the short **ID** to see the full UUID.
+
+![Execution log with a waiting execution](../../images/screenshots/en/19-executions-list-statuses.png)
+
+*A process with a `delay` action (shown as JSON on the card) and its log: an execution in the Waiting status.*
+
+How to read the log:
+
+| You see | It means |
+|---|---|
+| Many **Failed** in a row | Something shared is broken: the CRM, a secret, a step setting. Open the latest execution |
+| **Waiting** | The process is on a `delay` pause or waits for a long retry — a normal state, see [below](#waiting-executions) |
+| **Cancelled** | A waiting execution was cancelled by deleting the process |
+| **Completed** with a non-zero **Retry** | Steps failed with temporary errors, but the retry succeeded |
+| Trigger **Child** | The execution was started by a parent process; the link to the parent is on the execution page |
+| Event ID `manual-…` | A manual run |
 
 The list is sorted from newest to oldest and paginated. The same data is available through the API:
 
@@ -63,6 +83,19 @@ The list is sorted from newest to oldest and paginated. The same data is availab
 curl -s "http://localhost:9501/api/processes/1/executions?status=failed&date_from=2026-10-15T00:00:00Z&page=1&per_page=20" \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+### Executions of all processes (API only)
+
+The UI has no common log for all processes — only a log per process. Through the API you can search all processes at
+once, for example all failed in the last day or all waiting:
+
+```bash
+curl -s "http://localhost:9501/api/executions?status=failed&date_from=2026-10-27T00:00:00Z&per_page=50" -H "Authorization: Bearer $TOKEN"
+curl -s "http://localhost:9501/api/executions?process_id=12&status=waiting" -H "Authorization: Bearer $TOKEN"
+```
+
+Parameters: `status`, `process_id`, `date_from`, `date_to`, `due_before` (for waiting ones — due not later than the
+date), `page`, `per_page`. A wrong status or date — `422`.
 
 ## Execution statuses
 
@@ -118,6 +151,16 @@ After waking the pause step record gets the status `success` with `waited: true`
 much later than due the execution continued), then the next steps follow. A retry step (`retry`) runs again after waking
 and overwrites the same audit record.
 
+![Waiting execution](../../images/screenshots/en/20-execution-detail-waiting.png)
+
+*An execution parked on `delay`: status Waiting, the steps before the pause are done.*
+
+In the UI a waiting execution looks like this: the status **Waiting** in the header and the properties, the steps
+before the pause are **Success**, the `delay` step is **Waiting** (the due time is in its **Result**: `wait.due_at`),
+the following steps are not there yet, **Finished** is "—". The page of a waiting execution **does not refresh by
+itself** (auto-refresh works only for **Running** and **Retrying**): click **Refresh** after the due time. The
+`waiting_until`, `wait_reason` fields and the `wait` object are not shown on the page — they are in the API response.
+
 All waiting executions (of every process):
 
 ```bash
@@ -154,6 +197,32 @@ The page has four parts.
 
 For a parent process the **Child executions** table lists the children it started (see [Child processes](subprocesses.md)).
 
+![sys.* values in a step result](../../images/screenshots/en/26-execution-context-system.png)
+
+*An expanded template step with substituted `sys.*` values; below — the context tabs (event, variables, conditions).*
+
+What the API has but the page does not show:
+
+| Field | Where to get it | What for |
+|---|---|---|
+| `step_path`, `pc`, `iteration`, `step_id`, `error_code`, `handled` of a step | `GET /api/executions/{id}/actions` | Find the step in the definition, the loop iteration, the error code and how it was handled |
+| `handled_errors` of the execution | `GET /api/executions/{id}` | How many step errors were handled by `on_error` / a loop when the status is **Completed** |
+| `waiting_until`, `wait_reason`, `wait` | `GET /api/executions/{id}` | Due time and reason of the wait |
+| `context.system` | `GET /api/executions/{id}` | Values of `sys.*` at the time of the snapshot: `execution_id`, `trigger`, `event_type`, `changed_fields`, `user_id`, `errors_count` … |
+| `context.event_info` | `GET /api/executions/{id}` | Event type, changed fields, the `wps_origin` origin |
+| side-effect journal | `GET /api/executions/{id}/side-effects` | Which e-mails, requests and notifications were sent, see [below](#side-effect-journal) |
+
+Step rows inside loops and branches follow each other by `#` (`step_index`) without indentation: the iteration number
+and the place of the step are visible only in the API. To see `sys.*` values in the UI, save them into a variable
+(`set_variable`) — it appears on the **Variables (variables)** tab.
+
+```bash
+curl -s http://localhost:9501/api/executions/<id> -H "Authorization: Bearer $TOKEN" \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin)["data"]; print(json.dumps(d["context"]["system"], indent=2))'
+curl -s http://localhost:9501/api/executions/<id>/actions -H "Authorization: Bearer $TOKEN" \
+  | python3 -c 'import sys,json; [print(a["step_index"], a["step_path"], a["iteration"], a["action_type"], a["status"], a["error_code"], a["handled"]) for a in json.load(sys.stdin)["data"]]'
+```
+
 ### What the steps record
 
 | Action | `request_data` | `result_data` |
@@ -170,12 +239,38 @@ For a parent process the **Child executions** table lists the children it starte
 | `foreach` (block) | `source`, `as`, `max_items`, `on_overflow`, `on_item_error`, `has_where` | at the start — `count`, `truncated`, `source_missing`; when the loop ends the record is overwritten with the totals: `processed`, `skipped_by_where`, `failed_items`, `failed_indexes`, `unsaved_items`, `where_traces`, on failure `failed_at_index` (see [below](#the-record-of-a-foreach-loop)) |
 | `delay` | `mode` and the due-time fields, `due_at` (UTC), `due_at_local` | in the coroutine — `waited: true`, `waited_seconds`, `inline: true`; after parking — `waited: true`, `lateness_ms`, `waited_seconds`; moment passed — `waited: false`, `past_due: true` (see [Delay](actions.md#delay)) |
 | failed step | the step configuration | `error_class`, `recoverable`, `error_code`, `error` — the classified error (`code`, `message`, `transient`, `http_status`, `retry_after`), `details` (e.g. the CRM response); with `on_error: {goto}` — `goto` (target id) |
+| `set_variable` | `var`, `fields` (or `target`, `change_type`, `value`) | `fields.<name>`: `old_value`, `new_value` |
+| `find_records` | `var`, `module` / `related_to`, `filter`, `sort`, `limit`, `fields`, `crm_requests` | `count`, `has_more`, `ids` (first 100), `reason` |
+| `link_records` / `unlink_records` | `module`, `record_id`, `link`, `related_module`, `related_ids`, `related_count` | `linked` / `unlinked`, `updated`, `not_found`, `warnings` |
+| `send_email` | `to`, `cc`, `bcc`, `from`, `subject`, `text_preview`, `html_size`, `transport` (`MAILER_DSN` or `secret://…`), `message_id` | `sent`, `recipients`, `message_id`, `replayed`; `warnings` (`invalid_recipients`), `crm` (letter history in the CRM) |
+| `http_request` | `method`, `url` (secrets masked), header names, `body_size`, `body_preview` (500 characters), `delivery` | `status`, `duration_ms`, `var`, `replayed`, `response` (the response variable: `status`, `ok`, `headers`, `body` or `body_preview`, the `extract` fields) |
 | external action (`send_email`, `http_request`, `notify`) | what was sent (secrets masked) | the response of the external system, `idempotency_key` — the external idempotency key; `replayed: true` when the step ran again after a crash and the response was taken from the side-effect journal without calling again |
 
 Steps of branches that were not chosen are not written to the audit. When a step fails (and `on_error` is `stop`), the
 following steps of its list (e.g. the branch) and the following steps of every enclosing list up to the top level get
 `skipped`. With `on_error: continue` the failed step stays `failed` with `handled: "continue"` and the execution goes
 on; with `goto` the steps between the error and the target do not run and are not written to the audit.
+
+![http_request step](../../images/screenshots/en/22-execution-detail-http.png)
+
+*The expanded `http_request` step: request and response with extracted values.*
+
+![send_email step](../../images/screenshots/en/23-execution-detail-email.png)
+
+*The expanded `send_email` step: recipients, subject, Message-ID.*
+
+An example `send_email` step (recipe [59](recipes.md#59-a-big-deal-a-notification-with-execution-data-sys-config)):
+
+```json
+{ "action_type": "send_email", "status": "success",
+  "request_data": { "to": ["sales-audit@company.ru"], "cc": [], "bcc": [], "from": "wps@wps.local",
+    "subject": "[WPS] Deals doc59-17554: сумма 750000", "transport": "MAILER_DSN", "html_size": 0,
+    "message_id": "<75d988ca-….1@wps.local>", "text_preview": "Сделка: Big deal\nСумма: 90000 → 750000…" },
+  "result_data": { "sent": true, "recipients": 1, "replayed": false, "message_id": "<75d988ca-….1@wps.local>" } }
+```
+
+On the stack the letter itself is visible in Mailpit (`http://localhost:8025`); its `Message-ID` matches the
+`message_id` of the step.
 
 ### The record of a condition block
 
@@ -216,6 +311,10 @@ overwritten with the totals and `duration_ms` becomes the duration of the whole 
   { "step_index": 6, "step_path": "actions[2].actions[0]", "iteration": "1", "action_type": "modify", "status": "success" } ]
 ```
 
+![foreach loop steps](../../images/screenshots/en/21-execution-detail-foreach.png)
+
+*`find_records`, the `foreach` summary record and the body steps for every item.*
+
 - Items rejected by `where` leave no records: only the `skipped_by_where` counter and the trace of the first 20 in
   `where_traces`.
 - `unsaved_items` — iterations after which the item variable still had unsaved changes (no `save_object`).
@@ -243,6 +342,33 @@ remaining steps then get `skipped` with the reason `Not executed: the process wa
   `status: completed` — the execution is `completed`, `error_message` is empty.
 - The execution snapshot (`context`) has `stop: { status, code, message }`: it shows that the process ended early even
   when the status is `completed`.
+
+## Side-effect journal
+
+Every external call of a step — an e-mail, an HTTP request, a message to a notification channel — is written to the
+`step_side_effects` journal before it is sent and marked `done` or `failed` afterwards. This way a step repeated after a
+worker crash knows what was already sent. The journal of an execution (any role; the example is an execution of recipe
+[59](recipes.md#59-a-big-deal-a-notification-with-execution-data-sys-config)):
+
+```bash
+curl -s http://localhost:9501/api/executions/<id>/side-effects -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+[ { "effect_key": "0#0:crm_alert:1", "action_type": "notify", "delivery": "at_most_once", "status": "done",
+    "attempts": 1, "started_at": "…", "finished_at": "…", "error_message": null },
+  { "effect_key": "0#1:slack:e18739d6…", "action_type": "notify", "delivery": "at_most_once", "status": "done", "attempts": 1 },
+  { "effect_key": "1", "action_type": "send_email", "delivery": "at_most_once", "status": "done", "attempts": 1 } ]
+```
+
+| Field | Meaning |
+|---|---|
+| `effect_key` | `{pc}` of the step; in a loop — `{pc}@{iteration}`; for a step with several calls — the `#{sub}` suffix (for `notify` — the channel number, the channel and the recipient or the address hash: `0#0:crm_alert:1`) |
+| `status` | `started` — the call began, the outcome is unknown (the worker crashed in the middle); `done` — sent; `failed` — the external system answered with an error |
+| `delivery` | The step policy: `at_most_once` — do not repeat on an unknown outcome (`UNKNOWN_OUTCOME`), `at_least_once` — repeat |
+
+The response of the external system is not stored in the journal — it is in the `result_data` of the step. An empty list
+means there were no external calls. Details — [Reliability → Side effects and repeats](../04-operations/reliability.md#side-effects-and-repeats).
 
 ## Diagnosing a failed execution
 
@@ -274,6 +400,12 @@ Typical errors:
 | `Variable "v1" is empty (object was not loaded) — nothing to save` (step **Skipped**) | Preload found nothing | Add a condition on the variable (e.g. `v1.id` **Not equals** empty) |
 | `Child process 42 not found`, `… is not a child process` | The child was deleted or changed its type | Fix the **Start next process** row |
 | `Execution context expired or lost; it could not be resumed` | The worker crashed and the Redis state expired | Run the process again manually |
+| `Secret "x" not found`, `Secret "x" is not allowed for host "y"` | The secret was deleted or is restricted by `allowed_hosts` | Restore the secret or fix `allowed_hosts`, see [Secrets](secrets.md) |
+| `Destination address is not allowed (private network)`, `Host "x" is not allowed` | SSRF protection rejected the `http_request` address | Allow the host in `HTTP_ALLOW_HOSTS` / `HTTP_ALLOW_PRIVATE_CIDRS`, see [Security](../04-operations/security.md#outgoing-http-requests-ssrf-protection) |
+| `HTTP 404 from host` (`error_code: HTTP_404`) | The external API answered with a code outside `success_codes` | The response body (up to 2 KB) is in `result_data.details`; fix the URL or add the code to `success_codes` |
+| `CRM_CAPABILITY_MISSING` | The CRM plugin lacks a capability (the `nin` filter, relationships, counts) | Update the CRM plugin, see [CRM integration](../04-operations/crm-integration.md) |
+| `[CODE] message` on a `stop_process` step | The process finished itself with the `failed` status | This is a business rule of the process, see [A stopped execution](#a-stopped-execution) |
+| An execution stays **Waiting** long after the due time | The `WaitResumeJob` wake-up job is behind or the backend is stopped | Check `docker compose ps backend`, the `wps_executions_waiting` metric, see [Reliability](../04-operations/reliability.md#waiting-executions) |
 | `Outcome of the previous attempt is unknown …` (`error_code: UNKNOWN_OUTCOME`) | The worker crashed after an e-mail or a request was sent (`delivery: at_most_once`); the step was not repeated so as not to send twice | Check the external system; the call journal is `GET /api/executions/{id}/side-effects`; details — [Reliability](../04-operations/reliability.md#side-effects-and-repeats) |
 
 > **Note**

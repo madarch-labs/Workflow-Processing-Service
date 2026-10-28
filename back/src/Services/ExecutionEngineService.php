@@ -28,6 +28,8 @@ use Wps\Services\Errors\ErrorPolicy;
 use Wps\Services\Errors\RetryPolicy;
 use Wps\Support\Uuid;
 use Wps\Template\TemplateEngine;
+use Wps\Time\Clock;
+use Wps\Time\SystemClock;
 
 /**
  * Orchestrates one process run for one event (TS §5.4):
@@ -55,6 +57,7 @@ final class ExecutionEngineService
     private const LOCK_REFRESH_MS = 5000;
 
     private readonly Interpreter $interpreter;
+    private readonly Clock $clock;
 
     public function __construct(
         private readonly AppConfig $config,
@@ -71,7 +74,9 @@ final class ExecutionEngineService
         /** @var (\Closure(): WaitService)|null lazy: parking of waiting executions (7.2) */
         private readonly ?\Closure $waits = null,
         private readonly ?LoopRunner $loops = null,
+        ?Clock $clock = null,
     ) {
+        $this->clock = $clock ?? new SystemClock();
         $this->interpreter = new Interpreter(
             $conditions,
             fn (Instruction $instruction, int $pc, int $seq, ExecutionContext $context, mixed $handle): StepRecord
@@ -90,6 +95,7 @@ final class ExecutionEngineService
      */
     public function handle(Process $process, ExecutionContext $context, string $trigger, ?string $parentId = null, ?string $idempotencyKey = null): string
     {
+        $this->configureContext($context, $process, $trigger, $parentId);
         $executionId = Uuid::v4();
         if ($idempotencyKey !== null && !$this->state->claimIdempotency($idempotencyKey, $executionId)) {
             $existing = $this->state->getIdempotency($idempotencyKey);
@@ -137,6 +143,7 @@ final class ExecutionEngineService
     {
         $module = (string)($object['module'] ?? $object['object_type'] ?? $process->objectType);
         $context = ExecutionContext::fromEvent('manual-' . Uuid::v4(), $object, $module);
+        $this->configureContext($context, $process, 'manual', null);
         $result = ['conditions_met' => false, 'execution_id' => null, 'conditions' => [],
             'run_once_applied' => false, 'run_once_blocked' => false, 'previous_execution_id' => null];
 
@@ -384,6 +391,7 @@ final class ExecutionEngineService
             'meta' => $context->meta(),
             'event_info' => $context->eventInfo->toArray(),
             'conditions' => $prepared->trace,
+            'system' => $context->systemValues(),
         ], $error);
         $this->metrics->inc(MetricsService::EXECUTIONS_FAILED);
         $this->logger->error('Process failed on conditions', [
@@ -410,6 +418,14 @@ final class ExecutionEngineService
         );
         $context->executionId = $executionId;
         $context->processId = $process->id;
+        $context->trigger = $trigger;
+        $context->parentExecutionId = $parentId ?? '';
+        $context->processName = $process->name;
+        $context->processVersion = $process->version;
+        $context->setClock($this->clock);
+        $context->setConstants($process->definition['constants'] ?? []);
+        $now = $this->clock->now();
+        $context->startedAt = $now->format('Y-m-d H:i:s');
 
         $this->executions->create([
             'id' => $executionId,
@@ -437,7 +453,7 @@ final class ExecutionEngineService
                 'run_once' => $process->runOnce, 'version' => $process->version],
             'definition' => $process->definition,
             'conditions' => $prepared->trace,
-            'started_at' => gmdate(\DATE_ATOM),
+            'started_at' => $now->format(\DATE_ATOM),
             'started_ts' => sprintf('%.6F', $handle->startedAt),
         ] + $this->contextFields($context));
 
@@ -471,6 +487,12 @@ final class ExecutionEngineService
         $context = $handle->context;
         $context->executionId = $handle->id;
         $context->processId = $handle->process->id;
+        $context->trigger = $handle->trigger;
+        $context->parentExecutionId = $handle->parentId ?? '';
+        $context->processName = $handle->process->name;
+        $context->processVersion = $handle->process->version;
+        $context->setClock($this->clock);
+        $context->setConstants($handle->process->definition['constants'] ?? []);
 
         $program = $handle->program;
         while ($handle->pc < $program->count()) {
@@ -686,7 +708,15 @@ final class ExecutionEngineService
     {
         $processData = (array)($state['process'] ?? []);
         $process = Process::fromArray($processData + ['definition' => $state['definition'] ?? []]);
-        $context = ExecutionContext::fromArray($state);
+        $context = ExecutionContext::fromArray($state, $this->clock);
+        $context->executionId = $executionId;
+        $context->processId = $process->id;
+        $context->processName = $process->name;
+        $context->processVersion = $process->version;
+        $context->trigger = (string)($state['trigger'] ?? 'stream');
+        $context->parentExecutionId = ($state['parent_execution_id'] ?? '') !== '' ? (string)$state['parent_execution_id'] : '';
+        $context->setConstants($process->definition['constants'] ?? []);
+        $context->startedAt = self::startedAtFromState($state);
         $context->iteration = LoopRunner::iteration(array_values((array)($state['frames'] ?? [])));
         $currentStep = (int)($state['current_step'] ?? 0);
         return new ExecutionHandle(
@@ -925,6 +955,7 @@ final class ExecutionEngineService
             'meta' => $handle->context->meta(),
             'event_info' => $handle->context->eventInfo->toArray(),
             'conditions' => $handle->conditionTrace,
+            'system' => $handle->context->systemValues(),
         ] + ($handle->frames !== [] ? ['frames' => $handle->frames] : []) + ($handle->stop !== null ? ['stop' => $handle->stop] : []);
         $this->executions->finish($handle->id, $status, $handle->retryCount, $snapshot, $error, $handle->context->handledErrors());
         $this->state->finish($handle->id, $status);
@@ -955,6 +986,38 @@ final class ExecutionEngineService
     {
         $this->executions->updateStatus($handle->id, $status, $handle->retryCount);
         $this->state->update($handle->id, ['status' => $status, 'retry_count' => $handle->retryCount]);
+    }
+
+    /**
+     * Runtime values of the execution that conditions and sys.* need before the execution row exists (5.2.9).
+     * execution_id and started_at stay empty until begin().
+     */
+    private function configureContext(ExecutionContext $context, Process $process, string $trigger, ?string $parentId): void
+    {
+        $context->setClock($this->clock);
+        $context->processId = $process->id;
+        $context->processName = $process->name;
+        $context->processVersion = $process->version;
+        $context->trigger = $trigger;
+        $context->parentExecutionId = $parentId ?? '';
+        $context->setConstants($process->definition['constants'] ?? []);
+    }
+
+    /**
+     * @param array<string, mixed> $state Redis state of a running execution
+     */
+    private static function startedAtFromState(array $state): string
+    {
+        $started = $state['started_at'] ?? null;
+        if (is_string($started) && $started !== '') {
+            try {
+                return (new \DateTimeImmutable($started))->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+            } catch (\Throwable) {
+                // fall back to the microtime timestamp below
+            }
+        }
+        $ts = $state['started_ts'] ?? null;
+        return is_numeric($ts) ? gmdate('Y-m-d H:i:s', (int)((float)$ts)) : '';
     }
 
     /**

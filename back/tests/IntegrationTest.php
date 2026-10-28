@@ -87,6 +87,8 @@ final class IntegrationTest
         $this->testSetVariable();
         $this->testWaitingExecutions();
         $this->testExpressions();
+        $this->testSystemVariables();
+        $this->testEditorFormContract();
 
         echo sprintf("\nPassed: %d, Failed: %d, Skipped: %d\n", $this->results['passed'], $this->results['failed'], $this->results['skipped']);
         foreach ($this->failures as $failure) {
@@ -217,7 +219,7 @@ final class IntegrationTest
     private function testDictionaries(): void
     {
         echo "[dictionaries]\n";
-        foreach (['modules', 'operators', 'action-types', 'change-types', 'preload-sources', 'casts'] as $dict) {
+        foreach (['modules', 'operators', 'action-types', 'change-types', 'preload-sources', 'casts', 'system-variables'] as $dict) {
             $this->test("GET /api/dictionaries/{$dict}", function () use ($dict) {
                 $res = $this->request('GET', "/api/dictionaries/{$dict}", token: $this->viewerToken ?? $this->adminToken, expectedStatus: 200);
                 $this->assertIsArray($res['data']);
@@ -2602,8 +2604,7 @@ final class IntegrationTest
             $this->assertEquals(['object.patronymic'], $first['result_data']['missing'] ?? null);
             $this->assertEquals('template', $first['request_data']['change_type']);
         });
-        $this->test('date_shift change type: field + 2 days at 18:00, month clipping, missing base; validation → 422', function () {
-            $units = array_column($this->request('GET', '/api/dictionaries/date-units', token: $this->viewerToken)['data'], 'value');
+        $this->test('date_shift change type: field + 2 days at 18:00, month clipping, missing base; validation → 422', function () {            $units = array_column($this->request('GET', '/api/dictionaries/date-units', token: $this->viewerToken)['data'], 'value');
             $this->assertEquals(['minute', 'hour', 'day', 'week', 'month', 'year'], $units);
             $types = array_column($this->request('GET', '/api/dictionaries/change-types', token: $this->viewerToken)['data'], 'label', 'value');
             $this->assertEquals('Сдвиг даты', $types['date_shift'] ?? null);
@@ -2636,6 +2637,401 @@ final class IntegrationTest
             $this->assertEquals(true, $execution['actions'][2]['result_data']['missing_base']);
             $this->assertEquals(2, $execution['actions'][0]['result_data']['shifts'][0]['amount']);
             $this->assertEquals('day', $execution['actions'][0]['result_data']['shifts'][0]['unit']);
+        });
+        $this->test('list functions: multienum tags through to_list, count/in/unique/concat_lists/sort; sort order → 422', function () {
+            $process = $this->request('POST', '/api/processes', [
+                'name' => 'TEST expr lists', 'object_type' => 'TestExpr', 'is_child' => false,
+                'definition' => ['actions' => [
+                    ['type' => 'modify', 'target' => 'object.tags_list', 'change_type' => 'calculate', 'value' => "to_list(object.tags_c, ',', '^')"],
+                    ['type' => 'modify', 'target' => 'object.tag_count', 'change_type' => 'calculate', 'value' => "count(to_list(object.tags_c, ',', '^'))"],
+                    ['type' => 'modify', 'target' => 'object.has_vip', 'change_type' => 'calculate', 'value' => "in('vip', to_list(object.tags_c, ',', '^'))"],
+                    ['type' => 'modify', 'target' => 'object.tags_new', 'change_type' => 'calculate', 'value' => "join(unique(concat_lists(to_list(object.tags_c, ',', '^'), ['vip'])), ', ')"],
+                    ['type' => 'modify', 'target' => 'object.sorted', 'change_type' => 'calculate', 'value' => "sort(concat_lists(to_list(object.tags_c, ',', '^'), ['a']), 'desc')"],
+                ]],
+            ], $this->adminToken, 201)['data'];
+            $run = $this->request('POST', "/api/processes/{$process['id']}/run", ['object' => [
+                'id' => 'ex-lists', 'tags_c' => '^partner^,^vip^',
+            ]], $this->editorToken, 201)['data'];
+            $object = $this->waitForExecution($run['execution_id'])['context']['variables']['object'];
+            $this->assertEquals(['partner', 'vip'], $object['tags_list']);
+            $this->assertEquals(2, $object['tag_count']);
+            $this->assertEquals(true, $object['has_vip']);
+            $this->assertEquals('partner, vip', $object['tags_new']);
+            $this->assertEquals(['vip', 'partner', 'a'], $object['sorted']);
+            $byName = array_column($this->request('GET', '/api/dictionaries/functions', token: $this->viewerToken)['data'], null, 'name');
+            $this->assertEquals('list', $byName['to_list']['category']);
+            $this->assertEquals('number', $byName['count']['returns']);
+            $bad = $this->request('POST', '/api/processes', [
+                'name' => 'TEST expr lists bad', 'object_type' => 'TestExpr', 'is_child' => false,
+                'definition' => ['actions' => [
+                    ['type' => 'modify', 'target' => 'object.x', 'change_type' => 'calculate', 'value' => "sort(object.tags_list, 'up')"],
+                ]],
+            ], $this->adminToken, 422);
+            $this->assertEquals('Function "sort": order must be "asc" or "desc"', $bad['error']['details'][0]['message']);
+        });
+
+        $this->test('string functions: search, Unicode pad, translit/slug, split/join, regex; bad regex → 422', function () {
+            $process = $this->request('POST', '/api/processes', [
+                'name' => 'TEST expr strings', 'object_type' => 'TestExpr', 'is_child' => false,
+                'definition' => ['actions' => [
+                    ['type' => 'modify', 'target' => 'object.phone', 'change_type' => 'calculate', 'value' => "regex_replace(object.phone_raw, '[^0-9+]', '')"],
+                    ['type' => 'modify', 'target' => 'object.phone_ok', 'change_type' => 'calculate', 'value' => "regex_match(object.phone, '^\\+?\\d{10,15}$')"],
+                    ['type' => 'modify', 'target' => 'object.email_user', 'change_type' => 'calculate', 'value' => "before(object.email, '@')"],
+                    ['type' => 'modify', 'target' => 'object.email_domain', 'change_type' => 'calculate', 'value' => "after(object.email, '@')"],
+                    ['type' => 'modify', 'target' => 'object.email_at', 'change_type' => 'calculate', 'value' => "index_of(object.email, '@')"],
+                    ['type' => 'modify', 'target' => 'object.has_at', 'change_type' => 'calculate', 'value' => "contains(object.email, '@')"],
+                    ['type' => 'modify', 'target' => 'object.gmail', 'change_type' => 'calculate', 'value' => "ends_with(object.email, '@example.com')"],
+                    ['type' => 'modify', 'target' => 'object.prefix_ok', 'change_type' => 'calculate', 'value' => "starts_with(object.name, 'Иван')"],
+                    ['type' => 'modify', 'target' => 'object.status_norm', 'change_type' => 'calculate', 'value' => "replace_ci(object.status, 'active', 'Active')"],
+                    ['type' => 'modify', 'target' => 'object.padded', 'change_type' => 'calculate', 'value' => "pad_left('42', 5, '0')"],
+                    ['type' => 'modify', 'target' => 'object.title', 'change_type' => 'calculate', 'value' => "title_case('иван петров')"],
+                    ['type' => 'modify', 'target' => 'object.slug', 'change_type' => 'calculate', 'value' => "slug('Заказ №42')"],
+                    ['type' => 'modify', 'target' => 'object.translit', 'change_type' => 'calculate', 'value' => "translit('Щука')"],
+                    ['type' => 'modify', 'target' => 'object.tags', 'change_type' => 'calculate', 'value' => "split(object.tags_c, ',', '^')"],
+                    ['type' => 'modify', 'target' => 'object.tags_back', 'change_type' => 'calculate', 'value' => "join(object.tags, ',', '^')"],
+                    ['type' => 'modify', 'target' => 'object.left5', 'change_type' => 'calculate', 'value' => "left(object.name, 5)"],
+                    ['type' => 'modify', 'target' => 'object.right5', 'change_type' => 'calculate', 'value' => "right(object.name, 5)"],
+                    ['type' => 'modify', 'target' => 'object.stripped', 'change_type' => 'calculate', 'value' => "strip_tags('<p>Hello <b>world</b></p>')"],
+                    ['type' => 'modify', 'target' => 'object.dashes', 'change_type' => 'calculate', 'value' => "repeat('-', 3)"],
+                ]],
+            ], $this->adminToken, 201)['data'];
+            $run = $this->request('POST', "/api/processes/{$process['id']}/run", ['object' => [
+                'id' => 'ex-strings',
+                'name' => 'Иван Петров',
+                'email' => 'ivan@example.com',
+                'status' => 'ACTIVE',
+                'phone_raw' => '+7 (999) 123-45-67',
+                'tags_c' => '^vip^,^partner^',
+            ]], $this->editorToken, 201)['data'];
+            $object = $this->waitForExecution($run['execution_id'])['context']['variables']['object'];
+            $this->assertEquals('+79991234567', $object['phone']);
+            $this->assertEquals(true, $object['phone_ok']);
+            $this->assertEquals('ivan', $object['email_user']);
+            $this->assertEquals('example.com', $object['email_domain']);
+            $this->assertEquals(4, $object['email_at']);
+            $this->assertEquals(true, $object['has_at']);
+            $this->assertEquals(true, $object['gmail']);
+            $this->assertEquals(true, $object['prefix_ok']);
+            $this->assertEquals('Active', $object['status_norm']);
+            $this->assertEquals('00042', $object['padded']);
+            $this->assertEquals('Иван Петров', $object['title']);
+            $this->assertEquals('zakaz-42', $object['slug']);
+            $this->assertEquals('Shchuka', $object['translit']);
+            $this->assertEquals(['vip', 'partner'], $object['tags']);
+            $this->assertEquals('^vip^,^partner^', $object['tags_back']);
+            $this->assertEquals('Иван ', $object['left5']);
+            $this->assertEquals('етров', $object['right5']);
+            $this->assertEquals('Hello world', $object['stripped']);
+            $this->assertEquals('---', $object['dashes']);
+            $byName = array_column($this->request('GET', '/api/dictionaries/functions', token: $this->viewerToken)['data'], null, 'name');
+            $this->assertEquals('string', $byName['regex_replace']['category']);
+            $this->assertEquals('string', $byName['translit']['category']);
+            $this->assertEquals('boolean', $byName['regex_match']['returns']);
+            $bad = $this->request('POST', '/api/processes', [
+                'name' => 'TEST expr strings bad', 'object_type' => 'TestExpr', 'is_child' => false,
+                'definition' => ['actions' => [
+                    ['type' => 'modify', 'target' => 'object.x', 'change_type' => 'calculate', 'value' => "regex_match(object.x, '(')"],
+                ]],
+            ], $this->adminToken, 422);
+            $this->assertEquals('Invalid regular expression in regex_match(): missing closing parenthesis', $bad['error']['details'][0]['message']);
+            $badFlags = $this->request('POST', '/api/processes', [
+                'name' => 'TEST expr strings flags', 'object_type' => 'TestExpr', 'is_child' => false,
+                'definition' => ['actions' => [
+                    ['type' => 'modify', 'target' => 'object.x', 'change_type' => 'calculate', 'value' => "regex_match(object.x, 'a', 'x')"],
+                ]],
+            ], $this->adminToken, 422);
+            $this->assertEquals('Function "regex_match": flags may contain only i, m, s, got "x"', $badFlags['error']['details'][0]['message']);
+        });
+
+        $this->test('type functions: checks, conversions, JSON from a string and an array; literal JSONPath → 422', function () {
+            $process = $this->request('POST', '/api/processes', [
+                'name' => 'TEST expr types', 'object_type' => 'TestExpr', 'is_child' => false,
+                'definition' => ['actions' => [
+                    ['type' => 'modify', 'target' => 'object.empty_ok', 'change_type' => 'calculate', 'value' => 'is_empty(object.phone_mobile)'],
+                    ['type' => 'modify', 'target' => 'object.blank_empty', 'change_type' => 'calculate', 'value' => 'is_empty(object.blank)'],
+                    ['type' => 'modify', 'target' => 'object.not_empty', 'change_type' => 'calculate', 'value' => 'is_not_empty(object.name)'],
+                    ['type' => 'modify', 'target' => 'object.num_strict', 'change_type' => 'calculate', 'value' => 'is_number(object.discount_c)'],
+                    ['type' => 'modify', 'target' => 'object.num_text', 'change_type' => 'calculate', 'value' => 'is_numeric_text(object.discount_c)'],
+                    ['type' => 'modify', 'target' => 'object.int_ok', 'change_type' => 'calculate', 'value' => 'is_int(object.qty)'],
+                    ['type' => 'modify', 'target' => 'object.date_ok', 'change_type' => 'calculate', 'value' => 'is_date(object.date_closed)'],
+                    ['type' => 'modify', 'target' => 'object.bool_ok', 'change_type' => 'calculate', 'value' => 'is_bool(object.do_not_call)'],
+                    ['type' => 'modify', 'target' => 'object.flag', 'change_type' => 'calculate', 'value' => 'to_bool(object.do_not_call)'],
+                    ['type' => 'modify', 'target' => 'object.as_text', 'change_type' => 'calculate', 'value' => 'to_string(object.qty)'],
+                    ['type' => 'modify', 'target' => 'object.end_date', 'change_type' => 'calculate', 'value' => 'to_date(object.date_closed)'],
+                    ['type' => 'modify', 'target' => 'object.end_dt', 'change_type' => 'calculate', 'value' => 'to_datetime(object.date_closed)'],
+                    ['type' => 'modify', 'target' => 'object.list_ok', 'change_type' => 'calculate', 'value' => 'is_list(object.ids)'],
+                    ['type' => 'modify', 'target' => 'object.object_ok', 'change_type' => 'calculate', 'value' => 'is_object(object.body)'],
+                    ['type' => 'modify', 'target' => 'object.json_id', 'change_type' => 'calculate', 'value' => "json_get(object.json_text, '$.data.customer.id')"],
+                    ['type' => 'modify', 'target' => 'object.json_default', 'change_type' => 'calculate', 'value' => "json_get(object.json_text, '$.missing', 'нет')"],
+                    ['type' => 'modify', 'target' => 'object.json_all', 'change_type' => 'calculate', 'value' => "json_get_all(object.json_text, '$.items[*].id')"],
+                    ['type' => 'modify', 'target' => 'object.json_array', 'change_type' => 'calculate', 'value' => "json_get(object.body, '$.items[0].id')"],
+                    ['type' => 'modify', 'target' => 'object.encoded', 'change_type' => 'calculate', 'value' => 'json_encode(object.body)'],
+                    ['type' => 'modify', 'target' => 'object.decoded', 'change_type' => 'calculate', 'value' => 'json_decode(object.json_text)'],
+                ]],
+            ], $this->adminToken, 201)['data'];
+            $run = $this->request('POST', "/api/processes/{$process['id']}/run", ['object' => [
+                'id' => 'ex-types',
+                'name' => 'Deal',
+                'phone_mobile' => null,
+                'blank' => '   ',
+                'discount_c' => '1 234,56',
+                'qty' => 42,
+                'date_closed' => '2026-10-16',
+                'do_not_call' => 'yes',
+                'ids' => [1, 2],
+                'body' => ['name' => 'Иван', 'items' => [['id' => 10], ['id' => 20]]],
+                'json_text' => '{"data":{"customer":{"id":42}},"items":[{"id":1},{"id":2}]}',
+            ]], $this->editorToken, 201)['data'];
+            $object = $this->waitForExecution($run['execution_id'])['context']['variables']['object'];
+            $this->assertEquals(true, $object['empty_ok']);
+            $this->assertEquals(true, $object['blank_empty']);
+            $this->assertEquals(true, $object['not_empty']);
+            $this->assertEquals(false, $object['num_strict']);
+            $this->assertEquals(true, $object['num_text']);
+            $this->assertEquals(true, $object['int_ok']);
+            $this->assertEquals(true, $object['date_ok']);
+            $this->assertEquals(true, $object['bool_ok']);
+            $this->assertEquals(true, $object['flag']);
+            $this->assertEquals('42', $object['as_text']);
+            $this->assertEquals('2026-10-16', $object['end_date']);
+            $this->assertEquals('2026-10-16 00:00:00', $object['end_dt']);
+            $this->assertEquals(true, $object['list_ok']);
+            $this->assertEquals(true, $object['object_ok']);
+            $this->assertEquals(42, $object['json_id']);
+            $this->assertEquals('нет', $object['json_default']);
+            $this->assertEquals([1, 2], $object['json_all']);
+            $this->assertEquals(10, $object['json_array']);
+            $this->assertEquals('{"name":"Иван","items":[{"id":10},{"id":20}]}', $object['encoded']);
+            $this->assertEquals(['data' => ['customer' => ['id' => 42]], 'items' => [['id' => 1], ['id' => 2]]], $object['decoded']);
+            $byName = array_column($this->request('GET', '/api/dictionaries/functions', token: $this->viewerToken)['data'], null, 'name');
+            $this->assertEquals('type', $byName['is_empty']['category']);
+            $this->assertEquals('boolean', $byName['is_number']['returns']);
+            $this->assertEquals('type', $byName['json_get']['category']);
+            $this->assertEquals('list', $byName['json_get_all']['returns']);
+            $bad = $this->request('POST', '/api/processes', [
+                'name' => 'TEST expr types path', 'object_type' => 'TestExpr', 'is_child' => false,
+                'definition' => ['actions' => [
+                    ['type' => 'modify', 'target' => 'object.x', 'change_type' => 'calculate', 'value' => "json_get(object.x, 'a.b')"],
+                ]],
+            ], $this->adminToken, 422);
+            $this->assertEquals('json_get(): JSONPath must start with "$"', $bad['error']['details'][0]['message']);
+        });
+
+        $this->test('type functions: a bad boolean and invalid JSON fail the step with a clear message', function () {
+            $boolProcess = $this->request('POST', '/api/processes', [
+                'name' => 'TEST expr types bool', 'object_type' => 'TestExpr', 'is_child' => false,
+                'definition' => ['actions' => [
+                    ['type' => 'modify', 'target' => 'object.x', 'change_type' => 'calculate', 'value' => 'to_bool(object.flag)'],
+                ]],
+            ], $this->adminToken, 201)['data'];
+            $boolRun = $this->request('POST', "/api/processes/{$boolProcess['id']}/run", ['object' => ['id' => 'ex-types-bool', 'flag' => 'abc']], $this->editorToken, 201)['data'];
+            $boolExecution = $this->waitForExecution($boolRun['execution_id']);
+            $this->assertEquals('failed', $boolExecution['status']);
+            $this->assertTrue(str_contains((string)$boolExecution['error_message'], 'Cannot convert "abc" to boolean'));
+            $jsonProcess = $this->request('POST', '/api/processes', [
+                'name' => 'TEST expr types json', 'object_type' => 'TestExpr', 'is_child' => false,
+                'definition' => ['actions' => [
+                    ['type' => 'modify', 'target' => 'object.x', 'change_type' => 'calculate', 'value' => "json_get(object.raw, '$.a')"],
+                ]],
+            ], $this->adminToken, 201)['data'];
+            $jsonRun = $this->request('POST', "/api/processes/{$jsonProcess['id']}/run", ['object' => ['id' => 'ex-types-json', 'raw' => 'not json']], $this->editorToken, 201)['data'];
+            $jsonExecution = $this->waitForExecution($jsonRun['execution_id']);
+            $this->assertEquals('failed', $jsonExecution['status']);
+            $this->assertTrue(str_contains((string)$jsonExecution['error_message'], 'json_get(): invalid JSON'));
+        });
+    }
+
+    private function testSystemVariables(): void
+    {
+        echo "[system variables]\n";
+        $this->test('System variables dictionary lists every sys.* field', function () {
+            $res = $this->request('GET', '/api/dictionaries/system-variables', token: $this->viewerToken, expectedStatus: 200);
+            $values = array_column($res['data'], 'value');
+            foreach (['sys.execution_id', 'sys.parent_execution_id', 'sys.process_id', 'sys.trigger', 'sys.user_id',
+                         'sys.now', 'sys.changed_fields', 'sys.last_error', 'sys.errors_count'] as $field) {
+                $this->assertTrue(in_array($field, $values, true), "{$field} is missing");
+            }
+        });
+        $this->test('sys.* and config.* are available in conditions, expressions and the execution snapshot', function () {
+            $process = $this->request('POST', '/api/processes', [
+                'name' => 'TEST system variables', 'object_type' => 'TestSys', 'is_child' => false,
+                'definition' => [
+                    'constants' => ['vip_threshold' => 100000, 'open_stages' => ['A', 'B']],
+                    'conditions' => [
+                        ['field' => 'sys.trigger', 'operator' => 'equals', 'value_type' => 'static', 'value' => 'manual'],
+                    ],
+                    'actions' => [
+                        ['type' => 'modify', 'target' => 'object.segment', 'change_type' => 'calculate',
+                            'value' => "if(object.amount >= config.vip_threshold, 'VIP', 'Regular')"],
+                        ['type' => 'modify', 'target' => 'object.execution', 'change_type' => 'calculate', 'value' => 'sys.execution_id'],
+                        ['type' => 'modify', 'target' => 'object.summary', 'change_type' => 'calculate',
+                            'value' => "concat(sys.trigger, ':', sys.record_id)"],
+                    ],
+                ],
+            ], $this->adminToken, 201)['data'];
+            $run = $this->request('POST', "/api/processes/{$process['id']}/run", ['object' => [
+                'id' => 'sys-1', 'user_id' => 'u-42', 'amount' => '150000',
+                'event_type' => 'update', 'changed_fields' => ['amount'],
+            ]], $this->editorToken, 201)['data'];
+            $this->assertTrue($run['conditions_met']);
+            $executionId = (string)$run['execution_id'];
+            $execution = $this->waitForExecution($executionId);
+            $this->assertEquals('completed', $execution['status'], (string)($execution['error_message'] ?? ''));
+            $object = $execution['context']['variables']['object'];
+            $this->assertEquals('VIP', $object['segment']);
+            $this->assertEquals($executionId, $object['execution']);
+            $this->assertEquals('manual:sys-1', $object['summary']);
+
+            $system = $execution['context']['system'];
+            $this->assertEquals($executionId, $system['execution_id']);
+            $this->assertEquals('', $system['parent_execution_id']);
+            $this->assertEquals($process['id'], $system['process_id']);
+            $this->assertEquals('TEST system variables', $system['process_name']);
+            $this->assertEquals($process['version'], $system['process_version']);
+            $this->assertEquals('manual', $system['trigger']);
+            $this->assertEquals(0, $system['depth']);
+            $this->assertEquals('TestSys', $system['module']);
+            $this->assertEquals('sys-1', $system['record_id']);
+            $this->assertEquals('update', $system['event_type']);
+            $this->assertEquals(['amount'], $system['changed_fields']);
+            $this->assertEquals('u-42', $system['user_id']);
+            $this->assertTrue((bool)preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', (string)$system['now']));
+            $this->assertTrue((bool)preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', (string)$system['started_at']));
+            $this->assertEquals(0, $system['errors_count']);
+            $this->assertFalse(array_key_exists('last_error', $system));
+        });
+        $this->test('sys.* is resolved for a stream event; changed_fields default to an empty list', function () {
+            if (!class_exists(Redis::class)) {
+                $this->skip('ext-redis not available');
+            }
+            $process = $this->request('POST', '/api/processes', [
+                'name' => 'TEST system variables stream', 'object_type' => 'TestSysStream', 'is_child' => false,
+                'definition' => ['actions' => [
+                    ['type' => 'modify', 'target' => 'object.source', 'change_type' => 'calculate', 'value' => 'sys.trigger'],
+                    ['type' => 'modify', 'target' => 'object.user', 'change_type' => 'calculate', 'value' => 'sys.user_id'],
+                    ['type' => 'modify', 'target' => 'object.fields_count', 'change_type' => 'calculate',
+                        'value' => 'count(sys.changed_fields)'],
+                ]],
+            ], $this->adminToken, 201)['data'];
+            $objectId = 'sys-stream-' . random_int(1000, 9999);
+            $this->xadd(['id' => $objectId, 'module' => 'TestSysStream', 'wps_user_id' => 'u-77']);
+            $list = $this->waitForExecutions($process['id'], $objectId, 1);
+            $execution = $this->waitForExecution($list[0]['id']);
+            $this->assertEquals('completed', $execution['status'], (string)($execution['error_message'] ?? ''));
+            $object = $execution['context']['variables']['object'];
+            $this->assertEquals('stream', $object['source']);
+            $this->assertEquals('u-77', $object['user']);
+            $this->assertEquals(0, $object['fields_count']);
+            $this->assertEquals([], $execution['context']['system']['changed_fields']);
+        });
+        $this->test('Unknown sys.*, undefined config.* and writes to reserved names are rejected on save', function () {
+            $bad = $this->request('POST', '/api/processes', [
+                'name' => 'TEST system variables bad', 'object_type' => 'TestSys', 'is_child' => false,
+                'definition' => [
+                    'constants' => ['known' => 1],
+                    'conditions' => [
+                        ['field' => 'sys.unknown', 'operator' => 'equals', 'value_type' => 'static', 'value' => 'x'],
+                        ['field' => 'config.missing', 'operator' => 'equals', 'value_type' => 'static', 'value' => 'x'],
+                    ],
+                    'actions' => [
+                        ['type' => 'modify', 'target' => 'sys.x', 'change_type' => 'set_value', 'value' => '1'],
+                        ['type' => 'set_variable', 'var' => 'config', 'fields' => [['name' => 'x', 'change_type' => 'set_value', 'value' => '1']]],
+                    ],
+                ],
+            ], $this->adminToken, 422);
+            $messages = implode(' | ', array_column($bad['error']['details'], 'message'));
+            $this->assertTrue(str_contains($messages, 'Unknown system variable "sys.unknown"'), $messages);
+            $this->assertTrue(str_contains($messages, 'Constant "missing" is not defined in definition.constants'), $messages);
+            $this->assertTrue(str_contains($messages, 'Variable "sys" is read-only'), $messages);
+            $this->assertTrue(str_contains($messages, 'Name "config" is reserved'), $messages);
+        });
+        $this->test('Constants are validated: name, value type and secret-like names', function () {
+            $bad = $this->request('POST', '/api/processes', [
+                'name' => 'TEST system variables constants', 'object_type' => 'TestSys', 'is_child' => false,
+                'definition' => [
+                    'constants' => [
+                        'bad-name' => 1,
+                        'nested' => ['a' => ['b' => 1]],
+                        'api_token' => 'abc',
+                    ],
+                    'actions' => [],
+                ],
+            ], $this->adminToken, 422);
+            $details = array_column($bad['error']['details'], 'message', 'field');
+            $this->assertEquals('Invalid constant name (letters, digits, "_")', $details['definition.constants.bad-name'] ?? null);
+            $this->assertEquals('Constant must be a scalar or a list of scalars', $details['definition.constants.nested'] ?? null);
+            $this->assertEquals('Constant "api_token" looks like a secret; use a secret reference (secret://name)', $details['definition.constants.api_token'] ?? null);
+            $this->request('POST', '/api/processes', [
+                'name' => 'TEST system variables constants list', 'object_type' => 'TestSys', 'is_child' => false,
+                'definition' => ['constants' => ['ok', 'also_ok'], 'actions' => []],
+            ], $this->adminToken, 422);
+        });
+    }
+
+    /**
+     * The visual editor (front/src/utils/processForm.ts) offers only operators and change types it can save:
+     * every row it can build must be accepted here, and unknown definition keys must not vanish silently.
+     */
+    private function testEditorFormContract(): void
+    {
+        echo "[editor form contract]\n";
+        $this->test('Unknown definition keys are rejected instead of dropped', function () {
+            $res = $this->request('POST', '/api/processes', [
+                'name' => 'TEST form contract unknown key', 'object_type' => 'TestForm', 'is_child' => false,
+                'definition' => ['actions' => [], 'constant' => ['limit' => 1]],
+            ], $this->adminToken, 422);
+            $details = array_column($res['error']['details'], 'message', 'field');
+            $this->assertEquals(
+                'Unknown key "constant" (allowed: conditions, preload, actions, constants)',
+                $details['definition.constant'] ?? null,
+            );
+            $ok = $this->request('POST', '/api/processes', [
+                'name' => 'TEST form contract known keys', 'object_type' => 'TestForm', 'is_child' => false,
+                'definition' => ['conditions' => [], 'preload' => [], 'actions' => [], 'constants' => ['limit' => 1]],
+            ], $this->adminToken, 201)['data'];
+            $this->assertEquals(['limit' => 1], $ok['definition']['constants']);
+        });
+        $this->test('Every operator offered by the editor is accepted in the editor row shape', function () {
+            $operators = $this->request('GET', '/api/dictionaries/operators', token: $this->adminToken)['data'];
+            $conditions = [];
+            foreach ($operators as $op) {
+                $noValue = in_array($op['operands'], ['none', 'presence', 'change'], true);
+                // same rule as isFormOperator() in front/src/utils/processForm.ts: no cast selector, one text value
+                $offered = $noValue
+                    || (in_array($op['operands'], ['value', 'change_value'], true) && in_array('string', $op['casts'], true));
+                if (!$offered) {
+                    continue;
+                }
+                $conditions[] = $noValue
+                    ? ['field' => 'object.status', 'operator' => $op['value']]
+                    : ['field' => 'object.status', 'operator' => $op['value'], 'value_type' => 'static', 'value' => 'x'];
+            }
+            $this->assertTrue(count($conditions) >= 14, 'expected at least 14 editor operators, got ' . count($conditions));
+            $res = $this->raw('POST', '/api/processes', [
+                'name' => 'TEST form contract operators', 'object_type' => 'TestForm', 'is_child' => false,
+                'definition' => ['conditions' => $conditions, 'preload' => [], 'actions' => []],
+            ], $this->adminToken);
+            $this->assertEquals(201, $res['status'], 'rejected: ' . $res['body']);
+        });
+        $this->test('Every change type offered by the editor is accepted in the editor row shape', function () {
+            // mirror of FORM_CHANGE_TYPES in front/src/utils/processForm.ts with a value the form can produce;
+            // null: the form omits "value" (an empty increment / decrement step)
+            $values = [
+                'set_value' => 'x', 'set_from_variable' => 'object.name', 'calculate' => "concat('a', object.name)",
+                'template' => 'Hi {{ object.name }}', 'increment' => '2', 'decrement' => null, 'clear' => '',
+            ];
+            $known = array_column($this->request('GET', '/api/dictionaries/change-types', token: $this->adminToken)['data'], 'value');
+            $actions = [];
+            foreach ($values as $type => $value) {
+                $this->assertTrue(in_array($type, $known, true), "change type {$type} is not in the dictionary");
+                $row = ['type' => 'modify', 'target' => "object.f_{$type}", 'change_type' => $type, 'save_to_crm' => false];
+                $actions[] = $value === null ? $row : $row + ['value' => $value];
+            }
+            $res = $this->raw('POST', '/api/processes', [
+                'name' => 'TEST form contract change types', 'object_type' => 'TestForm', 'is_child' => false,
+                'definition' => ['conditions' => [], 'preload' => [], 'actions' => $actions],
+            ], $this->adminToken);
+            $this->assertEquals(201, $res['status'], 'rejected: ' . $res['body']);
         });
     }
 

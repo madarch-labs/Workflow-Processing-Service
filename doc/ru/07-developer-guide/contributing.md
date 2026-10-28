@@ -39,10 +39,16 @@
 **Бэкенд** (нужна мок-CRM — см. [Тестирование](testing.md)):
 
 ```bash
-docker compose up -d --build backend
-docker build -f back/Dockerfile --target test -t wps-backend-test . && docker run --rm wps-backend-test --testsuite unit
-docker compose exec backend php tests/IntegrationTest.php
-# … Passed: 67, Failed: 0, Skipped: 0   (more if you added checks)
+# unit tests
+docker build -q -f back/Dockerfile --target test -t wps-backend-test . && docker run --rm wps-backend-test --testsuite unit
+# integration tests on the mock CRM (export in the same shell)
+export CRM_API_BASE_URL=http://mock:9502 CRM_API_STATIC_KEY=mySecretKey MOCK_SERVICE_URL=http://mock:9502 \
+       TELEGRAM_API_BASE=http://mock:9502/mock/telegram
+docker compose up -d --build backend mock && docker compose exec -T backend php tests/IntegrationTest.php
+# … Passed: 156, Failed: 0, Skipped: 0   (more if you added checks)
+# SuiteCRM 8 cases (backend back on SuiteCRM 8)
+unset CRM_API_BASE_URL CRM_API_STATIC_KEY MOCK_SERVICE_URL TELEGRAM_API_BASE; docker compose up -d backend
+for f in .tehnical/suiteCRM8/processes/cases/*.json; do php .tehnical/suiteCRM8/scripts/run_case.php "$f" || echo "FAILED: $f"; done
 ```
 
 **Фронтенд:**
@@ -68,6 +74,8 @@ curl -g 'http://localhost:9502/test-event?module=Deals&set[status]=Active'
 | Схему БД | **Новый** нумерованный файл `back/migrations/00N_<name>.sql`. Применённые файлы записываются в `schema_migrations` и больше не выполняются — не редактируйте их |
 | Переменную окружения | `back/.env.example`, `docker-compose.yml`, если нужно значение по умолчанию, [Конфигурацию](../04-operations/configuration.md) |
 | Действие, оператор, тип изменения, стратегию загрузки, функцию выражений | Реестр (`Container`), перевод `dict.*`, [руководство пользователя](../03-user-guide/actions.md), проверку расширения в `IntegrationTest.php` |
+| Бизнес-поведение задачи из `md/tasks_list/` | Юнит-тесты, блок `[имя]` в `IntegrationTest.php`, кейс `.tehnical/suiteCRM8/processes/cases/<id>-*.json` до `PASSED`, описание `md/tasks_list/cases/<id>-suitecrm8.md`, закрытие `md/tasks_list/tools/complete_task.py` (см. [Тестирование](testing.md#кейсы-suitecrm-8)) |
+| Справочник (`/api/dictionaries/*`) | `back/API.md`, [справочник API](../06-api-reference/endpoints.md), перевод `dict.<вид>.<value>` во `front/src/locales/*.json`, если справочник показывается в UI |
 | Текст UI | Оба файла: `front/src/locales/ru.json` и `en.json` |
 | Экран | Страницы [руководства пользователя](../03-user-guide/login-and-ui.md) и скриншоты из `doc/_meta/screenshots_manifest.md` |
 | Поведение, описанное в документации | Страницу в `doc/en/` **и** тот же файл в `doc/ru/` |
@@ -93,6 +101,7 @@ python3 doc/_meta/tools/check_links.py  # en/ru trees identical, no broken links
 ## Чек-лист ревью
 
 - [ ] `IntegrationTest.php` проходит (`Failed: 0`); для нового поведения есть проверка
+- [ ] Юнит-тесты проходят (`OK`); кейс SuiteCRM 8 задачи — `PASSED`
 - [ ] `npm run build` проходит (переводы, типы, сборка)
 - [ ] Нет захардкоженных текстов UI и кириллицы в `.vue`/`.ts` вне комментариев; новые ключи есть в обеих локалях
 - [ ] PHP: `declare(strict_types=1)`, `final`-классы, зависимости через конструктор, связывание в `Wps\Kernel\Container`

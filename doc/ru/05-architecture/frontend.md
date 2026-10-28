@@ -70,23 +70,43 @@ flowchart LR
     users["UsersView<br/>диалог CRUD"]
 ```
 
-Редактор раскладывает `definition.actions` по панелям: `formFromProcess()` в `stores/processes.ts` распределяет
-действия по типам, а `definitionFromForm()` собирает их обратно — сначала строки изменения и сохранения в их порядке,
-затем по одному действию `start_process` на каждый выбранный ведомый процесс. Действия неизвестных редактору типов
-(например, `preload` внутри `actions`) сохраняются без изменений, дерево условий (`logical_operator`) тоже остаётся как
-есть. Редактор записывает только те поля, которые показывает, поэтому необязательные ключи, заданные через API
-(`modify.module`, `save_object.mode`, `preload.strategy`), при сохранении процесса из интерфейса теряются.
+Редактор раскладывает `definition.actions` по панелям: `formFromProcess()` в `utils/processForm.ts` распределяет
+действия по типам, а `definitionFromForm()` собирает их обратно. Форма правит **поверх исходного JSON**: каждая строка
+хранит исходный объект (`_raw`), и при сохранении поля формы накладываются на него, а `sourceDefinition` сохраняет
+ключи определения, которых в форме нет (`constants` …). Поэтому необязательные ключи, заданные через API
+(`save_object.mode`, `preload.strategy`, `id`, `on_error`, `retry`, `cast` …), не теряются; при смене оператора или
+типа изменения из `_raw` переносится только белый список ключей. Строки `start_process` помнят, после какой строки
+стояли (`_afterKey`), и возвращаются на своё место; новые идут в конец. Действия неизвестных редактору типов,
+`modify` со сложными типами изменения и `start_process` с `process_ids` становятся строками `passthrough` и сохраняются
+без изменений; дерево условий и списки условий, которые таблица не может показать, — тоже (`conditionsRaw`).
+Тесты на «открыл и сохранил — без изменений» — `src/utils/__tests__/processForm.spec.ts` (`npm test`, vitest).
 `VariableSidebar` показывает переменные, доступные в каждой точке процесса (объект события, переменные предзагрузки,
 переменные, созданные `modify`), с их полями — для этого используется `utils/variables.ts`. `ExecutionDetailView`
 опрашивает выполнение, пока его статус `running` или `retrying`. Для подсказки путей полей `ConditionsPanel`,
 `PreloadPanel` и `ModifyPanel` используют компонент `PathInput`.
+
+### Что редактор формы не покрывает
+
+Визуальный редактор появился раньше большинства действий движка и редактирует только часть определения:
+
+| Часть определения | В редакторе формы |
+|---|---|
+| `conditions` (плоский список), `preload`, `modify`, `save_object`, `start_process`, заголовок процесса | редактируются |
+| Остальные действия и блоки: `set_variable`, `find_records`, `update_records`, `delay`, `send_email`, `http_request`, `assign`, `notify`, `link_records`, `unlink_records`, `condition`, `foreach`, `stop_process` | сохраняются без изменений (строка `passthrough`); правятся через JSON процесса или API |
+| Дерево условий с `logical_operator` | сохраняется как есть |
+| `trigger_on`, `run_once` | `run_once` — в форме; `trigger_on` в форме нет, при сохранении backend оставляет прежнее значение |
+| `definition.constants` (константы `config.*`, задача 5.2.9) | не показываются, при сохранении остаются без изменений (`sourceDefinition`) |
+
+Статусы выполнений и шагов окрашиваются по `utils/format.ts`: выполнение `running` — синий, `retrying` — оранжевый,
+`waiting` и `cancelled` — серый (`info`), `completed` — зелёный, `failed` — красный; шаг `waiting` — оранжевый.
+`ExecutionDetailView` опрашивает только `running` и `retrying`; ожидающее выполнение обновляется вручную.
 
 ## Состояние
 
 | Хранилище | Содержимое |
 |---|---|
 | `auth` | `accessToken`, `refreshToken` (хранятся в `localStorage` как `wps_access_token`, `wps_refresh_token`), `user`, вычисляемые `role`, `isAdmin`, `canEdit`; `login()`, `refresh()`, `fetchMe()`, `logout()`, `hasRole()` |
-| `processes` | Список процессов с пагинацией и фильтрами, загрузка одного процесса, `saveProcess()`; вспомогательные функции формы `emptyForm()`, `formFromProcess()`, `definitionFromForm()`, `payloadFromForm()` |
+| `processes` | Список процессов с пагинацией и фильтрами, загрузка одного процесса, `saveProcess()`; реэкспорт функций формы `emptyForm()`, `formFromProcess()`, `definitionFromForm()`, `payloadFromForm()` из `utils/processForm.ts` |
 
 Остальные данные (выполнения, справочники, пользователи) представления загружают напрямую через `src/api/`.
 

@@ -151,7 +151,7 @@ final class FindRecordsHandler implements ActionHandlerInterface
         $var = $actionConfig['var'] ?? null;
         if (!is_string($var) || !ExecutionContext::isValidVariableName($var)) {
             $scope->error("{$path}.var", 'Variable name is required (letters, digits, "_"; e.g. deals)');
-        } elseif ($var === ExecutionContext::OBJECT || ExecutionContext::isReadOnly($var) || $var === 'config') {
+        } elseif (in_array($var, ExecutionContext::RESERVED, true)) {
             $scope->error("{$path}.var", "Name \"{$var}\" is reserved");
         } elseif ($scope->isDeclared($var) && $scope->kind($var) !== ExecutionContext::SOURCE_LIST) {
             $scope->error("{$path}.var", "Variable \"{$var}\" is already defined");

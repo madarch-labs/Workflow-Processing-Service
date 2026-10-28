@@ -43,7 +43,7 @@ final class SetVariableHandler implements ActionHandlerInterface
     {
         $fields = self::fields($actionConfig);
         $var = array_key_first($fields) !== null ? ExecutionContext::splitPath(array_key_first($fields))[0] : '';
-        if ($context->hasVariable($var) && $context->getVariable($var) !== null && !$context->isLocal($var)) {
+        if (!in_array($var, ExecutionContext::RESERVED, true) && $context->hasVariable($var) && $context->getVariable($var) !== null && !$context->isLocal($var)) {
             throw new NonRecoverableException("set_variable: \"{$var}\" is a CRM record variable; use modify");
         }
         $request = [];
@@ -87,7 +87,7 @@ final class SetVariableHandler implements ActionHandlerInterface
             $scope->error($hasTarget ? "{$path}.target" : "{$path}.var", sprintf('Invalid variable name "%s"', is_scalar($var) ? (string)$var : ''));
             return;
         }
-        if ($var === ExecutionContext::OBJECT || ExecutionContext::isReadOnly($var) || $var === 'config') {
+        if (in_array($var, ExecutionContext::RESERVED, true)) {
             $scope->error($hasTarget ? "{$path}.target" : "{$path}.var", "Name \"{$var}\" is reserved");
             return;
         }

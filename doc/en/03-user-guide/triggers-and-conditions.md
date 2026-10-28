@@ -572,6 +572,38 @@ So cheap checks on the event never cost CRM requests. When the conditions pass, 
 
 Recipe: [Contact: copy account name](recipes.md) uses exactly this — `object.status` **Not equals** `Closed` AND `v1.status` **Equals** `Active`.
 
+How it works in detail:
+
+- In the first pass a row that refers to a not-yet-loaded variable (in `field`, in a `from_object_field` path, in a range
+  bound or inside an `expression`) is **unknown**. AND with a false row is false, OR with a true row is true — then the
+  answer is known without the CRM. Only when the result depends on an unknown row does the second pass start.
+- The second pass runs the **whole** Preload block (all rows, in order), not only the variables the conditions need.
+- `sys.*`, `config.*` and `object_before.*` are known in the first pass and never trigger the preload.
+- If a preload step fails during the lazy check, an execution is still created: the failed step is recorded and the
+  execution ends with **Error** — the error is not silently turned into "conditions not met".
+- Both passes use one "now" for [relative dates](#relative-dates).
+- A manual run with `"force": true` skips the conditions entirely; the preload then runs as ordinary first steps.
+- A preload variable that is not found in the CRM is `null`: rows on it are false (except `is_null`), see
+  [Operators](#operators).
+
+### System variables and constants in conditions
+
+`sys.*` and `config.*` (see [System variables and constants](change-types-and-expressions.md#system-variables-and-constants))
+can be used on both sides of a row: as `field`, as a `from_object_field` path and inside an expression.
+
+```json
+{ "field": "sys.trigger", "operator": "equals", "value": "manual" }
+{ "field": "object.annual_revenue", "operator": "greater_or_equal", "cast": "decimal",
+  "value_type": "expression", "value": "config.vip_threshold" }
+{ "field": "object.sales_stage", "operator": "in", "value_type": "from_object_field", "value": "config.open_stages" }
+```
+
+Checked by a manual run with `{"id": "acc-1", "annual_revenue": "150 000"}` and the constant `vip_threshold = 100000`:
+the trace shows `actual_cast: "150000"`, `expected_cast: "100000"`, `result: true`, and `sys.trigger` = `manual`.
+Unknown names are save errors: `Unknown system variable "sys.foo"; available: sys.execution_id, …`,
+`Constant "missing" is not defined in definition.constants`. Before the execution is created `sys.execution_id` and
+`sys.started_at` are empty, so do not use them in conditions.
+
 ### Errors
 
 | Message | Cause |
@@ -580,7 +612,15 @@ Recipe: [Contact: copy account name](recipes.md) uses exactly this — `object.s
 | `Condition 1: specify the field path to compare with` | **Object/variable field** without a path |
 | `Variable "v9" is not defined at this point` (server) | The variable is not declared in **Preload** |
 | `Unknown comparison operator` (server) | Operator not in the dictionary (API only) |
-| `Must be "static" or "from_object_field"` (server) | Wrong `value_type` (API only) |
+| `Must be "static", "from_object_field" or "expression"` (server) | Wrong `value_type` (API only) |
+| `Must be AND or OR` (server, field `…logical_operator`) | Wrong operator of a [group](#advanced-form-groups-and-or-api-only) |
+| `Condition must be an object` (server) | A row is not a JSON object |
+| `Unknown system variable "sys.foo"; available: …`, `Constant "x" is not defined in definition.constants` (server) | Unknown `sys.*` field or undeclared constant |
+| `Expression is required`, `Expression is too long (max 1000 characters)`, `Operator "between" expects a pair [from, to]` (server) | Errors of a right-hand [expression](#comparing-with-an-expression) |
+| `Range bound is required`, `Range start must not be greater than range end` (server) | Wrong static bounds of `between` / `not_between` |
+| `List of values must not be empty` (server) | Empty right side of `contains_any` / `contains_all` / `contains_none` |
+| `Use "cast_options": {"case_sensitive": ...}` (server) | A cast option written next to `cast` instead of inside `cast_options` |
+| `Value is required for operator "starts_with"` (server) | Empty prefix / suffix |
 | `Unknown cast "money" (allowed: string, int, decimal, date, datetime, bool, list)` (server) | Unknown `cast` |
 | `Operator "contains" does not support cast "decimal" (supported: string, list)` (server) | The operator does not work with this type |
 | `Value "abc" is not a valid decimal` (server, field `value`) | The static value cannot be cast to the type |
@@ -627,7 +667,38 @@ The editor builds a flat list joined with AND. The API also accepts a nested for
 }
 ```
 
-This means: status is `Active` **and** (amount contains `000` **or** name contains `VIP`). An OR group with no rows is true.
+This means: status is `Active` **and** (amount contains `000` **or** name contains `VIP`).
+
+Rules of the advanced form:
+
+| Rule | Detail |
+|---|---|
+| Node | `{ "logical_operator": "AND" \| "OR", "conditions": [...], "groups": [...] }`; `logical_operator` is case-insensitive, `AND` by default |
+| Nesting | a group can be put into `groups` or directly into `conditions` (an object with `conditions` / `groups` is a group, not a row); depth is not limited |
+| A flat list | `"conditions": [row, row]` is the same as `{ "logical_operator": "AND", "conditions": [row, row] }` |
+| An empty group | true both for `AND` and for `OR`; no conditions at all — the process starts on every event |
+| Evaluation | all rows are evaluated (for a complete trace), the result is combined: AND — false if any row is false; OR — true if any row is true |
+| Unknown rows (lazy preload) | see [lazy preload](#conditions-on-preloaded-variables-lazy-preload): `false AND unknown` = false, `true OR unknown` = true without loading |
+| Errors | `Must be AND or OR` (field `definition.conditions…logical_operator`) |
+
+Example — a deal of at least 1,000,000 **or** a deal of a VIP account (`v1` — preloaded account), and only if the stage is not
+closed:
+
+```json
+{
+  "logical_operator": "AND",
+  "conditions": [
+    { "field": "object.sales_stage", "operator": "not_in", "value": ["Closed Won", "Closed Lost"] },
+    { "logical_operator": "OR", "conditions": [
+      { "field": "object.amount", "operator": "greater_or_equal", "cast": "decimal", "value": "1000000" },
+      { "field": "v1.rating", "operator": "equals", "value": "VIP" }
+    ] }
+  ]
+}
+```
+
+For a closed deal `v1` is not loaded (the first row is false); for a deal of 2,000,000 it is not loaded either (OR is
+already true); otherwise the preload runs and `v1.rating` decides.
 
 If a process has conditions in this form, the editor shows the badge **advanced** and the warning **Conditions are defined in advanced form (groups / OR). The table editor does not support them — they will be saved unchanged.** The button **Replace with table conditions (AND)** converts them: a simple AND list without groups keeps its rows, anything else is replaced by an empty list. The process card shows **Conditions in advanced form (groups / OR)**.
 

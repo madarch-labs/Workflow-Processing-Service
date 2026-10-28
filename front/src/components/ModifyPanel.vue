@@ -5,6 +5,7 @@ import { ArrowDown, ArrowUp, Delete, Plus, QuestionFilled, Upload } from '@eleme
 import type { ChangeType, DictionaryItem, ModifyRow } from '@/types'
 import { rowKey } from '@/utils/keys'
 import PathInput from './PathInput.vue'
+import { changeTypeOptions } from '@/utils/processForm'
 
 const props = withDefaults(
   defineProps<{
@@ -129,7 +130,7 @@ const GRID = '1.2fr 1fr 1.6fr 110px 100px'
             :model-value="row.change_type"
             @update:model-value="(v: string) => updateRow(index, { change_type: v })"
           >
-            <el-option v-for="c in changeTypes" :key="c.value" :label="c.label" :value="c.value" />
+            <el-option v-for="c in changeTypeOptions(changeTypes, row.change_type)" :key="c.value" :label="c.label" :value="c.value" />
           </el-select>
           <PathInput
             v-if="row.change_type === 'set_from_variable'"

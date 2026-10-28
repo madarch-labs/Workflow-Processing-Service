@@ -64,6 +64,9 @@ UI хранит оба токена в `localStorage` (`wps_access_token`, `wps_
 | `GET` | `^/api/.*$` | admin, editor, viewer |
 | прочие | не перечислены | `GET` — любая роль, остальные методы — admin, editor |
 
+Под правило по умолчанию попадают, например, `POST /api/notify/test` (тестовое уведомление: admin, editor) и
+`GET /api/auth/me`, `GET /api/dictionaries/*` (любая роль).
+
 Ответы: заголовка нет или он некорректен — `401 UNAUTHORIZED`; неверная подпись или тип токена — `401 INVALID_TOKEN`; срок
 истёк — `401 TOKEN_EXPIRED`; роль не подходит — `403 FORBIDDEN`. На `OPTIONS` (CORS preflight) сервер отвечает до маршрутизации.
 Правила проверяют только URL; новый эндпоинт защищается правилом по умолчанию, пока вы не добавите явное
@@ -187,6 +190,59 @@ docker compose exec backend php bin/secrets-key.php     # или php back/bin/se
 > **Стенд разработки.** В `docker-compose.yml` для стенда заданы `HTTP_ALLOW_PRIVATE_CIDRS=172.16.0.0/12,192.168.0.0/16` и
 > `HTTP_DENY_HOSTS` без `mock` — чтобы тесты могли вызывать mock CRM внутри сети docker. В рабочей среде эти переменные
 > не переопределяйте (или задайте только нужные подсети внутренних систем).
+
+## Регулярные выражения (`SafeRegex`)
+
+Функции выражений `regex_match`, `regex_extract`, `regex_replace` принимают регулярное выражение от редактора
+процесса. Чтобы одно выражение не заняло воркер (катастрофический перебор, ReDoS), `Wps\Expression\SafeRegex`:
+
+- оборачивает шаблон сам (`~…~u`, `~` внутри экранируется) — разделители и модификаторы в шаблоне писать не нужно,
+  флаги — только `i`, `m`, `s` (третий/четвёртый аргумент функции);
+- ограничивает шаблон 500 символами, а строку, к которой он применяется, — 100 000 символов;
+- на время одного вызова `preg_*` снижает `pcre.backtrack_limit` до 100 000 и `pcre.recursion_limit` до 10 000 и
+  восстанавливает прежние значения (воркер общий для корутин);
+- проверяет литеральный шаблон при сохранении процесса (`422` с текстом PCRE), а ошибку во время выполнения превращает в
+  невосстановимую ошибку шага.
+
+| Сообщение | Когда |
+|---|---|
+| `Invalid regular expression in regex_match(): missing closing parenthesis` | Шаблон не компилируется (при сохранении или выполнении) |
+| `Regular expression in regex_replace() is too long (max 500 characters)` | Шаблон длиннее 500 символов |
+| `Regular expression input in regex_extract() is too long (max 100000 characters)` | Строка длиннее 100 000 символов |
+| `Function "regex_match": flags may contain only i, m, s, got "x"` | Недопустимый флаг |
+| `Regular expression failed: backtrack limit exceeded` | Шаблон слишком «дорогой» для этой строки (также `recursion limit exceeded`, `JIT stack limit exceeded`) |
+
+## Встроенные пределы
+
+Кроме настраиваемых переменных ([Конфигурация](configuration.md)), в коде заданы постоянные пределы. Они защищают
+воркер от слишком больших определений и данных; превышение даёт ошибку сохранения (`422 VALIDATION_ERROR`) или
+невосстановимую ошибку шага.
+
+| Что | Предел | Сообщение / поведение |
+|---|---|---|
+| Длина выражения (`calculate`, `{{= … }}`, функции) | 4000 символов; в условиях (`value_type: expression`) — 1000 | `Expression is too long (max 4000 characters)` |
+| Сложность выражения | 500 узлов, вложенность 32 уровня | `Expression is too complex (max 500 nodes)`, `Expression is nested too deeply (max 32 levels)` |
+| Результат выражения / шаблона | 1 МБ | ошибка шага |
+| Длина шаблона | 65 536 символов | `Template is too long (max 65536 characters)` |
+| Списки в функциях выражений | 10 000 элементов | `List is too large (max 10000 items)` |
+| Счётчик и длина `repeat`, `pad_left`, `pad_right` | 0..1000 | `Function "repeat": count must be an integer between 0 and 1000, got "5000"` |
+| `json_decode`, `json_get` | 1 МБ, глубина 64 | ошибка шага |
+| Точность `decimal` | 100 цифр, масштаб `cast_options.scale` ≤ 20 | ошибка приведения |
+| Константы процесса (`definition.constants`) | 100 штук, 16 КБ в JSON; только скаляры и списки скаляров | `Too many constants (max 100)`, `Constants are too large (max 16 KB)` |
+| Имя константы, похожее на секрет (`password`, `secret`, `token`, `api_key`) | запрещено | `Constant "api_token" looks like a secret; use a secret reference (secret://name)` |
+| Ветки блока `condition` | 20 | `Too many branches (max 20)` |
+| Список в правой части условия (`in`, `contains_any` …) | 500 значений | `List is too long (max 500 items)` |
+| Сдвиги в относительной дате (`today+1d-2h…`) | 5 | `Too many shifts in relative date (max 5)` |
+| Правила `update_records` | 1..20 | `1..20 field rules are required: …` |
+| Записи `map` | 500 | `Too many entries (max 500)` |
+| Каналы `notify` | 1..10 | `From 1 to 10 channels are required` |
+| Получатели колокольчика `crm_alert` | 50 пользователей (лишние отбрасываются) | — |
+| Текст уведомления | 4000 символов (обрезается) | предупреждение `Message was cut to 4000 characters` |
+| Тема письма | 998 символов | ошибка шага |
+| Пул `assign` | 200 id | `assign: pool is too large (N > 200)` |
+| Сдвиг `date_shift` | 100 000 единиц | ошибка шага |
+| Повторы шага | 20 попыток, задержка ≤ 7 дней | ошибка сохранения |
+| Доставок одного сообщения стрима | 5, затем DLQ | `Delivered N times without success` |
 
 ## Ключ CRM
 

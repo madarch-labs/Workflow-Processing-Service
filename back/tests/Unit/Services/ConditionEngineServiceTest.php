@@ -180,8 +180,29 @@ final class ConditionEngineServiceTest extends TestCase
         $vars = $this->engine->referencedVariables([
             self::row('object.status', 'equals', 'Active'),
             self::row('v1.status', 'equals', 'v2.status', 'from_object_field'),
+            self::row('sys.trigger', 'equals', 'manual'),
+            self::row('config.threshold', 'equals', 10),
         ]);
         self::assertSame(['v1', 'v2'], $vars);
+    }
+
+    public function testVirtualSystemAndConfigVariablesAreKnownWithoutPreload(): void
+    {
+        $this->context->trigger = 'manual';
+        $this->context->setConstants(['threshold' => 10]);
+
+        $sys = $this->engine->evaluate([self::row('sys.trigger', 'equals', 'manual')], $this->context, allowUnknown: true);
+        self::assertFalse($sys->isUnknown());
+        self::assertTrue($sys->isMet());
+        self::assertSame('manual', $sys->trace[0]['actual']);
+
+        $config = $this->engine->evaluate([self::row('config.threshold', 'equals', 10, 'static', ['cast' => 'decimal'])], $this->context, allowUnknown: true);
+        self::assertFalse($config->isUnknown());
+        self::assertTrue($config->isMet());
+
+        $now = $this->engine->evaluate([self::row('sys.now', 'is_not_empty', '')], $this->context, allowUnknown: true);
+        self::assertFalse($now->isUnknown());
+        self::assertTrue($now->isMet());
     }
 
     public function testUnknownValueTypeIsAConfigurationError(): void

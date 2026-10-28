@@ -160,7 +160,7 @@ final class UpdateRecordsHandler implements ActionHandlerInterface
         $itemValid = is_string($itemVar) && ExecutionContext::isValidVariableName($itemVar);
         if (!$itemValid) {
             $scope->error("{$path}.item_var", 'Variable name is required (letters, digits, "_"; e.g. item)');
-        } elseif (in_array($itemVar, [ExecutionContext::OBJECT, ExecutionContext::OBJECT_BEFORE, ExecutionContext::SYS, 'config'], true) || $scope->isDeclared($itemVar)) {
+        } elseif (in_array($itemVar, ExecutionContext::RESERVED, true) || $scope->isDeclared($itemVar)) {
             $scope->error("{$path}.item_var", "Variable \"{$itemVar}\" already exists; set \"item_var\"");
             $itemValid = false;
         }

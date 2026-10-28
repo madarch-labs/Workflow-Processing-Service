@@ -571,6 +571,37 @@ change info`, не чаще раза в минуту на процесс и во
 
 Сценарий [Contact: copy account name](recipes.md) устроен именно так: `object.status` **Не равен** `Closed` И `v1.status` **Равен** `Active`.
 
+Подробности:
+
+- В первом проходе строка, которая ссылается на ещё не загруженную переменную (в `field`, в пути `from_object_field`, в
+  границе диапазона или внутри `expression`), **неизвестна**. AND с ложной строкой — ложь, OR с истинной строкой —
+  истина: тогда ответ известен без CRM. Второй проход начинается, только если результат зависит от неизвестной строки.
+- Во втором проходе выполняется **весь** блок предзагрузки (все строки по порядку), а не только нужные условиям переменные.
+- `sys.*`, `config.*` и `object_before.*` известны в первом проходе и предзагрузку не запускают.
+- Если шаг предзагрузки падает во время ленивой проверки, выполнение всё равно создаётся: упавший шаг записывается, и
+  выполнение завершается со статусом **Ошибка** — ошибка не превращается молча в «условия не выполнены».
+- Оба прохода используют одно «сейчас» для [относительных дат](#относительные-даты).
+- Ручной запуск с `"force": true` пропускает условия целиком; предзагрузка тогда выполняется обычными первыми шагами.
+- Переменная предзагрузки, не найденная в CRM, — `null`: строки по ней ложны (кроме `is_null`), см. [Операторы](#операторы).
+
+### Системные переменные и константы в условиях
+
+`sys.*` и `config.*` (см. [Системные переменные и константы](change-types-and-expressions.md#системные-переменные-и-константы))
+можно использовать с обеих сторон строки: как `field`, как путь `from_object_field` и внутри выражения.
+
+```json
+{ "field": "sys.trigger", "operator": "equals", "value": "manual" }
+{ "field": "object.annual_revenue", "operator": "greater_or_equal", "cast": "decimal",
+  "value_type": "expression", "value": "config.vip_threshold" }
+{ "field": "object.sales_stage", "operator": "in", "value_type": "from_object_field", "value": "config.open_stages" }
+```
+
+Проверено ручным запуском с `{"id": "acc-1", "annual_revenue": "150 000"}` и константой `vip_threshold = 100000`:
+в трассе `actual_cast: "150000"`, `expected_cast: "100000"`, `result: true`, а `sys.trigger` = `manual`.
+Неизвестные имена — ошибки сохранения: `Unknown system variable "sys.foo"; available: sys.execution_id, …`,
+`Constant "missing" is not defined in definition.constants`. До создания выполнения `sys.execution_id` и
+`sys.started_at` пусты — в условиях их не используйте.
+
 ### Ошибки
 
 | Сообщение | Причина |
@@ -579,7 +610,15 @@ change info`, не чаще раза в минуту на процесс и во
 | `Условие 1: укажите путь поля для сравнения` | **Из поля объекта/переменной** без пути |
 | `Variable "v9" is not defined at this point` (сервер) | Переменная не объявлена в **Предзагрузке** |
 | `Unknown comparison operator` (сервер) | Оператора нет в справочнике (только через API) |
-| `Must be "static" or "from_object_field"` (сервер) | Неверный `value_type` (только через API) |
+| `Must be "static", "from_object_field" or "expression"` (сервер) | Неверный `value_type` (только через API) |
+| `Must be AND or OR` (сервер, поле `…logical_operator`) | Неверный оператор [группы](#расширенная-форма-группы-и-or-только-через-api) |
+| `Condition must be an object` (сервер) | Строка условия — не JSON-объект |
+| `Unknown system variable "sys.foo"; available: …`, `Constant "x" is not defined in definition.constants` (сервер) | Неизвестное поле `sys.*` или необъявленная константа |
+| `Expression is required`, `Expression is too long (max 1000 characters)`, `Operator "between" expects a pair [from, to]` (сервер) | Ошибки [выражения](#сравнение-с-выражением) в правой части |
+| `Range bound is required`, `Range start must not be greater than range end` (сервер) | Неверные статические границы `between` / `not_between` |
+| `List of values must not be empty` (сервер) | Пустая правая часть `contains_any` / `contains_all` / `contains_none` |
+| `Use "cast_options": {"case_sensitive": ...}` (сервер) | Параметр приведения записан рядом с `cast`, а не в `cast_options` |
+| `Value is required for operator "starts_with"` (сервер) | Пустой префикс / суффикс |
 | `Unknown cast "money" (allowed: string, int, decimal, date, datetime, bool, list)` (сервер) | Неизвестный `cast` |
 | `Operator "contains" does not support cast "decimal" (supported: string, list)` (сервер) | Оператор не работает с этим типом |
 | `Value "abc" is not a valid decimal` (сервер, поле `value`) | Статическое значение не приводится к типу |
@@ -626,7 +665,38 @@ change info`, не чаще раза в минуту на процесс и во
 }
 ```
 
-Это означает: статус `Active` **и** (сумма содержит `000` **или** название содержит `VIP`). Группа OR без строк считается истинной.
+Это означает: статус `Active` **и** (сумма содержит `000` **или** название содержит `VIP`).
+
+Правила расширенной формы:
+
+| Правило | Подробности |
+|---|---|
+| Узел | `{ "logical_operator": "AND" \| "OR", "conditions": [...], "groups": [...] }`; `logical_operator` без учёта регистра, по умолчанию `AND` |
+| Вложенность | группу можно положить в `groups` или прямо в `conditions` (объект с `conditions` / `groups` — группа, а не строка); глубина не ограничена |
+| Плоский список | `"conditions": [строка, строка]` — то же, что `{ "logical_operator": "AND", "conditions": [строка, строка] }` |
+| Пустая группа | истинна и для `AND`, и для `OR`; условий нет совсем — процесс запускается на каждое событие |
+| Вычисление | вычисляются все строки (для полной трассы), результат сводится: AND — ложь, если ложна любая строка; OR — истина, если истинна любая |
+| Неизвестные строки (ленивая предзагрузка) | см. [ленивую предзагрузку](#условия-по-предзагруженным-переменным-ленивая-предзагрузка): `ложь AND неизвестно` = ложь, `истина OR неизвестно` = истина без загрузки |
+| Ошибки | `Must be AND or OR` (поле `definition.conditions…logical_operator`) |
+
+Пример — сделка от 1 000 000 **или** сделка VIP-контрагента (`v1` — предзагруженный контрагент), и только если стадия не
+закрыта:
+
+```json
+{
+  "logical_operator": "AND",
+  "conditions": [
+    { "field": "object.sales_stage", "operator": "not_in", "value": ["Closed Won", "Closed Lost"] },
+    { "logical_operator": "OR", "conditions": [
+      { "field": "object.amount", "operator": "greater_or_equal", "cast": "decimal", "value": "1000000" },
+      { "field": "v1.rating", "operator": "equals", "value": "VIP" }
+    ] }
+  ]
+}
+```
+
+Для закрытой сделки `v1` не загружается (первая строка ложна); для сделки на 2 000 000 — тоже (OR уже истинно); иначе
+выполняется предзагрузка, и решает `v1.rating`.
 
 Если условия процесса заданы в такой форме, редактор показывает метку **расширенные** и предупреждение **Условия заданы в расширенной форме (группы / OR). Табличный редактор их не поддерживает — они будут сохранены без изменений.** Кнопка **Заменить на табличные условия (И)** преобразует их: простой список по AND без групп сохраняет свои строки, всё остальное заменяется пустым списком. В карточке процесса видно **Условия в расширенной форме (группы / OR)**.
 

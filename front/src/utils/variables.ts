@@ -71,6 +71,11 @@ export function collectVariables(input: CollectInput): VariableInfo[] {
           fields: [],
         })
       }
+      // modify with a non-scalar value is read-only but still creates its target variable
+      if (raw.type === 'modify' && typeof raw.target === 'string') {
+        const v = pathVar(raw.target)
+        if (v && !map.has(v)) map.set(v, { name: v, kind: 'created', module: '', fields: [] })
+      }
       continue
     }
     const v = pathVar(row.target)

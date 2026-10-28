@@ -28,6 +28,38 @@
 
 Ведомый процесс получает `forChild()`: то же событие и переменные, пустой набор `dirty` и `depth + 1`.
 
+### Системные переменные `sys.*` и константы `config.*`
+
+`sys` и `config` — **виртуальные** переменные (задача 5.2.9): они не лежат в `variables`, а вычисляются при чтении
+(`ExecutionContext::getVariable()` / `resolve()`), поэтому доступны в условиях запуска, выражениях, шаблонах и
+предзагрузке, но не попадают в Redis-состояние (кроме `last_error` / `errors_count`). Обе только для чтения. Список
+полей с подписями отдаёт `GET /api/dictionaries/system-variables`.
+
+| Поле `sys.*` | Тип | Значение |
+|---|---|---|
+| `execution_id` | string | UUID выполнения; пусто, пока проверяются условия запуска (выполнения ещё нет) |
+| `parent_execution_id` | string | Родительское выполнение ведомого процесса, иначе пусто |
+| `process_id`, `process_name`, `process_version` | integer / string / integer | Процесс и версия его определения |
+| `event_id` | string | `event_id` события, id сообщения стрима или `manual-{uuid}` |
+| `trigger` | string | `stream`, `manual`, `child` |
+| `depth` | integer | Глубина вложенности ведомых процессов |
+| `module`, `record_id` | string | Модуль и `id` записи события |
+| `event_type` | string | `create`, `update`, `delete` |
+| `changed_fields` | list | Изменённые поля (`[]`, если неизвестно) |
+| `user_id` | string | Кто сохранил запись: поле `user_id` события или `wps_user_id` |
+| `now` | datetime | Текущее время UTC (`Y-m-d H:i:s`) **в момент чтения**, через `Wps\Time\Clock` |
+| `started_at` | datetime | Начало выполнения UTC; пусто до `begin()` |
+| `last_error` | object | Последняя обработанная ошибка (`on_error: continue/goto`, `on_item_error: continue`): `step_id`, `step_path`, `action_type`, `code`, `message`, `http_status`, `attempts`, `at`, `iteration`. Нет поля — ошибок не было |
+| `errors_count` | integer | Число обработанных ошибок |
+
+Значения заполняет `ExecutionEngineService::configureContext()` до проверки условий (процесс, версия, `trigger`,
+константы, часы) и `begin()` / `resume()` (id выполнения, `started_at`). После восстановления (`resume()`) `trigger`,
+`parent_execution_id` и `started_at` берутся из Redis-хэша. Снимок `sys` пишется в `context_snapshot.system` упавшего
+и завершённого выполнения.
+
+`config.<имя>` — значение из `definition.constants` снимка определения выполнения: правка констант не влияет на уже
+идущие и ожидающие выполнения. Валидатор при сохранении проверяет, что `config.x` объявлена в `constants`.
+
 ## Жизненный цикл выполнения
 
 ```mermaid
@@ -197,7 +229,7 @@ stateDiagram-v2
 |---|---|---|
 | `running` | Шаги выполняются | синий, обновляется в реальном времени |
 | `retrying` | Шаг упал с восстановимой ошибкой и ждёт следующей попытки | оранжевый, обновляется в реальном времени |
-| `waiting` | Выполнение припарковано до срока `waiting_until`: состояние лежит в PostgreSQL (`execution_waits`), воркер и Redis не заняты | фиолетовый, «Ожидает» |
+| `waiting` | Выполнение припарковано до срока `waiting_until`: состояние лежит в PostgreSQL (`execution_waits`), воркер и Redis не заняты | серый (`info`), «Ожидает»; автоматически не обновляется |
 | `cancelled` | Ожидающее выполнение отменено удалением процесса (`DELETE /api/processes/{id}?force=true`) | серый, «Отменено» |
 | `completed` | Все шаги завершились со статусом `success` или `skipped` | зелёный |
 | `failed` | Шаг упал, или выполнение потеряно и не может быть продолжено | красный |
@@ -341,6 +373,41 @@ flowchart TB
   упавшее после пробуждения `RecoveryJob` подхватывает сразу.
 - Метрики: `wps_executions_parked_total`, `wps_executions_woken_total`, `wps_wait_resume_failed_total`,
   `wps_wait_lateness_seconds`, `wps_executions_waiting` ([Мониторинг](../04-operations/monitoring.md)).
+
+## Компоненты движка
+
+| Класс | Роль |
+|---|---|
+| `Services\ExecutionEngineService` | Оркестратор: `handle()` (стрим, ведомые), `runManual()`, `resume()` (`RecoveryJob`, повторная доставка), `resumeAfterWait()`; идемпотентность, условия, `run_once`, цикл инструкций, повторы, `on_error`, `finish()` |
+| `Services\PreparedRun` | Результат проверки условий: истина/ложь, трасса, выполненные шаги ленивой предзагрузки, ошибка приведения |
+| `Services\ExecutionHandle` | Состояние идущего выполнения в памяти: id, процесс, контекст, программа, `pc`, `seq`, `frames`, `retryCount`, `trigger`, `parentId` |
+| `Services\StepRecord` | Запись аудита одного шага (`request`, `result`, `error_code`, `handled`, `pc`, `step_path`, `iteration`, `step_id`) |
+| `Services\ExecutionStateStore` | Redis: `exec:{uuid}`, `lock:exec:{uuid}`, `idem:*` |
+| `Services\AuditService` | Запись `execution_actions` (`INSERT … ON CONFLICT` — перезапись записи с тем же `seq`) |
+| `Services\ConditionEngineService` | Условия: приведение типов, виды операндов, относительные даты, выражения, трасса |
+| `Program\ProgramCompiler`, `ProgramEmitter`, `Program`, `Instruction` | Компиляция дерева в плоскую программу (кеш по хешу определения), инструкции с путями |
+| `Program\Interpreter`, `InstructionOutcome` | Одна инструкция: `branch`/`jump`/`halt` здесь, `action` — обратным вызовом в движок |
+| `Program\BlockTypeRegistry`, `Blocks\{Condition,Foreach,StopProcess}Block` | Блоки: компиляция и проверка при сохранении |
+| `Program\LoopRunner`, `LoopItemsStore` | `loop_begin` / `loop_next`, ошибки элементов, закрытие циклов, снимки элементов |
+| `Services\Errors\ErrorClassifier`, `ErrorInfo` | Исключение → код, «временная» / «постоянная», HTTP-статус, `Retry-After` |
+| `Services\Errors\RetryPolicy`, `ErrorPolicy` | Профиль `retry` шага и `on_error` (`stop` / `continue` / `goto`) |
+| `Services\WaitService`, `Persistence\ExecutionWaitRepository`, `CyclicJobs\WaitResumeJob` | Парковка и пробуждение ожидающих выполнений |
+| `SideEffects\SideEffectLedger`, `DeliveryPolicy` | Журнал внешних вызовов и политика `delivery` |
+| `Services\CrmObjectSaver` | Сохранение переменных в CRM (`PUT` изменённых полей / `POST` новой записи) |
+
+## Обработка окончательной ошибки шага
+
+`handleFailure()` применяет `on_error` упавшей инструкции (`ErrorPolicy::fromStep()`):
+
+1. `stop` — если открыт цикл с `on_item_error: continue`, `LoopRunner::itemError()` закрывает внутренние циклы и
+   переходит к `loop_next` этого цикла (`handled = item_continue`); иначе — `failFrom()` и `finish('failed')`.
+2. `goto` — `Program::pcOf(id)` ищет шаг верхнего уровня; цель не найдена или не впереди (`target <= pc`) — ведёт себя
+   как `stop` (валидатор такое не пропускает, но старое определение могло сохраниться); иначе открытые циклы
+   закрываются (`left_by: goto`), `iteration` очищается, переход.
+3. `continue` — следующая инструкция; для `branch` — `end_target` блока.
+
+Для `continue`/`goto`/`item_continue` ошибка записывается в `sys.last_error`, растут `sys.errors_count`,
+`executions.handled_errors` и метрика `wps_step_errors_handled_total`, в лог — `Step error handled`.
 
 ## Ключи Redis, которые использует движок
 

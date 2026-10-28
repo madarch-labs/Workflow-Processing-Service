@@ -24,19 +24,25 @@
 }
 ```
 
-`details` — необязательное поле (массив или объект).
+`details` — необязательное поле (массив или объект); если подробностей нет, ключа `details` в ответе нет.
 
 | HTTP | Когда |
 |---|---|
 | 200 | успех |
-| 201 | создано (POST create / clone / run с запуском) |
-| 400 | неверный запрос (битый JSON и т.п.) — `BAD_REQUEST` |
+| 201 | создано (POST create / clone / run с запуском, POST users / secrets) |
+| 204 | ответ на `OPTIONS` (CORS preflight), без тела |
+| 400 | неверный запрос (битый JSON, JSON-скаляр) — `BAD_REQUEST` («Request body must be a JSON object») |
 | 401 | нет токена / токен невалиден / истёк — `UNAUTHORIZED`, `TOKEN_EXPIRED`, `INVALID_CREDENTIALS`, `INVALID_TOKEN` |
-| 403 | недостаточно прав — `FORBIDDEN` |
-| 404 | не найдено — `NOT_FOUND`, `PROCESS_NOT_FOUND`, `EXECUTION_NOT_FOUND`, `USER_NOT_FOUND` |
-| 409 | конфликт — `EMAIL_EXISTS`, `PROCESS_IN_USE`, `CANNOT_DELETE_SELF`, `LAST_ADMIN` |
+| 403 | недостаточно прав — `FORBIDDEN` («Insufficient permissions») |
+| 404 | не найдено — `NOT_FOUND` (нет маршрута или метода — «Route not found»; нечисловой id — «Invalid id»; нет секрета; нет отметки run_once), `PROCESS_NOT_FOUND`, `EXECUTION_NOT_FOUND`, `USER_NOT_FOUND` |
+| 409 | конфликт — `EMAIL_EXISTS`, `PROCESS_IN_USE`, `PROCESS_HAS_WAITING_EXECUTIONS`, `CANNOT_DELETE_SELF`, `LAST_ADMIN`, `SECRET_EXISTS`, `SECRET_IN_USE`, `ROTATION_FAILED` |
 | 422 | ошибка валидации — `VALIDATION_ERROR`, `CYCLE_DETECTED` |
-| 500 | внутренняя ошибка — `INTERNAL_ERROR` |
+| 500 | внутренняя ошибка — `INTERNAL_ERROR` (текст исключения — только при `APP_DEBUG=true`) |
+| 503 | зависимость недоступна — `SECRETS_KEY_NOT_CONFIGURED`, `CRM_UNAVAILABLE`; `GET /api/health` со `status: "degraded"` |
+
+Маршрут с неподдерживаемым методом (`PATCH`, `DELETE /api/executions`) — `404 NOT_FOUND`, а не `405`. Слэш в конце пути
+игнорируется. Список: `page` ≥ 1, `per_page` 1…1000 (по умолчанию 20, у `/api/users` — 50); значения вне границ
+приводятся к ним.
 
 ## Аутентификация
 
@@ -45,11 +51,29 @@ refresh — `JWT_REFRESH_TTL` (по умолчанию 7 дней). При `401`
 
 ### Роли
 
-| Роль | Процессы | Аудит | Ручной запуск | Удаление процессов | Пользователи |
-|---|---|---|---|---|---|
-| `admin` | чтение, создание, изменение, клонирование | да | да | да | CRUD |
-| `editor` | чтение, создание, изменение, клонирование | да | да | нет | нет |
-| `viewer` | только чтение | да | нет | нет | нет |
+| Роль | Процессы | Аудит | Ручной запуск | Удаление процессов | Пользователи | Секреты | Тест почты | Тест уведомлений |
+|---|---|---|---|---|---|---|---|---|
+| `admin` | чтение, создание, изменение, клонирование | да | да | да | CRUD | CRUD, ротация | да | да |
+| `editor` | чтение, создание, изменение, клонирование | да | да | нет | нет | чтение (маски) | нет | да |
+| `viewer` | только чтение | да | нет | нет | нет | нет | нет | нет |
+
+Правила — `Wps\Auth\AccessPolicy::RULES` (первое совпадение по методу и регулярному выражению пути):
+
+| Метод | Путь | Роли |
+|---|---|---|
+| любой | `/api/health`, `/metrics` | публичный |
+| `POST` | `/api/auth/login`, `/api/auth/refresh` | публичный |
+| любой | `/api/users[/…]` | admin |
+| `GET` | `/api/secrets`, `/api/secrets/{name}` | admin, editor |
+| любой | `/api/secrets[/…]` (остальное) | admin |
+| любой | `/api/mail[/…]` | admin |
+| `GET` | `/api/dictionaries/mail-transports` | admin, editor |
+| `DELETE` | `/api/processes/{id}/runs/{object_type}/{object_id}` | admin, editor |
+| `DELETE` | `/api/processes/{id}` | admin |
+| `POST` / `PUT` | `/api/processes`, `/api/processes/{id}`, `/api/processes/{id}/clone`, `/api/processes/{id}/run` | admin, editor |
+| `POST` | `/api/dictionaries/modules/refresh` | admin, editor |
+| `GET` | `/api/…` (остальное) | любая |
+| прочие записи (например `POST /api/notify/test`) | | admin, editor |
 
 ### `POST /api/auth/login` (публичный)
 
@@ -62,15 +86,22 @@ refresh — `JWT_REFRESH_TTL` (по умолчанию 7 дней). При `401`
   "user": { "id": 1, "email": "admin@wps.local", "role": "admin", "created_at": "…", "updated_at": "…" }
 }
 ```
-Ошибки: `401 INVALID_CREDENTIALS`, `422 VALIDATION_ERROR`.
+Ошибки: `401 INVALID_CREDENTIALS` («Invalid email or password»), `422 VALIDATION_ERROR` (`email` — «Email is required»,
+`password` — «Password is required»).
+
+Ошибки токена в любом защищённом запросе: `401 UNAUTHORIZED` («Authentication required» — нет заголовка),
+`401 TOKEN_EXPIRED` («Token expired»), `401 INVALID_TOKEN` («Malformed token», «Invalid token signature», «Unsupported
+token», «Wrong token type» — refresh-токен вместо access, «Invalid token payload»).
 
 ### `POST /api/auth/refresh` (публичный)
 
-Запрос: `{ "refresh_token": "…" }` → ответ как у login. Ошибка: `401 INVALID_TOKEN`.
+Запрос: `{ "refresh_token": "…" }` → ответ как у login (новая пара; пользователь и роль заново читаются из БД).
+Ошибка: `401 INVALID_TOKEN` («Refresh token is required», «Invalid or expired refresh token» — в том числе если передан
+access-токен, «User no longer exists»).
 
 ### `GET /api/auth/me`
 
-Ответ: объект `User`.
+Ответ: объект `User`; удалённый пользователь — `401 INVALID_TOKEN` («User no longer exists»).
 
 ## Пользователи (только admin)
 
@@ -78,11 +109,14 @@ refresh — `JWT_REFRESH_TTL` (по умолчанию 7 дней). При `401`
 
 | Метод | URI | Тело | Ответ |
 |---|---|---|---|
-| GET | `/api/users?page=&per_page=` | — | `User[]` + `meta` |
-| GET | `/api/users/{id}` | — | `User` |
+| GET | `/api/users?page=&per_page=` | — | `User[]` + `meta` (по умолчанию `per_page` = 50, сортировка по `id`) |
+| GET | `/api/users/{id}` | — | `User`; `404 USER_NOT_FOUND` |
 | POST | `/api/users` | `{ email, password (≥ 6 симв.), role }` | `201 User`; `409 EMAIL_EXISTS` |
-| PUT | `/api/users/{id}` | `{ email?, password? (пусто = не менять), role? }` | `User` |
-| DELETE | `/api/users/{id}` | — | `{ "deleted": true }`; `409 CANNOT_DELETE_SELF` / `LAST_ADMIN` |
+| PUT | `/api/users/{id}` | `{ email?, password? (пусто = не менять), role? }` | `User`; `409 EMAIL_EXISTS`, `409 LAST_ADMIN` («The last administrator cannot lose the admin role») |
+| DELETE | `/api/users/{id}` | — | `{ "deleted": true }`; `409 CANNOT_DELETE_SELF` («You cannot delete your own account») / `LAST_ADMIN` |
+
+Ошибки валидации (`422`): `email` — «A valid email is required», `password` — «Password must be at least 6 characters»,
+`role` — «Role must be one of: admin, editor, viewer». Нечисловой `{id}` — `404 NOT_FOUND` («Invalid id»).
 
 ## Секреты (`/api/secrets`)
 
@@ -111,13 +145,13 @@ refresh — `JWT_REFRESH_TTL` (по умолчанию 7 дней). При `401`
 
 | Метод | URI | Роль | Описание |
 |---|---|---|---|
-| POST | `/api/mail/test` | admin | `{ "to": "<адрес>", "transport"?: "secret://name" }` → `{ sent: true, to, message_id }` или `{ sent: false, error, error_code }` (тоже `200`); неверный адрес — `422` |
+| POST | `/api/mail/test` | admin | `{ "to": "<адрес>", "transport"?: "secret://name" }` → `{ sent: true, to, message_id }` или `{ sent: false, error, error_code }` (тоже `200`; `error_code` — код классификатора SMTP, например `SMTP_AUTH`, или `null` для ошибки конфигурации вроде `Secret "x" not found`); неверный адрес — `422` (`to` — «Invalid email address»). Тема — «WPS: проверка отправки почты», отправитель — `MAILER_FROM` |
 
 ## Уведомления
 
 | Метод | URI | Роль | Описание |
 |---|---|---|---|
-| POST | `/api/notify/test` | admin, editor | `{ "channel": {…канал notify…}, "message"?: "текст" }` — тестовое уведомление в один канал (`delivery: at_least_once`) → `{ sent: true, result: { channels: [...] } }` или `{ sent: false, error }` (тоже `200`, секреты замаскированы); ошибки канала — `422` с полями `channel.…` |
+| POST | `/api/notify/test` | admin, editor | `{ "channel": {…канал notify…}, "message"?: "текст" }` — тестовое уведомление в один канал (`delivery: at_least_once`) → `{ sent: true, result: { channels: [...] } }` или `{ sent: false, error }` (тоже `200`, секреты замаскированы); ошибки канала — `422` с полями `channel.…` (например `channel.connection` — «Connection secret is required (secret://name)», `channel.chat_id` — «Chat id is required»). Отправка настоящая: `crm_alert` создаёт запись `Alerts` в CRM |
 
 ## Процессы
 
@@ -133,7 +167,7 @@ refresh — `JWT_REFRESH_TTL` (по умолчанию 7 дней). При `401`
   "run_once": false,
   "trigger_on": ["create", "update"],
   "version": 3,
-  "definition": { "conditions": [], "preload": [], "actions": [] },
+  "definition": { "constants": {}, "conditions": [], "preload": [], "actions": [] },
   "created_at": "2026-10-14T10:00:00+00:00",
   "updated_at": "2026-10-14T10:00:00+00:00"
 }
@@ -172,11 +206,14 @@ CRM (`object_type` + `id` объекта события) не больше од�
 
 ### Структура `definition`
 
+Ключи верхнего уровня — только `conditions`, `preload`, `actions`, `constants` (`Process::DEFINITION_KEYS`); другой ключ — `422` с полем `definition.<ключ>`: `Unknown key "<ключ>" (allowed: conditions, preload, actions, constants)`.
+
 **Условия** (`conditions[]`, все строки объединяются по И; пустой массив — запуск всегда):
 ```json
 { "field": "object.status", "operator": "equals", "value_type": "static", "value": "Active" }
 ```
-- `field` — путь `object.<поле>` или `<переменная>.<поле>` (например `v1.rating`).
+- `field` — путь `object.<поле>`, `<переменная>.<поле>` (например `v1.rating`) или системный путь `sys.<поле>` /
+  `config.<имя>` (см. **Системные переменные** ниже).
 - `operator` — справочник `/api/dictionaries/operators` (`value`, `label`, `casts`, `operands`):
   `equals` | `not_equals` | `contains` | `not_contains` (одно значение);
   `value_type: "expression"` (md/tasks_list/3.10-expression-value.md, справочник `/api/dictionaries/value-types`): правая
@@ -256,6 +293,44 @@ CRM (`object_type` + `id` объекта события) не больше од�
 - `module` — модуль CRM объекта для загрузки.
 - `by_field` — поле поиска; `id` → `GET /{module}/{id}`, иное → поиск по полю (берётся первая запись).
 - Объект не найден / значение для поиска пустое → в переменную записывается `null`.
+
+**Константы** (`constants`, md/tasks_list/5.2.9-system-variables.md §4.2):
+```json
+{ "vip_threshold": 100000, "manager_email": "sales-head@example.com", "open_stages": ["Prospecting", "Qualification"] }
+```
+- Объект «имя → значение»; имена — латиница, цифры, `_`, не с цифры; до 100 констант.
+- Значение — скаляр (`string`, `int`, `float`, `bool`, `null`) или список скаляров; JSON констант ≤ 16 КБ.
+- Только чтение: `config.<имя>` доступно в условиях, выражениях, шаблонах, фильтрах и `set_variable`; запись в `config` — `422 Variable "config" is read-only`.
+- Имена с `password`, `secret`, `token`, `api_key` отклоняются (`422 Constant "api_token" looks like a secret; use a secret reference (secret://name)`) — для секретов есть `/api/secrets` (7.4).
+- Константы входят в снимок определения выполнения: правка не меняет уже идущие и ожидающие выполнения. Дочерний процесс видит **свои** константы, а не родительские.
+- Ошибки: `Constants must be an object`, `Invalid constant name (letters, digits, "_")`, `Constant must be a scalar or a list of scalars`, `Too many constants (max 100)`, `Constants are too large (max 16 KB)`; необъявленная константа в пути — `Constant "x" is not defined in definition.constants`.
+
+**Системные переменные** (`sys.*`, md/tasks_list/5.2.9-system-variables.md §4.1). Виртуальные и только для чтения: значения вычисляются при чтении, в `variables` их нет; итоговый снимок выполнения (`context.system` в `GET /api/executions/{id}`) хранит их значения на момент завершения. Доступны в условиях, выражениях, шаблонах, фильтрах и `set_variable`:
+
+| Поле | Значение |
+|---|---|
+| `sys.execution_id` | UUID выполнения; `''` в условиях — строка выполнения ещё не создана |
+| `sys.parent_execution_id` | UUID родительского выполнения; `''` у верхнего уровня |
+| `sys.process_id` | ID процесса |
+| `sys.process_name` | Название процесса |
+| `sys.process_version` | Версия определения выполнения |
+| `sys.event_id` | ID события CRM |
+| `sys.trigger` | `stream` (событие CRM) | `manual` (ручной запуск) | `child` (запуск процессом) |
+| `sys.depth` | Глубина вложенности: `0` — верхний уровень |
+| `sys.module` | Модуль объекта события |
+| `sys.record_id` | `id` записи CRM из события |
+| `sys.event_type` | `create` | `update` | `delete` |
+| `sys.changed_fields` | Список изменённых полей; `[]`, если событие его не передало (ручной запуск, старый плагин) |
+| `sys.user_id` | `event.user_id` ?? `event.wps_user_id`, иначе `''` |
+| `sys.now` | Текущий момент, UTC `Y-m-d H:i:s`; вычисляется **при каждом чтении** |
+| `sys.started_at` | Начало выполнения, UTC `Y-m-d H:i:s`; `''` до создания выполнения |
+| `sys.errors_count` | Число ошибок шагов, обработанных `on_error` / циклом |
+| `sys.last_error` | Объект последней обработанной ошибки (`step_id`, `step_path`, `action_type`, `code`, `message`, `http_status`, `attempts`, `at`, в цикле — `iteration`); ключа нет, пока ошибок не было |
+
+- Справочник для панели переменных UI — `GET /api/dictionaries/system-variables` (`[{value, label, type, values?}]`).
+- Неизвестное поле — `422 Unknown system variable "sys.x"; available: …`. Запись — `422 Variable "sys" is read-only`.
+- `sys`/`config` не считаются неизвестными переменными в условиях: ленивая предзагрузка из-за них не запускается.
+- Обратная совместимость: имя `sys`, `config` или `object_before`, использованное как обычная переменная, требует переименования (миграция `010_reserved_names_check.sql` выводит такие процессы через `NOTICE`).
 
 **Действия** (`actions[]`, выполняются последовательно; ошибка шага останавливает процесс):
 ```json
@@ -542,7 +617,8 @@ CRM (`object_type` + `id` объекта события) не больше од�
   at most 7 days)`, `Must be greater than or equal to base_delay`, `Must be a number between 1 and 10`, `Must be one of:
   none, full, equal`, `Unknown retry class "6xx"`, `Unknown retry option`.
 
-**Выражения `calculate`**: числа, строки в кавычках (`'abc'`, `"abc"`), пути (`object.amount`, `v1.price`),
+**Выражения `calculate`**: числа, строки в кавычках (`'abc'`, `"abc"`), пути (`object.amount`, `v1.price`, `sys.trigger`,
+`config.threshold`),
 `true` / `false` / `null`, списки `[a, b]`, операторы `+ - * / %`, сравнения `== != < <= > >=` (синонимы `=`, `<>`),
 логика `and or not` (синонимы `&& || !`), скобки. Приоритет (от слабого): `or` < `and` < `not` < сравнения < `+ -` <
 `* / %` < унарный минус; цепочка сравнений `a < b < c` — ошибка. Ключевые слова без учёта регистра; слово с точкой
@@ -581,11 +657,11 @@ CRM (`object_type` + `id` объекта события) не больше од�
 | GET | `/api/processes?search=&object_type=&is_child=true\|false&is_active=true\|false&trigger_on=create\|update\|delete&page=1&per_page=20` | любая | Список, `meta` с пагинацией. Сортировка: `updated_at DESC`. `per_page` ≤ 1000 |
 | GET | `/api/processes/{id}` | любая | `Process` + `references: { children: [{id,name,is_active,is_child}], parents: [{id,name}] }` |
 | POST | `/api/processes` | editor+ | Тело: `{ name, object_type, is_child, is_active?, priority?, run_once?, trigger_on?, definition }` → `201 Process` (+ необязательные `warnings: [{field, message}]`) |
-| PUT | `/api/processes/{id}` | editor+ | То же тело → `Process` (`version` + 1, + необязательные `warnings`); без `trigger_on` сохраняется текущее значение |
-| DELETE | `/api/processes/{id}?force=true` | admin | `{ "deleted": true }`; `409 PROCESS_IN_USE` если на него ссылается `start_process`; `409 PROCESS_HAS_WAITING_EXECUTIONS` («The process has N waiting executions; delete with force=true to cancel them», `details: { waiting: N }`), если есть ожидающие выполнения и нет `force=true`; с `force=true` они отменяются (`cancelled`, `error_message: "Process deleted"`). Деактивация ожидающие не останавливает |
+| PUT | `/api/processes/{id}` | editor+ | То же тело → `Process` (`version` + 1, + необязательные `warnings`). Процесс заменяется целиком: пропущенные `is_active`, `priority`, `run_once` получают значения по умолчанию (`true`, `0`, `false`); только `trigger_on` без ключа сохраняет текущее значение. Ведомый процесс, который запускают другие, нельзя сделать верхнеуровневым (`422` по полю `is_child`) |
+| DELETE | `/api/processes/{id}?force=true` | admin | `{ "deleted": true }`; `409 PROCESS_IN_USE` если на него ссылается `start_process` (`details` — список `[{id, name}]` родителей); `409 PROCESS_HAS_WAITING_EXECUTIONS` («The process has N waiting executions; delete with force=true to cancel them», `details: { waiting: N }`), если есть ожидающие выполнения и нет `force=true`; с `force=true` они отменяются (`cancelled`, `error_message: "Process deleted"`). Деактивация ожидающие не останавливает |
 | POST | `/api/processes/{id}/clone` | editor+ | `201 Process` — копия «<имя> (копия)», неактивна. `run_once` и `trigger_on` копируются, отметки — нет |
 | POST | `/api/processes/{id}/run` | editor+ | Ручной запуск, см. ниже |
-| GET | `/api/processes/{id}/executions?status=&date_from=&date_to=&page=&per_page=` | любая | Журнал запусков процесса |
+| GET | `/api/processes/{id}/executions?status=&date_from=&date_to=&page=&per_page=` | любая | Журнал запусков процесса (`Execution[]` + `meta`, сортировка `started_at DESC`). `date_from` / `date_to` сравниваются со `started_at` (время без зоны — UTC, дата `YYYY-MM-DD` в `date_to` — до конца дня); неверный `status` — `422 Status must be one of: …`, неверная дата — `422 Invalid date` |
 | GET | `/api/processes/{id}/runs?object_id=&page=&per_page=` | любая | Отметки однократного запуска (`ProcessObjectRun[]` + `meta`), сортировка `created_at DESC` |
 | DELETE | `/api/processes/{id}/runs/{object_type}/{object_id}` | editor+ | Снять отметку: следующее событие записи снова запустит процесс → `{ "deleted": true }`; `404 NOT_FOUND`, если отметки нет |
 
@@ -606,7 +682,9 @@ CRM (`object_type` + `id` объекта события) не больше од�
 (`{поле: старое значение}`), `changed_fields` (`[поле]`). Они не остаются в записи: старые значения — переменная `object_before`
 (только чтение), тип и изменённые поля — `context.event_info`. Без них — событие старого формата (`object_before` = `null`).
 
-`object.id` обязателен (id записи CRM), без него ответ `422`.
+`object.id` обязателен (id записи CRM), без него ответ `422` (`object.id` — «The object must have an "id"»); тело-массив
+или пустой объект — `422` (`object` — «A JSON object is required»). `object.module` (или `object_type`) по умолчанию —
+тип объекта процесса; ключ `force` верхнего уровня не попадает в объект.
 
 - Условия выполнены → `201`: `{ "conditions_met": true, "execution_id": "<uuid>", "conditions": [ConditionTrace], "run_once_applied": bool, "run_once_blocked": false, "previous_execution_id": null }`;
   действия выполняются в фоне, прогресс виден через `GET /api/executions/{id}`.
@@ -614,7 +692,8 @@ CRM (`object_type` + `id` объекта события) не больше од�
 - У процесса `run_once`, для записи уже есть отметка → `200`: `{ "conditions_met": true, "run_once_blocked": true,
   "execution_id": null, "previous_execution_id": "<uuid>", … }`. `force: true` пропускает только условия, однократный
   запуск он не обходит.
-- `run_once_applied` равен `true`, когда проверка однократности выполнялась: у процесса `run_once` и у объекта есть `id`.
+- `run_once_applied` равен `true`, когда проверка однократности выполнялась: у процесса `run_once`, у объекта есть `id` и условия
+  выполнены (или `force: true`); при невыполненных условиях отметка не проверяется и поле равно `false`.
 - Строгое условие (`on_cast_error: "error"`) не смогло привести значение → `200`: `{ "conditions_met": false,
   "execution_id": null, "conditions": [ConditionTrace], …, "error": "CAST_ERROR", "error_message": "…" }`.
 
@@ -658,8 +737,10 @@ CRM (`object_type` + `id` объекта события) не больше од�
   номер итерации цикла `foreach`, во вложенных циклах `"2/0"` (`""` вне циклов); `step_id` — пользовательский `id` шага.
 - У упавшего шага `error_code` (`HTTP_503`, `TIMEOUT`, `TRANSPORT`, `CONFIG`, `UNKNOWN_OUTCOME` …) и `handled`
   (`null` — ошибка остановила выполнение, `continue`, `goto`, `item_continue` — цикл перешёл к следующему элементу); `result_data`: `error_class`, `recoverable`,
-  `error_code`, `error` (`{code, message, transient, http_status?, retry_after?}`), `details`, при `goto` — `goto` (id цели). Внешние действия (`send_email`, `http_request`, `notify`) добавляют `idempotency_key`
-  (`{execution_id}:{effect_key}`) и `replayed` (`true` — ответ взят из журнала побочных эффектов без повторного вызова).
+  `error_code`, `error` (`{code, message, transient, http_status?, retry_after?}`), `details`, при `goto` — `goto` (id цели). Внешние действия (`send_email`, `http_request`, `notify`) добавляют в
+  `result_data` `replayed` (`true` — ответ взят из журнала побочных эффектов без повторного вызова); ключ идемпотентности
+  `{execution_id}:{effect_key}` в аудит не пишется — `http_request` передаёт его внешней системе заголовком `Idempotency-Key` (по умолчанию для `POST`/`PATCH`, имя
+  заголовка — поле `idempotency_header`).
 
 `SideEffect` (запись журнала внешних вызовов `step_side_effects`, md/tasks_list/done/0.4-side-effect-ledger.md):
 ```json
@@ -673,8 +754,8 @@ CRM (`object_type` + `id` объекта события) не больше од�
 
 | Метод | URI | Описание |
 |---|---|---|
-| GET | `/api/executions?status=&process_id=&due_before=&date_from=&date_to=&page=&per_page=` | Выполнения всех процессов (`Execution[]` + `meta`). `status` — `running`, `retrying`, `waiting`, `completed`, `failed`, `cancelled`, иначе `422`; `due_before` — `waiting_until` ≤ даты, неверная дата — `422 Invalid date` |
-| GET | `/api/executions/{id}` | `Execution` + `wait` (только у ожидающего: `{ due_at, reason, attempts, info }`) + `context` (`{ event, variables, meta, event_info, conditions }`; `event_info` = `{ event_type, changed_fields (null — неизвестно), has_before, origin (wps_origin), legacy }`, в `variables` — `object_before` (старые значения изменённых полей или `null`); пока выполняется — живой контекст из Redis, а также `current_step` (pc следующей инструкции), `seq`, `frames`) + `actions: ExecutionAction[]` + `children: Execution[]` |
+| GET | `/api/executions?status=&process_id=&due_before=&date_from=&date_to=&page=&per_page=` | Выполнения всех процессов (`Execution[]` + `meta`). `status` — `running`, `retrying`, `waiting`, `completed`, `failed`, `cancelled`, иначе `422`; `due_before` — `waiting_until` ≤ даты, неверная дата — `422 Invalid date`; `date_from` / `date_to` (по `started_at`) заранее не проверяются — нераспознанная дата даёт `500 INTERNAL_ERROR`; сортировка `started_at DESC` |
+| GET | `/api/executions/{id}` | `Execution` + `wait` (только у ожидающего: `{ due_at, reason, attempts, info }`) + `context` (`{ event, variables, meta, event_info, conditions, system }`; `event_info` = `{ event_type, changed_fields (null — неизвестно), has_before, origin (wps_origin), legacy }`, в `variables` — `object_before` (старые значения изменённых полей или `null`), `system` — значения `sys.*` на момент снимка, `stop` — `{status, code, message}` после `stop_process`, `frames` — незакрытые циклы; пока выполняется — живой контекст из Redis (только `event`, `variables`, `meta`, `conditions`), а также `current_step` (pc следующей инструкции), `seq`, `frames`; у ожидающего — контекст из `execution_waits.state`) + `actions: ExecutionAction[]` + `children: Execution[]` (запущенные `start_process`, по `started_at`). Не-UUID id — `404 EXECUTION_NOT_FOUND` |
 | GET | `/api/executions/{id}/actions` | `ExecutionAction[]` |
 | GET | `/api/executions/{id}/side-effects` | `SideEffect[]` (любая роль; пусто, если внешних вызовов не было); `404 EXECUTION_NOT_FOUND` |
 
@@ -691,7 +772,7 @@ CRM (`object_type` + `id` объекта события) не больше од�
 | POST | `/api/dictionaries/modules/refresh` | editor+ (сброс кэша и повторная загрузка; заодно перечитывает возможности CRM) |
 | GET | `/api/dictionaries/crm-capabilities` | любая (версия контракта CRM и возможности, см. ниже) |
 | GET | `/api/dictionaries/operators` | любая |
-| GET | `/api/dictionaries/functions` | любая (функции выражений: `name`, `category` (`logic`, `string`, `number`, `date`, …), `signature`, `min_args`, `max_args`, `returns`, `description`, `example`, `pure` (`false` у `now`, `today`); `meta.operators`: `[{op, synonyms, precedence}]`) |
+| GET | `/api/dictionaries/functions` | любая (функции выражений: `name`, `category` (`logic`, `string`, `number`, `date`, `list`, `type`; `custom` — функция, зарегистрированная без `FunctionSpec`), `signature`, `min_args`, `max_args`, `returns`, `description`, `example`, `pure` (`false` у `now`, `today`); `meta.operators`: `[{op, synonyms, precedence}]`) |
 | GET | `/api/dictionaries/action-types` | любая |
 | GET | `/api/dictionaries/change-types` | любая |
 | GET | `/api/dictionaries/aggregate-functions` | любая (функции `aggregate`: `[{value, label}]` — `count`, `count_distinct`, `sum`, `avg`, `min`, `max`) |
@@ -702,6 +783,7 @@ CRM (`object_type` + `id` объекта события) не больше од�
 | GET | `/api/dictionaries/retry-classes` | любая (классы `retry.retry_on`: `transient`, `5xx`, `4xx`, `any`; допустим и трёхзначный код) |
 | GET | `/api/dictionaries/preload-sources` | любая |
 | GET | `/api/dictionaries/casts` | любая (типы `cast` для условий) |
+| GET | `/api/dictionaries/system-variables` | любая (системные переменные `sys.*` для панели переменных: `[{value, label, type, values?}]`; `type` — `string`, `integer`, `list`, `datetime`, `object`; `values` — допустимые значения у `sys.trigger` и `sys.event_type`) |
 | GET | `/api/dictionaries/delivery-policies` | любая (`at_most_once` — «Не более одного раза», `at_least_once` — «Не менее одного раза») |
 | GET | `/api/dictionaries/secret-kinds` | любая (виды секретов: `composite`, `fields: [{name, required, secret}]`) |
 | GET | `/api/dictionaries/value-types` | любая (`[{value, label}]` — `static`, `from_object_field`, `expression`) |
@@ -729,5 +811,9 @@ CRM (`object_type` + `id` объекта события) не больше од�
 
 | Метод | URI | Описание |
 |---|---|---|
-| GET | `/api/health` | Публичный. `200` / `503`, `data: { status: "ok"\|"degraded", checks: { postgres, redis_data, redis_stream }, stream: {...} }` |
-| GET | `/metrics` | Публичный. Метрики Prometheus (text format) |
+| GET | `/api/health` | Публичный. `200` / `503`, `data: { status: "ok"\|"degraded", checks: { postgres, redis_data, redis_stream }, stream: {...}, time }`; проверка — `{status: "ok", latency_ms}` или `{status: "error", error}`; `stream` — `{stream, group, length, lag, pending, consumers}` (`null`, если Redis stream недоступен) |
+| GET | `/metrics` | Публичный. Метрики Prometheus (`Content-Type: text/plain; version=0.0.4`), без конверта; кроме счётчиков — gauges `wps_redis_stream_lag`, `wps_redis_stream_pending`, `wps_executions_waiting` (вычисляются при запросе). Только на порту backend, nginx UI его не проксирует |
+| OPTIONS | любой путь | CORS preflight: `204`, `Access-Control-Allow-Origin` (`CORS_ALLOW_ORIGIN`, по умолчанию `*`), `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS`, `Access-Control-Allow-Headers: Authorization, Content-Type`, `Access-Control-Max-Age: 600` |
+
+Всего маршрутов — 55: 54 под `/api` и `/metrics` (по одному классу контроллера на маршрут, `back/src/Controllers/**`,
+атрибут `#[Route]`). Полный справочник с примерами — `doc/{ru,en}/06-api-reference/endpoints.md`.

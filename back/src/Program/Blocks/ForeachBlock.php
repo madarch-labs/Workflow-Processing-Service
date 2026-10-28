@@ -26,7 +26,7 @@ use Wps\Services\Validation\DefinitionScope;
  */
 final class ForeachBlock implements BlockTypeInterface
 {
-    private const RESERVED = [ExecutionContext::OBJECT, ExecutionContext::OBJECT_BEFORE, ExecutionContext::SYS, 'config'];
+    private const RESERVED = ExecutionContext::RESERVED;
 
     public function __construct(
         private readonly ExpressionEngine $expressions,

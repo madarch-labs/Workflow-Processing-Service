@@ -6,7 +6,7 @@
 [🇬🇧 English](../../en/05-architecture/data-model.md) | 🇷🇺 Русский
 <!-- /lang-switch -->
 
-Схему создают миграции из `back/migrations/` (`001_create_tables.sql` … `009_execution_waits.sql`).
+Схему создают миграции из `back/migrations/` (`001_create_tables.sql` … `010_reserved_names_check.sql`, список и порядок применения — [Развёртывание → Миграции](../04-operations/deployment.md#миграции)).
 `back/docker/entrypoint.sh` применяет их через `migrations/migrate.php` при каждом старте backend. Все столбцы
 `TIMESTAMP` хранятся в UTC.
 
@@ -32,7 +32,7 @@ erDiagram
         BOOLEAN run_once
         TEXT[] trigger_on "create, update, delete"
         INT version
-        JSONB definition "conditions, preload, actions"
+        JSONB definition "conditions, preload, actions, constants"
         TIMESTAMP created_at
         TIMESTAMP updated_at
         TIMESTAMP deleted_at "мягкое удаление"
@@ -71,7 +71,7 @@ erDiagram
         UUID execution_id FK
         INT step_index
         TEXT action_type
-        TEXT status "success, failed, skipped"
+        TEXT status "success, waiting, failed, skipped"
         INT attempts
         TIMESTAMP started_at
         INT duration_ms
@@ -125,6 +125,11 @@ erDiagram
 записывается раньше, чем появляется строка в `executions`.
 
 ## Таблицы
+
+### `schema_migrations`
+
+Служебная таблица `migrate.php` (создаётся им самим, не миграцией): `version TEXT PRIMARY KEY` — имя файла без `.sql`,
+`applied_at TIMESTAMP` — когда применён. Строка появляется в той же транзакции, что и сама миграция.
 
 ### `users`
 
@@ -311,7 +316,16 @@ flowchart LR
   `{ "logical_operator": "AND" | "OR", "conditions": [...], "groups": [...] }` — задел для ИЛИ и скобок (ответ
   заказчика №8); текущий интерфейс его не редактирует.
 - Строки `preload` выполняются до действий; `preload` может встречаться и внутри `actions`.
-- `Process::normalizeDefinition()` всегда возвращает все три ключа, поэтому отсутствующий блок — пустой список.
+- `Process::normalizeDefinition()` всегда возвращает ключи `conditions`, `preload`, `actions` и `constants`, поэтому
+  отсутствующий блок — пустой список (объект). Другие ключи верхнего уровня валидатор отклоняет (`422 Unknown key "x"`), чтобы опечатка не теряла данные молча; список допустимых — `Process::DEFINITION_KEYS`.
+- `constants` (задача 5.2.9) — объект констант процесса `{имя: значение}`: только скаляры и списки скаляров, до 100 штук
+  и 16 КБ, имена — как у переменных; читаются в выражениях, шаблонах и условиях как `config.<имя>` (только чтение).
+  Секреты в константах не хранятся: имя, похожее на секрет (`password`, `token` …), отклоняется.
+- Зарезервированные имена переменных (`ExecutionContext::RESERVED`): `object` (объект события), `object_before`
+  (старые значения, только чтение), `sys` (системные значения выполнения, только чтение), `config` (константы, только
+  чтение). Объявить переменную с таким именем (`preload.var`, `set_variable`, `find_records.var`, `foreach.as`) нельзя —
+  `Name "sys" is reserved`. Какие процессы использовали эти имена до 5.2.9, показывает миграция 010.
+- `trigger_on`, `run_once`, `priority`, `is_child`, `is_active` — колонки `processes`, а не ключи `definition`.
 - Колонка `definition` имеет тип `jsonb`: PostgreSQL **не сохраняет порядок ключей объектов** (сначала идут короткие
   ключи), порядок элементов массивов сохраняется. Там, где порядок важен, формат использует списки: `actions`,
   `branches`, `fields` действия `set_variable` (объект `fields` допустим только для независимых полей — иначе
@@ -332,6 +346,15 @@ flowchart LR
 | `lock:exec:{uuid}` | String | Токен воркера, который ведёт выполнение | `EXECUTION_LOCK_TTL` (30 с) |
 | `idem:{event_id}:{process_id}` | String | id выполнения или `skipped` | `IDEMPOTENCY_TTL_HOURS` (24 ч) |
 | `idem:{parent_execution_id}.{step}:{child_id}` | String | То же для ведомого процесса | 24 ч |
+| `exec:{uuid}:loop:{pc}` | List | Снимок элементов цикла `foreach` | как у `exec:{uuid}` |
+| `crm:capabilities` | String (JSON) | Возможности CRM из `GET {base}/capabilities` | `DICT_CACHE_TTL` |
+| `side_effects:purge` | String | Отметка ежечасной очистки журнала побочных эффектов | 1 ч |
+| `mail:rate:{hash транспорта}:{минута}`, `mail:rcpt:{sha1 адреса}:{час}` | String (счётчик) | Лимиты `MAILER_RATE_PER_MINUTE` и `MAILER_RATE_PER_RECIPIENT_HOUR` | 120 с / 2 ч |
+| `oauth:token:{sha1}`, `oauth:token:{sha1}:lock` | String | Токен OAuth2 для `http_request` и блокировка его получения | `expires_in` (не меньше 30 с) / 15 с |
+| `assign:rr:{queue_key}` | String | Последний назначенный в очереди `round_robin` | без TTL |
+| `assign:last:{queue_key}:{user}` | String | Время последнего назначения (`least_busy`) | 30 дней |
+| `assign:decided:{execution}:{pc}:{iteration}` | String (JSON) | Решение шага `assign` для повторов | сутки |
+| `assign:pool:{sha1}` | String (JSON) | Состав группы безопасности | `ASSIGN_POOL_CACHE_TTL` |
 
 **redis-stream** (шина событий):
 
@@ -340,6 +363,8 @@ flowchart LR
 | `crm_events` (`REDIS_STREAM_NAME`) | Stream | События CRM; группа потребителей `wps_workers` (`REDIS_STREAM_CONSUMER_GROUP`) |
 | `crm_events:dlq` | Stream | Некорректные и «отравленные» сообщения: `original_id`, `reason`, `fields`, `at`; обрезается примерно до 10 000 записей |
 | `mock_crm:{module}` | Hash | Объекты мок-CRM (только если используется контейнер `mock`) |
+| `mock_crm_rel:{module}:{id}:{link}` | Hash | Связи мок-CRM с полями связи |
+| `mock:echo:*`, `mock:notify*`, `mock:oauth:issued` | разные | Счётчики и последние запросы тестовых эндпоинтов мока |
 
 <!-- footer-nav -->
 ---

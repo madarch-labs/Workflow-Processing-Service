@@ -51,7 +51,9 @@ final class ExpressionLexer
                 $i++;
                 $value = '';
                 while ($i < $length && $source[$i] !== $quote) {
-                    if ($source[$i] === '\\' && $i + 1 < $length) {
+                    // A backslash escapes the quote and itself only: regex patterns keep '\d', '\p{Lu}' as written
+                    // (md/tasks_list/done/5.2.4-expr-strings.md §4.1).
+                    if ($source[$i] === '\\' && $i + 1 < $length && ($source[$i + 1] === $quote || $source[$i + 1] === '\\')) {
                         $i++;
                     }
                     $value .= $source[$i];

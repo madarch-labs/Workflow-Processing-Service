@@ -79,6 +79,36 @@ sequenceDiagram
    idempotency key with the value `skipped`.
 6. The message is acknowledged after all processes are handled — also when no process matched (customer answer #23).
 
+### Outcome of a message
+
+`EventProcessorService::process()` returns a status that `StreamService::handle()` uses to decide what happens to the message:
+
+```mermaid
+flowchart TB
+    m["message"] --> p{"parse()"}
+    p -- "error" --> inv["invalid<br/>wps_events_invalid_total"] --> dlq["XADD crm_events:dlq"] --> ack["XACK"]
+    p -- "ok" --> t{"event_type<br/>create / update / delete?"}
+    t -- "no (link, unlink, typo)" --> uns["unsupported_event_type<br/>wps_events_unsupported_type_total"] --> ack
+    t -- "yes" --> r["resolve(module):<br/>active top-level processes"]
+    r --> f{"processes with<br/>trigger_on ∋ event_type?"}
+    f -- "the module has no processes" --> np1["no_processes<br/>wps_events_skipped_total"] --> ack
+    f -- "some, but not for this type" --> np2["no_processes<br/>wps_events_skipped_by_type_total"] --> ack
+    f -- "yes" --> run["handle() of each process"] --> ok["ok<br/>processed_total when started > 0,<br/>otherwise skipped_total"] --> ack
+    run -- "exception" --> pend["no XACK: pending,<br/>Stream message processing failed"]
+```
+
+| Status | When | Message |
+|---|---|---|
+| `invalid` | No `module`/`object_type` or `id`; `data` is not a JSON object | To the DLQ, acknowledged |
+| `unsupported_event_type` | `event_type` is not `create`/`update`/`delete` | Acknowledged without starting processes |
+| `no_processes` | The module has no active top-level processes or none is subscribed to the event type | Acknowledged |
+| `ok` | Processes were run (or skipped by conditions, `run_once`, idempotency); `started` — how many executions were created | Acknowledged |
+| — (exception) | Redis / PostgreSQL unavailable, an error outside an execution | Stays pending, taken by `XAUTOCLAIM` after `REDIS_STREAM_CLAIM_IDLE_MS` |
+
+`trigger_on` filters **stream** events only. A manual run (`POST /api/processes/{id}/run`) and `start_process` start the
+process regardless of `trigger_on`; the event type of a manual run is taken from the object (`event_type`, otherwise
+`update`, or `create` when `wps_is_update = "0"`) and is visible in `sys.event_type`.
+
 ### Event envelope and event info
 
 `EventProcessorService::parse()` turns a message into `Wps\Events\EventEnvelope` — an immutable envelope shared by the stream

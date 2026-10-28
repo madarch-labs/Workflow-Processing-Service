@@ -48,6 +48,7 @@ use Wps\Crm\FilterRulesValidator;
 use Wps\Crm\FilterTranslator;
 use Wps\Expression\ExpressionEngine;
 use Wps\Expression\Functions\DateFunctions;
+use Wps\Expression\Functions\TypeFunctions;
 use Wps\Infrastructure\Database;
 use Wps\Http\Outbound\Auth\OAuth2TokenProvider;
 use Wps\Http\Outbound\EgressGuard;
@@ -281,6 +282,7 @@ final class Container
         return $this->share(ExpressionEngine::class, function (): ExpressionEngine {
             $engine = new ExpressionEngine($this->typeCaster());
             DateFunctions::register($engine, $this->dateMath(), $this->clock());
+            TypeFunctions::register($engine, $this->typeCaster(), $this->dateMath());
             return $engine;
         });
     }
@@ -543,6 +545,7 @@ final class Container
             $this->templates(),
             fn (): WaitService => $this->waits(),
             $this->loopRunner(),
+            $this->clock(),
         ));
     }
 
