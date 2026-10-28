@@ -6,6 +6,7 @@ namespace Wps\Services;
 
 use Psr\Log\LoggerInterface;
 use Wps\Context\ExecutionContext;
+use Wps\Events\EventEnvelope;
 use Wps\Support\Json;
 
 /**
@@ -38,22 +39,37 @@ final class EventProcessorService
             $this->logger->warning('Invalid stream event', ['message_id' => $messageId, 'error' => $parsed['error']]);
             return ['status' => 'invalid', 'error' => $parsed['error']];
         }
-        /** @var array<string, mixed> $object */
-        $object = $parsed['object'];
-        $module = (string)$parsed['module'];
+        /** @var EventEnvelope $envelope */
+        $envelope = $parsed['envelope'];
+        $object = $envelope->object;
+        $module = $envelope->module;
+        if ($envelope->legacy) {
+            $this->metrics->inc(MetricsService::EVENTS_LEGACY_FORMAT);
+        }
+        if ($envelope->warnings !== []) {
+            $this->metrics->inc(MetricsService::EVENTS_MALFORMED_FIELDS, count($envelope->warnings));
+            $this->logger->warning('Invalid service fields in event', ['message_id' => $messageId, 'warnings' => $envelope->warnings]);
+        }
         $eventId = isset($object['event_id']) && is_scalar($object['event_id']) && $object['event_id'] !== ''
             ? (string)$object['event_id']
             : $messageId;
 
-        $processes = $this->resolver->resolve($module);
+        if ($envelope->unsupportedType) {
+            $this->metrics->inc(MetricsService::EVENTS_UNSUPPORTED_TYPE);
+            $this->logger->info('Unsupported event_type, no process is started', ['message_id' => $messageId, 'event_type' => $envelope->eventType]);
+            return ['status' => 'unsupported_event_type', 'processes' => 0, 'started' => 0];
+        }
+
+        $all = $this->resolver->resolve($module);
+        $processes = array_values(array_filter($all, static fn ($p) => $p->triggersOn($envelope->eventType)));
         if ($processes === []) {
-            $this->metrics->inc(MetricsService::EVENTS_SKIPPED);
+            $this->metrics->inc($all === [] ? MetricsService::EVENTS_SKIPPED : MetricsService::EVENTS_SKIPPED_BY_TYPE);
             return ['status' => 'no_processes', 'processes' => 0, 'started' => 0];
         }
 
         $started = 0;
         foreach ($processes as $process) {
-            $context = ExecutionContext::fromEvent($eventId, $object, $module);
+            $context = ExecutionContext::fromEnvelope($eventId, $envelope);
             $outcome = $this->engine->handle(
                 $process,
                 $context,
@@ -67,7 +83,9 @@ final class EventProcessorService
         }
         $this->metrics->inc($started > 0 ? MetricsService::EVENTS_PROCESSED : MetricsService::EVENTS_SKIPPED);
         $this->logger->debug('Event handled', [
-            'event_id' => $eventId, 'object_type' => $module, 'processes' => count($processes), 'started' => $started,
+            'event_id' => $eventId, 'object_type' => $module, 'processes_total' => count($all), 'processes_matched' => count($processes), 'started' => $started,
+            'event_type' => $envelope->eventType, 'changed_count' => $envelope->changedFields === null ? null : count($envelope->changedFields),
+            'legacy' => $envelope->legacy,
         ]);
         return ['status' => 'ok', 'processes' => count($processes), 'started' => $started];
     }
@@ -77,7 +95,7 @@ final class EventProcessorService
      * The object type is taken from "module" or "object_type" (both are sent by the mock).
      *
      * @param array<string, string> $fields
-     * @return array{object?: array<string, mixed>, module?: string, error?: string}
+     * @return array{envelope?: EventEnvelope, error?: string}
      */
     public static function parse(array $fields): array
     {
@@ -96,6 +114,6 @@ final class EventProcessorService
         if (!isset($object['id']) || !is_scalar($object['id']) || (string)$object['id'] === '') {
             return ['error' => 'Event object has no "id"'];
         }
-        return ['object' => $object, 'module' => $module];
+        return ['envelope' => EventEnvelope::fromArray($object, $module)];
     }
 }

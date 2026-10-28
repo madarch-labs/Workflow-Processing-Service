@@ -6,6 +6,7 @@ import path from 'node:path'
 
 const UI = process.env.UI || 'http://localhost:3081'
 const API = process.env.API || 'http://localhost:9511'
+const MAILPIT = process.env.MAILPIT || 'http://localhost:8035'
 const OUT = process.argv[2]
 const ONLY = process.argv[3]
 
@@ -38,6 +39,14 @@ const SHOTS = [
   { name: '16-users', url: '/users' },
   { name: '17-language-switcher', url: '/processes', prepare: 'langMenu' },
   { name: '18-process-detail-child', url: '/processes/4' },
+  { name: '19-executions-list-statuses', url: '/processes/10', scrollTo: 'executions' },
+  { name: '20-execution-detail-waiting', url: 'EXEC:10' },
+  { name: '21-execution-detail-foreach', url: 'EXEC:9', scrollTo: 'steps' },
+  { name: '22-execution-detail-http', url: 'EXEC:8', scrollTo: 'steps', expandRow: 0 },
+  { name: '23-execution-detail-email', url: 'EXEC:7', scrollTo: 'steps', expandRow: 0 },
+  { name: '24-mailpit-letter', url: 'MAILPIT', once: true },
+  { name: '25-process-detail-json-actions', url: '/processes/11' },
+  { name: '26-execution-context-system', url: 'EXEC:11', scrollTo: 'steps', expandRow: 2 },
 ]
 
 async function execId(token, processId, idx = 0) {
@@ -75,6 +84,17 @@ async function main() {
           localStorage.setItem('wps_refresh_token', r)
         }, auth.access_token, auth.refresh_token)
       }
+      if (s.url === 'MAILPIT') {
+        await page.goto(MAILPIT, { waitUntil: 'networkidle2' }).catch(() => {})
+        await sleep(1000)
+        await page.evaluate(() => document.querySelector('a.message, .message a, a[href*="/view/"]')?.click())
+        await sleep(1500)
+        const file = path.join(OUT, lang, `${s.name}.png`)
+        await page.screenshot({ path: file })
+        console.log(file)
+        await page.close()
+        continue
+      }
       let url = s.url
       if (url.startsWith('EXEC:')) url = `/executions/${await execId(auth.access_token, url.slice(5))}`
       await page.evaluate((u) => { location.href = u }, `${UI}${url}${url.includes('?') ? '&' : '?'}lang=${lang}`)
@@ -96,6 +116,20 @@ async function main() {
           const card = which === 'conditions' ? cards[1] : cards[2]
           if (card) card.scrollIntoView({ block: 'start' })
         }, s.scrollTo)
+      }
+      if (s.expandRow !== undefined) {
+        await page.evaluate((n) => {
+          const icons = [...document.querySelectorAll('.el-table__expand-icon')]
+          icons[n]?.click()
+        }, s.expandRow)
+        await sleep(700)
+      }
+      if (s.scrollTo === 'steps') {
+        await page.evaluate(() => {
+          const cards = [...document.querySelectorAll('.panel-card')]
+          const card = cards.find((c) => c.querySelector('.el-table'))
+          if (card) card.scrollIntoView({ block: 'start' })
+        })
       }
       if (s.scrollTo === 'executions') {
         await page.evaluate(() => {

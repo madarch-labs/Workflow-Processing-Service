@@ -6,6 +6,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Close, Select } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import { emptyForm, formFromProcess, payloadFromForm, useProcessesStore } from '@/stores/processes'
+import { simpleConditions } from '@/utils/processForm'
 import { dictionariesApi, FALLBACK } from '@/api/dictionaries'
 import { ApiRequestError, showApiError } from '@/api/client'
 import type { Condition, DictionaryItem, ModifyRow, PreloadAction, ProcessFormData, StartProcessRow } from '@/types'
@@ -84,11 +85,16 @@ function setStart(v: StartProcessRow[]): void {
 function convertRawConditions(): void {
   const raw = form.value.conditionsRaw
   if (!raw) return
+  if (Array.isArray(raw)) {
+    // a flat list with value lists / nested groups: keep only the rows the table can show
+    form.value = { ...form.value, conditionsRaw: null, conditions: simpleConditions(raw) }
+    return
+  }
   const simple = raw.logical_operator === 'AND' && (!raw.groups || raw.groups.length === 0)
   form.value = {
     ...form.value,
     conditionsRaw: null,
-    conditions: simple ? (raw.conditions ?? []).map((c) => ({ ...c, value: String(c.value ?? '') })) : [],
+    conditions: simple ? simpleConditions(raw.conditions ?? []) : [],
   }
 }
 
@@ -143,7 +149,7 @@ function validateRows(): string[] {
   f.conditions.forEach((c, i) => {
     const err = (key: string): string => t('processEdit.validation.condition', { n: i + 1, error: t(`processEdit.validation.${key}`) })
     if (!c.field.trim() || !c.field.includes('.') || c.field.trim().endsWith('.')) errors.push(err('conditionField'))
-    if (c.value_type === 'from_object_field' && (!c.value.trim() || !c.value.includes('.')))
+    if (!c._noValue && c.value_type === 'from_object_field' && (!c.value.trim() || !c.value.includes('.')))
       errors.push(err('conditionCompareField'))
   })
   const names: string[] = []
@@ -171,7 +177,9 @@ function validateRows(): string[] {
     if (r.type === 'modify') {
       const target = r.target.trim()
       if (!target || !target.includes('.') || target.endsWith('.')) errors.push(err('targetField'))
-      if (r.change_type !== 'set_value' && !r.value.trim()) errors.push(err('valueRequired'))
+      // clear needs no value, increment / decrement default to 1
+      const optional = ['set_value', 'clear', 'increment', 'decrement']
+      if (!optional.includes(r.change_type) && !r.value.trim()) errors.push(err('valueRequired'))
     } else if (r.type === 'save_object') {
       if (!r.target.trim()) errors.push(err('saveTargetRequired'))
     }
@@ -319,7 +327,7 @@ onMounted(load)
             <template v-if="form.conditionsRaw">
               <el-alert type="warning" :closable="false" show-icon class="raw-alert">
                 <template #title>
-                  {{ t('processEdit.rawConditionsWarning') }}
+                  {{ Array.isArray(form.conditionsRaw) ? t('processEdit.rawConditionsListWarning') : t('processEdit.rawConditionsWarning') }}
                 </template>
               </el-alert>
               <JsonView :value="form.conditionsRaw" />

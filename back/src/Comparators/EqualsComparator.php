@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Wps\Comparators;
 
-final class EqualsComparator implements ComparatorInterface
+use Wps\Types\CastOptions;
+use Wps\Types\CastType;
+
+final class EqualsComparator extends AbstractComparator
 {
     public function name(): string
     {
@@ -16,8 +19,13 @@ final class EqualsComparator implements ComparatorInterface
         return 'Равен';
     }
 
-    public function compare(string $actual, string $expected): bool
+    public function supportedCasts(): array
     {
-        return $actual === $expected;
+        return CastType::cases();
+    }
+
+    public function compare(mixed $actual, mixed $expected, CastOptions $options): bool
+    {
+        return $this->caster->equals($actual, $expected, $options);
     }
 }

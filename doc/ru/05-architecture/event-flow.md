@@ -69,11 +69,75 @@ sequenceDiagram
    если он там есть, иначе используется id сообщения стрима.
 4. `ProcessResolverService` возвращает активные, не удалённые процессы **верхнего уровня** этого типа объекта,
    отсортированные по `priority` по возрастанию. Список кэшируется на `PROCESS_CACHE_TTL` секунд и сбрасывается при
-   сохранении процесса.
+   сохранении процесса. Затем `EventProcessorService` оставляет процессы, у которых `trigger_on` содержит тип события
+   (`Process::triggersOn()`; ключ кэша от типа не зависит). Событие с неподдерживаемым `event_type` (`link`, `unlink`)
+   подтверждается сразу со статусом `unsupported_event_type`. Лог `Event handled` (debug) пишет `processes_total` и
+   `processes_matched`.
 5. Для каждого процесса движок строит собственный `ExecutionContext` из события и вызывает `handle()` — подробности в
    разделе [Движок выполнения](execution-engine.md). Если условия процесса не выполнены, выполнение не создаётся,
    остаётся только ключ идемпотентности со значением `skipped`.
 6. Сообщение подтверждается после обработки всех процессов — и тогда, когда ни один процесс не подошёл (ответ №23).
+
+### Итог обработки сообщения
+
+`EventProcessorService::process()` возвращает статус, по которому `StreamService::handle()` решает судьбу сообщения:
+
+```mermaid
+flowchart TB
+    m["сообщение"] --> p{"parse()"}
+    p -- "ошибка" --> inv["invalid<br/>wps_events_invalid_total"] --> dlq["XADD crm_events:dlq"] --> ack["XACK"]
+    p -- "ок" --> t{"event_type<br/>create / update / delete?"}
+    t -- "нет (link, unlink, опечатка)" --> uns["unsupported_event_type<br/>wps_events_unsupported_type_total"] --> ack
+    t -- "да" --> r["resolve(module):<br/>активные процессы верхнего уровня"]
+    r --> f{"есть процессы с<br/>trigger_on ∋ event_type?"}
+    f -- "процессов модуля нет" --> np1["no_processes<br/>wps_events_skipped_total"] --> ack
+    f -- "есть, но не на этот тип" --> np2["no_processes<br/>wps_events_skipped_by_type_total"] --> ack
+    f -- "да" --> run["handle() каждого процесса"] --> ok["ok<br/>processed_total, если started > 0,<br/>иначе skipped_total"] --> ack
+    run -- "исключение" --> pend["нет XACK: pending,<br/>Stream message processing failed"]
+```
+
+| Статус | Когда | Сообщение |
+|---|---|---|
+| `invalid` | Нет `module`/`object_type` или `id`; `data` — не JSON-объект | В DLQ, подтверждается |
+| `unsupported_event_type` | `event_type` не `create`/`update`/`delete` | Подтверждается без запуска процессов |
+| `no_processes` | У модуля нет активных процессов верхнего уровня или ни один не подписан на тип события | Подтверждается |
+| `ok` | Процессы запущены (или пропущены условиями, `run_once`, идемпотентностью); `started` — сколько выполнений создано | Подтверждается |
+| — (исключение) | Недоступны Redis / PostgreSQL, ошибка вне выполнения | Остаётся в pending, через `REDIS_STREAM_CLAIM_IDLE_MS` забирается `XAUTOCLAIM` |
+
+`trigger_on` фильтрует только события **стрима**. Ручной запуск (`POST /api/processes/{id}/run`) и `start_process`
+запускают процесс независимо от `trigger_on`; тип события ручного запуска берётся из объекта (`event_type`, иначе
+`update`, а при `wps_is_update = "0"` — `create`) и виден в `sys.event_type`.
+
+### Конверт события и сведения о событии
+
+`EventProcessorService::parse()` превращает сообщение в `Wps\Events\EventEnvelope` — неизменяемый конверт, общий для стрима
+и ручного запуска (будущий вебхук 6.5 использует его же):
+
+| Поле конверта | Что содержит |
+|---|---|
+| `module`, `object` | модуль и запись **без** служебных ключей `event_type`, `before`, `changed_fields`, `wps_origin` |
+| `eventType` | `create` / `update` / `delete`; без `event_type` в событии — `create` при `wps_is_update = "0"`, иначе `update` |
+| `unsupportedType` | `event_type` не из `create`, `update`, `delete` — процессы не запускаются |
+| `before` | старые значения изменённых полей; `null` — неизвестны, `[]` — известно, что их нет |
+| `changedFields` | список изменённых полей; `null` — неизвестно |
+| `origin` | `wps_origin` (`execution_id`, `process_id`, `depth`) — для защиты от каскадов (7.5) |
+| `legacy` | в событии нет `event_type` (издатель контракта 1.0) |
+| `warnings` | отброшенные служебные поля неверного типа — пишутся в лог, считаются в `wps_events_malformed_fields_total` |
+
+Правила вывода недостающих полей — в [Интеграции с CRM](../04-operations/crm-integration.md#как-wps-разбирает-событие).
+
+`ExecutionContext::fromEnvelope()` строит контекст процесса:
+
+- переменная `object` — запись конверта, `object_before` — `before` (метаданные `source: event_before`); `object_before`
+  **только для чтения**: `set()`, `setVariable()`, `setClean()`, `setModule()` бросают `ConfigurationException`, а валидатор
+  отклоняет такие цели при сохранении процесса (`DefinitionScope::checkWritePath()`, предзагрузка, `save_object`);
+- `ExecutionContext::$eventInfo` — неизменяемый `Wps\Context\EventInfo` (`eventType`, `changedFields`, `hasBefore`, `origin`,
+  `legacy`, метод `isChanged(field)`: `true` / `false` / `null` — неизвестно). Его используют операторы изменения (3.3),
+  системные переменные (5.2.9) и защита от каскадов (7.5).
+
+`event_info` сериализуется вместе с контекстом: в Redis-состоянии выполнения (поле `event_info` хеша, поэтому переживает
+`resume()` после падения воркера) и в `executions.context_snapshot`. `forChild()` передаёт ведомому процессу и `object_before`,
+и `event_info`. Состояние, сохранённое до 6.1, восстанавливается с `EventInfo` по умолчанию (`legacy: true`).
 
 ## Ведомые процессы
 

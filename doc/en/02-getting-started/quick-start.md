@@ -56,6 +56,10 @@ curl http://localhost:9501/api/health
 | API | `http://localhost:9501/api/...` |
 | Metrics | `http://localhost:9501/metrics` |
 | Mock CRM and test events | `http://localhost:9502/test-event?module=Deals` |
+| Mailpit (letters of processes) | `http://localhost:8025` |
+
+Container state — `docker compose ps`: `backend`, `frontend`, `mock`, `postgres`, `redis-stream`, `redis-data`,
+`mailpit` must be `Up` (`postgres` and `mailpit` also `healthy`).
 
 ## 3. Sign in
 
@@ -132,6 +136,28 @@ curl -s http://localhost:9502/mock/objects/Deals/<object id>   # "description":"
 A deal with another status, for example `set[status]=Closed`, does not start the process. The event is still read and
 acknowledged, but no execution is created.
 
+## 7. What else to try
+
+| What | How |
+|---|---|
+| Run a process without an event | On the process card **Run** → enter the object JSON → **Run**. See [Manual run](../03-user-guide/manual-run-and-reset.md) |
+| Send an e-mail | Create the process from the ["welcome letter" recipe](../03-user-guide/recipes.md#20-a-welcome-letter-to-a-new-lead-send_email) and open `http://localhost:8025` — the letter is in Mailpit |
+| See the detailed audit | Open an execution and expand a step row: **Request (request_data)** and **Result (result_data)** |
+| Try a complex scenario | Take a JSON from the [Recipes](../03-user-guide/recipes.md) (loops, pauses, HTTP requests, notifications) and create the process through the API |
+| Remove the test process | **Delete** on the process card (role `admin`) or `curl -X DELETE http://localhost:9501/api/processes/<id> -H "Authorization: Bearer $TOKEN"` |
+
+## If something goes wrong
+
+| Symptom | Cause and fix |
+|---|---|
+| `curl: (7) Failed to connect to localhost port 9501` | The backend is still starting or crashed: `docker compose ps`, `docker compose logs backend --tail 50` |
+| `/api/health` returns `degraded` | PostgreSQL or one of the Redis instances is down — see `checks` in the response and the logs of that container |
+| The sign-in page opens but shows **The server is unavailable. Check your connection.** | The frontend cannot reach `/api`: check that `backend` is running |
+| **Invalid email or password** for `admin@wps.local` | The password was already changed. Reset it through the database or with a fresh volume (`docker compose down -v` deletes all data) |
+| `test-event` answers `Unknown module` | The mock knows `Accounts`, `Contacts`, `Leads`, `Deals`, `Invoices`, `Orders`, `Payments`, `Tasks`, `Calls`, `Meetings`, `Tickets` and others — case matters |
+| The event was sent but there is no execution | The process is inactive, has another object type or the conditions are not met — check with a [manual run](../03-user-guide/manual-run-and-reset.md), see the [FAQ](../08-faq.md#my-process-did-not-start-what-should-i-check) |
+| There is an execution with the **Failed** status | Open it: the **Execution error** banner and the step row explain the cause, see [Diagnosing a failed execution](../03-user-guide/executions-and-audit.md#diagnosing-a-failed-execution) |
+
 ## Stop and clean up
 
 ```bash
@@ -144,6 +170,8 @@ docker compose down -v     # stop and delete the volumes (database, Redis)
 - [Your first process](first-process.md): build a process with preload in the UI.
 - [User guide](../03-user-guide/login-and-ui.md): every screen and setting.
 - [Recipes](../03-user-guide/recipes.md): ready-made scenarios.
+- [Overview](../01-overview/index.md#what-is-configured-in-the-editor-and-what-through-the-api): what is configured in
+  the editor and what through the API.
 
 <!-- footer-nav -->
 ---

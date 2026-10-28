@@ -8,6 +8,7 @@ use Sidalex\SwooleApp\Application;
 use Sidalex\SwooleApp\Classes\Initiation\AbstractContainerInitiator;
 use Wps\Config\AppConfig;
 use Wps\Services\MetricsService;
+use Wps\Support\Logger;
 
 /**
  * Runs once in the master process (inside Application::__construct, before workers fork).
@@ -23,9 +24,11 @@ final class StateInitiation extends AbstractContainerInitiator
 
     public function init(Application $param): void
     {
+        $config = AppConfig::fromEnv();
         $this->result = new WpsState(
-            config: AppConfig::fromEnv(),
+            config: $config,
             metrics: MetricsService::createShared(),
         );
+        (new Logger($config->logLevel))->info('Business time zone', ['WPS_TIMEZONE' => $config->timezone]);
     }
 }

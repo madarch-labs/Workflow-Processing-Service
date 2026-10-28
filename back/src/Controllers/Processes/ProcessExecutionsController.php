@@ -12,7 +12,7 @@ use Wps\Http\ApiException;
 #[Route(uri: '/api/processes/{id}/executions', method: 'GET')]
 final class ProcessExecutionsController extends BaseController
 {
-    private const STATUSES = ['running', 'retrying', 'completed', 'failed'];
+    public const STATUSES = ['running', 'retrying', 'waiting', 'completed', 'failed', 'cancelled'];
 
     protected function handle(): Response
     {

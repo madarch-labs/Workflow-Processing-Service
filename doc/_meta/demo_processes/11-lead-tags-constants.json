@@ -1,0 +1,8 @@
+{"name":"Lead → tags, constants and system variables","object_type":"Leads","is_child":false,"is_active":true,"priority":0,"run_once":false,
+ "definition":{"conditions":[{"field":"object.status","operator":"equals","value_type":"static","value":"Tagged"}],
+  "preload":[],
+  "actions":[{"type":"modify","target":"object.tags_c","change_type":"calculate","value":"join(unique(concat_lists(split(object.tags_c, ',', '^'), config.default_tags)), ',', '^')","save_to_crm":false},
+             {"type":"modify","target":"object.phone_mobile","change_type":"calculate","value":"regex_replace(object.phone_mobile, '[^0-9+]', '')","save_to_crm":false},
+             {"type":"modify","target":"object.description","change_type":"template","value":"{{ sys.trigger }} run of «{{ sys.process_name }}» v{{ sys.process_version }} at {{ sys.now }}; slug {{= slug(object.last_name) }}","save_to_crm":false},
+             {"type":"save_object","target":"object"}],
+  "constants":{"default_tags":["vip","newsletter"],"vip_threshold":100000}}}

@@ -8,7 +8,8 @@
     "build": "node scripts/i18n-check.mjs && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
-    "i18n:check": "node scripts/i18n-check.mjs"
+    "i18n:check": "node scripts/i18n-check.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
@@ -25,6 +26,7 @@
     "@vitejs/plugin-vue": "^5.1.4",
     "typescript": "~5.6.3",
     "vite": "^5.4.9",
+    "vitest": "^2.1.9",
     "vue-tsc": "^2.1.6"
   }
 }

@@ -17,7 +17,9 @@ flowchart LR
 
     crm -- "publishes 'object saved' events<br/>(logic hook after_save / mock)" --> bus
     bus -- "XREADGROUP, consumer group wps_workers" --> wps
-    wps -- "REST API v8: GET / PUT / POST<br/>header X-Auth-Key" --> crm
+    wps -- "REST API /api/v9 (contract 2.0): GET / PUT / POST / DELETE,<br/>relationships, X-Auth-Key, X-WPS-*" --> crm
+    ext["External systems<br/>SMTP, HTTP APIs, Telegram / Slack / Teams"]
+    wps -- "send_email, http_request, notify<br/>(side-effect journal, SSRF protection)" --> ext
     analyst -- "configures processes,<br/>reads the audit (HTTPS UI)" --> wps
 ```
 
@@ -26,6 +28,11 @@ The CRM is the owner of the data. It does not call WPS directly: every save of a
 WPS calls the CRM REST API (SuiteCRM API v8 format, authenticated with a dynamic `X-Auth-Key`). People only work with the
 web UI: they configure processes and inspect the execution audit.
 
+Besides the CRM, processes call external systems: e-mail (`send_email`, SMTP through `symfony/mailer`), arbitrary HTTP
+APIs (`http_request`, addresses checked by `EgressGuard`) and messengers (`notify`: Telegram, Slack, Teams; the CRM bell
+goes through the CRM API). Their credentials are kept in the encrypted WPS secrets store. CRM API contract 2.0 (SuiteCRM
+plugins 1.2.0, the mock) is described in [CRM integration](../04-operations/crm-integration.md).
+
 ## Containers (C4, level 2)
 
 ```mermaid
@@ -33,7 +40,7 @@ flowchart TB
     user["Browser"]
     subgraph compose["docker-compose.yml"]
         frontend["frontend<br/>nginx + Vue 3 SPA<br/>host WPS_UI_PORT → 80"]
-        backend["backend<br/>PHP 8.3 + Swoole 6 + SwooleApp<br/>API, StreamConsumerJob, RecoveryJob<br/>host WPS_API_PORT → 9501"]
+        backend["backend<br/>PHP 8.3 + Swoole 6 + SwooleApp<br/>API, StreamConsumerJob, RecoveryJob,<br/>WaitResumeJob<br/>host WPS_API_PORT → 9501"]
         postgres[("postgres<br/>PostgreSQL 15<br/>host WPS_PG_PORT → 5432")]
         rstream[("redis-stream<br/>Redis 7, event bus<br/>host WPS_REDIS_STREAM_PORT → 6379")]
         rdata[("redis-data<br/>Redis 7, cache and state<br/>host WPS_REDIS_DATA_PORT → 6379")]
@@ -56,7 +63,8 @@ flowchart TB
 |---|---|---|
 | `frontend` | Serves the built SPA, proxies `/api/` to `backend:9501`, SPA fallback to `index.html` | — |
 | `backend` | REST API for the UI, stream consumer, execution engine, recovery | — (stateless; the state is in PostgreSQL and redis-data) |
-| `postgres` | Consistent storage | users, processes, executions, step audit, run-once marks |
+| `postgres` | Consistent storage | users, processes, executions, step audit, run-once marks, secrets (encrypted), side-effect journal, waiting executions |
+| `mailpit` | Test SMTP of the stand (`MAILER_DSN=smtp://mailpit:1025`), letters web UI on `WPS_MAILPIT_PORT` | letters of the stand (in memory) |
 | `redis-stream` | Event bus between the CRM and WPS | stream `crm_events`, group `wps_workers`, dead-letter stream `crm_events:dlq` |
 | `redis-data` | Fast temporary state, kept separate from the bus (customer answer #4) | execution context `exec:{uuid}`, locks, idempotency keys, process and module caches |
 | `mock` | Development CRM: generates events and emulates CRM API v8 | mock CRM objects (in redis-stream) |
@@ -79,6 +87,10 @@ connected by changing `CRM_API_BASE_URL` (see [CRM integration](../04-operations
 | Metrics | Prometheus text format, shared `Swoole\Table` | `back/src/Services/MetricsService.php` |
 | UI | Vue 3.5, TypeScript, Vite 5, Element Plus, Pinia, Vue Router, Axios, vue-i18n | `front/` |
 | UI delivery | nginx | `front/nginx.conf` |
+| Mail | `symfony/mailer` (SMTP), Mailpit on the stand | `back/src/Mail/` |
+| Exact numbers | `bcmath` (`decimal`), `intl` (`format_date_locale`) | `back/Dockerfile` |
+| JSONPath | adapter `Wps\Support\JsonPath` (RFC 9535) | `back/src/Support/JsonPath.php` |
+| Tests | PHPUnit (`test` image stage), integration `tests/IntegrationTest.php`, SuiteCRM 8 cases | `back/tests/`, `.tehnical/suiteCRM8/processes/cases/` |
 | CRM | SuiteCRM 7 / 8 with the WPS plugin, or the PHP mock | `.tehnical/`, `mock/` |
 
 ## Where to go next

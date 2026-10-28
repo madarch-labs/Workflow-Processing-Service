@@ -22,6 +22,12 @@ final class AccessPolicy
         ['*', '#^/metrics$#', self::PUBLIC],
         ['POST', '#^/api/auth/(login|refresh)$#', self::PUBLIC],
         ['*', '#^/api/users(/.*)?$#', self::ADMIN],
+        // secrets: editors pick them in processes (names and masks only), admins manage them; viewers have no access
+        ['GET', '#^/api/secrets(/[^/]+)?$#', self::EDITORS],
+        ['*', '#^/api/secrets(/.*)?$#', self::ADMIN],
+        // send_email: the test letter is for admins; transport secret names — like the secrets list, editors only
+        ['*', '#^/api/mail(/.*)?$#', self::ADMIN],
+        ['GET', '#^/api/dictionaries/mail-transports$#', self::EDITORS],
         ['DELETE', '#^/api/processes/[^/]+/runs/[^/]+/[^/]+$#', self::EDITORS],
         ['DELETE', '#^/api/processes/[^/]+$#', self::ADMIN],
         ['POST', '#^/api/processes$#', self::EDITORS],

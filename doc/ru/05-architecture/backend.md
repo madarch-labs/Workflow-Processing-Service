@@ -15,11 +15,39 @@
 | HTTP | `Wps\Controllers\*`, `BaseController`, `Wps\Http\*` | Один класс контроллера на эндпоинт, конверт ответа, `ApiException` |
 | Безопасность | `Wps\Middleware\AuthMiddleware`, `Wps\Auth\AccessPolicy`, `JwtService` | Проверка JWT и правила ролей для каждого маршрута |
 | Сервисы | `Wps\Services\*` | Обработка событий, проверка условий, движок выполнения, валидация, адаптер CRM, справочники, метрики |
-| Реестры расширений | `Wps\Actions`, `Wps\Comparators`, `Wps\Actions\ChangeTypes`, `Wps\LoadStrategies`, `Wps\Expression` | Подключаемые типы действий, операторы, типы изменений, стратегии загрузки, функции выражений |
-| Фоновые задачи | `Wps\CyclicJobs\StreamConsumerJob`, `RecoveryJob` | Чтение стрима; восстановление неподтверждённых сообщений и прерванных выполнений |
+| Реестры расширений | `Wps\Actions`, `Wps\Comparators`, `Wps\Actions\ChangeTypes`, `Wps\LoadStrategies`, `Wps\Program\Blocks`, `Wps\Notify\Channels`, `Wps\Expression` | Подключаемые типы действий, операторы, типы изменений, стратегии загрузки, блоки, каналы уведомлений, функции выражений |
+| Фоновые задачи | `Wps\CyclicJobs\StreamConsumerJob`, `RecoveryJob`, `WaitResumeJob` | Чтение стрима (0,5 с); восстановление неподтверждённых сообщений и прерванных выполнений, очистка журнала побочных эффектов (30 с, первый запуск через 15 с); пробуждение ожидающих выполнений (`WAIT_POLL_INTERVAL_MS`, первый запуск через 5 с) |
 | Хранение | `Wps\Persistence\*Repository`, `Process` | SQL-доступ к PostgreSQL |
 | Инфраструктура | `Wps\Infrastructure\Database`, `RedisConnection` | Корутинные пулы соединений (PDO pgsql, phpredis) |
 | Общее состояние | `Wps\State\StateInitiation`, `WpsState` | `AppConfig` и общая таблица метрик, создаются один раз в мастер-процессе |
+
+### Каталоги `back/src`
+
+| Каталог | Содержимое |
+|---|---|
+| `Kernel/` | `Container` (сборка всех сервисов и реестров), `Env`, `WpsApplication`, `WpsRoutesCollectionBuilder` |
+| `Config/`, `State/` | `AppConfig` (все переменные окружения с границами), `StateInitiation` / `WpsState` (общее состояние мастер-процесса) |
+| `Controllers/` | REST-эндпоинты (атрибут `#[Route]`), справочники — `Controllers/Dictionaries/` (23 эндпоинта `/api/dictionaries/*`) |
+| `Auth/`, `Middleware/`, `Http/` | JWT, `AccessPolicy`, `AuthMiddleware`, `ApiException`, `JsonResponder` |
+| `Http/Outbound/` | Исходящий HTTP `http_request` и мессенджеров: `OutboundHttpClient`, `EgressGuard` (SSRF), `CidrList`, `JsonPathExtractor`, `Auth/OAuth2TokenProvider` |
+| `Services/` | Движок, условия, стрим, события, процессы, валидация (`Validation/DefinitionScope`), ошибки (`Errors/`), назначение (`Assign/`), `WaitService`, `MetricsService`, адаптер CRM |
+| `Program/` | Компилятор и интерпретатор плоской программы, блоки, циклы |
+| `Actions/` | Обработчики действий, `ChangeTypes/` (типы изменения), `Support/RelatedIdsResolver` |
+| `Comparators/`, `Types/` | Операторы условий; `TypeCaster`, `CastOptions`, `RelativeDate` |
+| `Expression/` | `ExpressionLexer` / `Parser` / `Engine`, `Decimal`, `SafeRegex`, функции `Functions/{Text,Number,Logic,Date,List,Type}Functions` |
+| `Template/` | `TemplateEngine`, парсер, `TemplateValidator`, `EscapeMode`, `MissingPolicy` |
+| `Crm/` | `CrmFilter`, `FilterTranslator`, `FilterRulesValidator`, `CrmPage`, `CrmCapabilities*`, `CrmCallOrigin` |
+| `Events/`, `Context/` | `EventEnvelope`; `ExecutionContext`, `EventInfo` |
+| `Mail/` | `MailerFactory` (symfony/mailer), `MailRateLimiter`, получатели, классификация ошибок SMTP |
+| `Notify/` | `ChannelRegistry`, каналы `crm_alert`, `telegram`, `slack`, `teams`, `RecordLinks` |
+| `Secrets/` | `SecretCipher` (XChaCha20-Poly1305), `SecretService`, `SecretResolver`, `SecretMasker`, `SecretUsageScanner` |
+| `SideEffects/` | `SideEffectLedger`, `DeliveryPolicy`, `UnknownOutcomeException` |
+| `Time/` | `Clock` (`SystemClock`, `FrozenClock`), `DateMath`, `Duration` |
+| `Persistence/` | Репозитории PostgreSQL, `Process` (нормализация определения) |
+| `Infrastructure/` | Пулы `Database` (PDO pgsql) и `RedisConnection` |
+| `CyclicJobs/` | `StreamConsumerJob`, `RecoveryJob`, `WaitResumeJob` |
+| `Support/` | `Logger` (JSON-строки), `JsonPath`, `Transliterator`, `Uuid`, `Json` |
+| `Exceptions/` | `RecoverableException`, `NonRecoverableException`, `ConfigurationException`, `CrmApiException` … |
 
 ## Компоненты
 
@@ -38,6 +66,7 @@ flowchart TB
     subgraph jobs["CyclicJobs"]
         consumer["StreamConsumerJob<br/>каждые 0,5 с"]
         recovery["RecoveryJob<br/>каждые 30 с"]
+        waitjob["WaitResumeJob<br/>каждые WAIT_POLL_INTERVAL_MS"]
     end
     subgraph services["Сервисы"]
         stream["StreamService"]
@@ -72,6 +101,7 @@ flowchart TB
     events --> engine
     recovery --> stream
     recovery --> engine
+    waitjob --> engine
     engine --> cond --> comparators
     engine --> actions
     engine --> audit
@@ -224,11 +254,16 @@ classDiagram
 
 | Точка расширения | Интерфейс | Встроенные | Где регистрируется |
 |---|---|---|---|
-| Тип действия | `ActionHandlerInterface` | `preload`, `modify`, `save_object`, `start_process` | `Container::actions()` |
-| Оператор сравнения | `ComparatorInterface` | `equals`, `not_equals`, `contains`, `not_contains` | `ComparatorRegistry::default()` |
-| Тип изменения | `ChangeTypeInterface` | `set_value`, `set_from_variable`, `calculate` | `Container::changeTypes()` |
+| Тип действия | `ActionHandlerInterface` | `preload`, `modify`, `save_object`, `set_variable`, `find_records`, `update_records`, `delay`, `send_email`, `http_request`, `assign`, `notify`, `link_records`, `unlink_records`, `start_process` (14) | `Container::actions()` |
+| Блок | `BlockTypeInterface` | `condition`, `foreach`, `stop_process` | `Container::blocks()` (`BlockTypeRegistry`) |
+| Оператор сравнения | `ComparatorInterface` | 25: `equals`, `not_equals`, `greater_than`, `greater_or_equal`, `less_than`, `less_or_equal`, `between`, `not_between`, `in`, `not_in`, `contains`, `not_contains`, `starts_with`, `ends_with`, `contains_any`, `contains_all`, `contains_none`, `is_empty`, `is_not_empty`, `is_null`, `is_not_null`, `changed`, `not_changed`, `changed_to`, `changed_from` | `ComparatorRegistry::default()` |
+| Тип изменения | `ChangeTypeInterface` | 13: `set_value`, `set_from_variable`, `calculate`, `template`, `date_shift`, `increment`, `decrement`, `clear`, `append`, `prepend`, `remove`, `map`, `aggregate` | `Container::changeTypes()` |
 | Стратегия загрузки | `LoadStrategyInterface` | `by_id`, `by_field` | `LoadStrategyRegistry::default()` |
-| Функция выражения | `callable` | `concat`, `upper`, `lower`, `trim`, `len`, `substr`, `round`, `abs`, `min`, `max` | `ExpressionEngine::registerDefaultFunctions()` / `Container::expressions()` |
+| Канал уведомления | `ChannelInterface` | `crm_alert`, `telegram`, `slack`, `teams` | `Container::notifyChannels()` (`ChannelRegistry`) |
+| Функция выражения | `callable` + описание для справочника | 121 функция в группах `string` (35), `number` (14), `logic` (5), `date` (32), `list` (18), `type` (17); те же функции — фильтры шаблонов (плюс `raw`) | `ExpressionEngine::registerFunction()`: встроенные, `DateFunctions::register()`, `TypeFunctions::register()` в `Container::expressions()` |
+
+Диаграмма классов выше показывает устройство на примере исходных реализаций; полный текущий список отдают справочники
+`GET /api/dictionaries/action-types`, `operators`, `change-types`, `notify-channels`, `functions`, `template-filters`.
 
 ## Ошибки
 

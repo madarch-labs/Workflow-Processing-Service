@@ -56,6 +56,14 @@ In **Block 1. Trigger conditions**:
 
 All rows are combined with AND. With no rows the process runs for every event of its object type.
 
+> **Note**
+> The **Comparison** list comes from the server and contains all 25 operators. The editor has one value field and no
+> comparison type (`cast`) selector, so only operators with one text value can be saved from the form: **Equals**,
+> **Not equals**, **Contains**, **Does not contain**, and `starts_with`, `ends_with`, `changed_to`, `changed_from` (shown
+> with Russian labels in the English UI). For `greater_than`, `between`, `in`, `is_empty`, `changed` and others the
+> server answers with an error (for example `Operator "greater_than" requires cast: int, decimal, date or datetime`) —
+> such conditions are set through the API, see [Triggers and conditions](../03-user-guide/triggers-and-conditions.md#operators).
+
 ## Step 4. Preload the account
 
 In **Block 2. Actions**, expand **Preload** and click **Add row**:
@@ -139,11 +147,23 @@ To check a process without waiting for events, use **Run** on the process card. 
 `{"id": "1", "module": "Deals", "status": "Active", "account_id": "<an existing account id>"}`, and start it. See
 [Manual run and reset](../03-user-guide/manual-run-and-reset.md).
 
+## If something went wrong
+
+| Symptom | What to check |
+|---|---|
+| **Save** does nothing, a red banner is shown at the top | Expand the error list: an empty field (`specify a module`), a path without `object.` for **From object field**, a variable declared below the place where it is used |
+| **Server validation error** with an English text | The server checks more than the form: an operator without `cast`, an unknown module, an undeclared variable (`Variable "v9" is not defined at this point`) |
+| The event was sent but the **Execution log** is empty | The process was saved without activation (the **Inactive** tag), the event has another object type or the status is not `Active`. Click **Refresh** above the log |
+| There is an execution and the `preload` step returned `found: false` | The deal has no `account_id` or there is no account with this id in the CRM; the `modify` step writes into an empty variable and the save is **Skipped** |
+| A **Failed** execution with `HTTP 500` or `connection failed` | The CRM is down; with the mock check `docker compose ps mock` |
+
 ## What next
 
 - More scenarios: [Recipes](../03-user-guide/recipes.md). This process is recipe 1 there, with its JSON.
 - All condition options: [Triggers and conditions](../03-user-guide/triggers-and-conditions.md).
 - All actions: [Actions](../03-user-guide/actions.md) and [Change types and expressions](../03-user-guide/change-types-and-expressions.md).
+- E-mails, HTTP requests, loops, pauses and other actions are configured as a JSON definition through the API — see the
+  [Overview](../01-overview/index.md#what-is-configured-in-the-editor-and-what-through-the-api).
 
 <!-- footer-nav -->
 ---

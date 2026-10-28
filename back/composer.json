@@ -5,15 +5,26 @@
     "license": "proprietary",
     "require": {
         "php": ">=8.2",
+        "ext-bcmath": "*",
         "ext-json": "*",
         "ext-pdo": "*",
         "ext-redis": "*",
         "ext-swoole": ">=5.1",
-        "sidalex/swoole-app": "^0.3.0"
+        "sidalex/swoole-app": "^0.3.0",
+        "softcreatr/jsonpath": "^0.9",
+        "symfony/mailer": "^7.1"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.5"
     },
     "autoload": {
         "psr-4": {
             "Wps\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Wps\\Tests\\": "tests/"
         }
     },
     "config": {
@@ -25,5 +36,8 @@
         }
     },
     "minimum-stability": "stable",
-    "prefer-stable": true
+    "prefer-stable": true,
+    "scripts": {
+        "test:unit": "phpunit --testsuite unit"
+    }
 }

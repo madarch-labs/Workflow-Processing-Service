@@ -21,7 +21,8 @@
     ],
     "CyclicJobs": [
         "Wps\\CyclicJobs\\StreamConsumerJob",
-        "Wps\\CyclicJobs\\RecoveryJob"
+        "Wps\\CyclicJobs\\RecoveryJob",
+        "Wps\\CyclicJobs\\WaitResumeJob"
     ],
     "cyclic_jobs": {
         "strategy": "ALL_WORKERS",

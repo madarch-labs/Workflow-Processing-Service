@@ -164,7 +164,7 @@ npm run i18n:check
 npm run build
 ```
 
-Verified result with `de` added:
+Check result with `de` added (key and module counts, chunk names and sizes are as of the check, on a stand with the [new screen](new-ui-screen.md) example applied; without it `ru.json` currently has 394 keys):
 
 ```
 ✓ i18n: 408 ключей, языки: de, en, ru
@@ -179,7 +179,23 @@ Manual check: open `http://localhost:3080/processes?lang=de` — the side menu s
 switcher in the header shows "Deutsch"; after a reload without `?lang` German stays, because `setLocale()` saves the
 choice in `localStorage['wps_locale']`.
 
-## 7. Checklist
+## 7. Common pitfalls
+
+- **Changed placeholders.** `i18n:check` verifies only that keys exist and values are not empty: `{name}` translated as
+  `{Name}` or dropped does not fail the build, but the substitution disappears or shows up as text in the UI. Compare
+  the placeholders with `ru.json` by hand (e.g. by searching for `{`).
+- **Number of plural forms.** Translate strings with `|` (`"none | 1 item | {n} items"`) into the forms of your
+  language; without a rule of its own in `pluralRules` vue-i18n uses the "one | other" rule, and extra forms are
+  picked wrongly.
+- **Special characters.** Literal `@`, `{`, `}`, `|`, `$` in a text break message parsing — escape them as `{'@'}`.
+- **A new key only in `ru`/`en`.** Once the language is added, every new key must also go into `<code>.json` —
+  otherwise `i18n:check` (and the frontend image build) fails with `нет ключа …` ("missing key").
+- **`datetimeFormats` and `pluralRules`.** TypeScript does not require an entry for the new language in these
+  objects: without `datetimeFormats` dates (`formatDate()`) are not formatted; for the plural rule see above.
+- **Expecting translations from the backend.** The `Accept-Language` header is sent, but the backend does not read
+  it: dictionary labels, `422` messages and CRM module names arrive unchanged ([5](#5-ui-and-translations)).
+
+## 8. Checklist
 
 - [ ] `src/locales/<code>.json` with all keys of `ru.json`, every value translated, placeholders unchanged
 - [ ] Code in `SUPPORTED_LOCALES`, name in `LOCALE_META`

@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Wps\Comparators;
 
-final class NotContainsComparator implements ComparatorInterface
+use Wps\Types\CastOptions;
+use Wps\Types\CastType;
+
+final class NotContainsComparator extends AbstractComparator
 {
     public function name(): string
     {
@@ -16,8 +19,18 @@ final class NotContainsComparator implements ComparatorInterface
         return 'Не включает';
     }
 
-    public function compare(string $actual, string $expected): bool
+    public function supportedCasts(): array
     {
-        return !str_contains($actual, $expected);
+        return [CastType::String, CastType::List];
+    }
+
+    public function expectedCast(CastOptions $options): CastOptions
+    {
+        return $options->type === CastType::List ? $options->element() : $options;
+    }
+
+    public function compare(mixed $actual, mixed $expected, CastOptions $options): bool
+    {
+        return !ContainsComparator::contains($actual, $expected, $options);
     }
 }

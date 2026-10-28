@@ -35,6 +35,10 @@ export interface DictionaryItem {
   value: string
   label: string
   description?: string
+  /** operators: allowed cast types */
+  casts?: string[]
+  /** operators: operand kind — value, none, presence, list, range, change, change_value */
+  operands?: string
 }
 
 // ===== Пользователи / авторизация =====
@@ -71,6 +75,10 @@ export interface Condition {
   operator: ConditionOperator
   value_type: ConditionValueType
   value: string
+  /** Original row from the server; extra keys (cast, on_cast_error, …) are kept on save */
+  _raw?: Record<string, unknown>
+  /** The operator takes no value (is_empty, changed …): value and value_type are not sent */
+  _noValue?: boolean
 }
 
 /** Вложенная форма условий (будущая OR-логика) */
@@ -88,9 +96,11 @@ export interface PreloadAction {
   module: string
   by_field: string
   value: string
+  /** Original row from the server; extra keys (strategy, …) are kept on save */
+  _raw?: Record<string, unknown>
 }
 
-export type ChangeType = 'set_value' | 'set_from_variable' | 'calculate'
+export type ChangeType = 'set_value' | 'set_from_variable' | 'calculate' | 'template' | 'increment' | 'decrement' | 'clear'
 
 export interface ModifyAction {
   type: 'modify'
@@ -133,6 +143,8 @@ export interface ProcessDefinition {
   conditions: Condition[] | ConditionGroup
   preload: PreloadAction[]
   actions: ProcessAction[]
+  constants?: Record<string, unknown>
+  [key: string]: unknown
 }
 
 export interface ProcessRef {
@@ -184,13 +196,16 @@ export interface ProcessListFilters {
 
 /** Строка панели «Изменить объект/переменную»: modify, save_object или «чужое» действие (preload и т.п.), которое нужно сохранить без потерь */
 export type ModifyRow =
-  | (ModifyAction & { _key: string })
-  | (SaveAction & { _key: string })
+  | (ModifyAction & { _key: string; _raw?: Record<string, unknown> })
+  | (SaveAction & { _key: string; _raw?: Record<string, unknown> })
   | { type: 'passthrough'; _key: string; raw: ProcessAction }
 
 export interface StartProcessRow {
   _key: string
   process_id: number | null
+  _raw?: Record<string, unknown>
+  /** _key of the modify row this action followed when loaded; null = before all rows, undefined = new row (goes last) */
+  _afterKey?: string | null
 }
 
 export interface ProcessFormData {
@@ -202,11 +217,13 @@ export interface ProcessFormData {
   priority: number
   run_once: boolean
   conditions: Condition[]
-  /** Если условия пришли во вложенной форме (OR/группы) — храним как есть, UI их не редактирует */
-  conditionsRaw: ConditionGroup | null
+  /** Если условия пришли во вложенной форме (OR/группы) или со списками значений — храним как есть, UI их не редактирует */
+  conditionsRaw: ConditionGroup | unknown[] | null
   preload: PreloadAction[]
   modifyActions: ModifyRow[]
   startActions: StartProcessRow[]
+  /** Definition as loaded; keys the form does not edit (constants, …) are kept on save */
+  sourceDefinition: Record<string, unknown>
 }
 
 // ===== Запуск =====
@@ -247,7 +264,7 @@ export interface ProcessObjectRun {
 
 // ===== Выполнения =====
 
-export type ExecutionStatus = 'running' | 'retrying' | 'completed' | 'failed'
+export type ExecutionStatus = 'running' | 'retrying' | 'waiting' | 'completed' | 'failed' | 'cancelled'
 export type ExecutionTrigger = 'stream' | 'manual' | 'child'
 
 export interface Execution {
@@ -281,6 +298,11 @@ export interface ExecutionAction {
   request_data: unknown
   result_data: unknown
   error_message: string | null
+  /** flat program (md/tasks_list/done/0.1-program-compiler.md): instruction, tree path, loop iteration, user step id */
+  pc?: number | null
+  step_path?: string | null
+  iteration?: string
+  step_id?: string | null
 }
 
 export interface ExecutionContext {

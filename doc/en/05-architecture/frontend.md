@@ -69,23 +69,43 @@ flowchart LR
     users["UsersView<br/>CRUD dialog"]
 ```
 
-The editor splits `definition.actions` into panels: `formFromProcess()` in `stores/processes.ts` distributes the
-actions by type, and `definitionFromForm()` assembles them back: first the modify/save rows in their order, then one
-`start_process` action per selected child process. Action types the editor does not know (for example `preload` inside
-`actions`) are kept unchanged, and a condition tree (`logical_operator`) is kept as is. The editor writes only the fields
-it shows, so optional keys set through the API (`modify.module`, `save_object.mode`, `preload.strategy`) are dropped when
-the process is saved from the UI.
+The editor splits `definition.actions` into panels: `formFromProcess()` in `utils/processForm.ts` distributes the
+actions by type, and `definitionFromForm()` assembles them back. The form edits **on top of the original JSON**: every
+row keeps its original object (`_raw`) and the form fields are merged into it on save, while `sourceDefinition` keeps
+the definition keys the form does not have (`constants` …). So optional keys set through the API (`save_object.mode`,
+`preload.strategy`, `id`, `on_error`, `retry`, `cast` …) are not lost; when the operator or the change type changes,
+only a whitelist of keys is carried over from `_raw`. `start_process` rows remember the row they followed (`_afterKey`)
+and go back to their place; new ones go last. Action types the editor does not know, `modify` rows with complex change
+types and `start_process` with `process_ids` become `passthrough` rows and are saved unchanged; so are condition trees
+and condition lists the table cannot show (`conditionsRaw`). The "open and save — no changes" tests are in
+`src/utils/__tests__/processForm.spec.ts` (`npm test`, vitest).
 `VariableSidebar` shows the variables known at each point (the event object, preload variables, variables created
 by `modify`) with their fields, using `utils/variables.ts`. `ExecutionDetailView` polls the execution while its status
 is `running` or `retrying`. `ConditionsPanel`, `PreloadPanel` and `ModifyPanel` use the `PathInput` component to suggest
 field paths.
+
+### What the form editor does not cover
+
+The visual editor predates most engine actions and edits only part of the definition:
+
+| Part of the definition | In the form editor |
+|---|---|
+| `conditions` (flat list), `preload`, `modify`, `save_object`, `start_process`, the process header | editable |
+| Other actions and blocks: `set_variable`, `find_records`, `update_records`, `delay`, `send_email`, `http_request`, `assign`, `notify`, `link_records`, `unlink_records`, `condition`, `foreach`, `stop_process` | kept unchanged (a `passthrough` row); edited through the process JSON or the API |
+| A condition tree with `logical_operator` | kept as is |
+| `trigger_on`, `run_once` | `run_once` is in the form; `trigger_on` is not, on save the backend keeps the previous value |
+| `definition.constants` (constants `config.*`, task 5.2.9) | not shown, kept unchanged on save (`sourceDefinition`) |
+
+Execution and step statuses are coloured by `utils/format.ts`: execution `running` — blue, `retrying` — orange,
+`waiting` and `cancelled` — grey (`info`), `completed` — green, `failed` — red; step `waiting` — orange.
+`ExecutionDetailView` polls only `running` and `retrying`; a waiting execution is refreshed by hand.
 
 ## State
 
 | Store | Content |
 |---|---|
 | `auth` | `accessToken`, `refreshToken` (persisted in `localStorage` as `wps_access_token`, `wps_refresh_token`), `user`, computed `role`, `isAdmin`, `canEdit`; `login()`, `refresh()`, `fetchMe()`, `logout()`, `hasRole()` |
-| `processes` | Process list with pagination and filters, loading one process, `saveProcess()`; form helpers `emptyForm()`, `formFromProcess()`, `definitionFromForm()`, `payloadFromForm()` |
+| `processes` | Process list with pagination and filters, loading one process, `saveProcess()`; re-exports the form helpers `emptyForm()`, `formFromProcess()`, `definitionFromForm()`, `payloadFromForm()` from `utils/processForm.ts` |
 
 Other data (executions, dictionaries, users) is loaded by the views directly through `src/api/`.
 

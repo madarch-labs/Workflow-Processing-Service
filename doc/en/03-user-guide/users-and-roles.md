@@ -23,8 +23,14 @@ What each role is allowed to do (the backend checks every request, the UI hides 
 | Manual run (**Run**) | ✅ | ✅ | — |
 | Reset a run-once mark | ✅ | ✅ | — |
 | Refresh the CRM module list (**Refresh module list from CRM**) | ✅ | ✅ | — |
-| Delete a process | ✅ | — | — |
+| Delete a process (including cancelling waiting executions, `?force=true`) | ✅ | — | — |
 | Manage users (**Users** menu) | ✅ | — | — |
+| Executions of all processes, side-effect journal (API) | ✅ | ✅ | ✅ |
+| List of secrets and where they are used (API, without values) | ✅ | ✅ | — |
+| Create, change, delete, re-encrypt secrets (API) | ✅ | — | — |
+| Test e-mail `POST /api/mail/test` | ✅ | — | — |
+| Test notification `POST /api/notify/test` | ✅ | ✅ | — |
+| Dictionaries, `/api/health`, `/metrics` | ✅ | ✅ | ✅ (`/api/health` and `/metrics` — without signing in) |
 
 A forbidden request returns `403 FORBIDDEN`; the UI shows
 **You do not have permission to perform this operation**. Pages a role cannot open (for example `/users` for an
@@ -33,6 +39,18 @@ editor, `/processes/create` for a viewer) redirect to the process list.
 > **Note**
 > The role is stored in the access token. After an administrator changes a user's role, the new role takes effect when
 > the user's access token is renewed (at most `JWT_ACCESS_TTL`, 15 minutes by default) or after the user signs in again.
+
+### Which role to give
+
+| Who | Role | Why |
+|---|---|---|
+| An analyst or CRM administrator who configures processes | **Editor** | Creates and edits processes, checks them with manual runs, resets run-once marks |
+| A manager, support, an auditor | **Viewer** | Sees processes, the log and the causes of errors, but changes and runs nothing |
+| The person responsible for the service (DevOps, lead administrator) | **Administrator** | Deletes processes, creates secrets and users; keep one or two of them |
+
+> **Note**
+> A manual run performs real actions: it saves records to the CRM, sends e-mails and requests. Give the **Editor** role
+> only to people who understand the consequences.
 
 ## Change the default administrator password
 

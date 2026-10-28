@@ -13,6 +13,7 @@ final class UpdateProcessController extends BaseController
 {
     protected function handle(): Response
     {
-        return $this->ok($this->container()->processService()->update($this->intParam('id'), $this->body())->toArray());
+        $process = $this->container()->processService()->update($this->intParam('id'), $this->body(), $warnings);
+        return $this->ok($process->toArray() + ($warnings !== [] ? ['warnings' => $warnings] : []));
     }
 }

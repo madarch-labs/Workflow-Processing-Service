@@ -1,9 +1,10 @@
-# Full WPS stack: PostgreSQL + two Redis instances (event bus / data) + backend + mock CRM + frontend.
+# Full WPS stack: PostgreSQL + two Redis instances (event bus / data) + backend + mock CRM + Mailpit + frontend.
 #   docker compose up -d --build
 #   UI:  http://localhost:${WPS_UI_PORT:-3000}   (admin@wps.local / admin)
 #   Host ports are configurable in ./.env (WPS_*_PORT)
 #   API: http://localhost:9501/api/health
 #   Mock CRM / events: http://localhost:9502/test-event?module=Deals
+#   Mailpit (test SMTP, letters sent by processes): http://localhost:${WPS_MAILPIT_PORT:-8025}
 
 services:
   postgres:
@@ -44,12 +45,15 @@ services:
     build:
       context: .
       dockerfile: back/Dockerfile
+      target: prod
     depends_on:
       postgres:
         condition: service_healthy
       redis-stream:
         condition: service_started
       redis-data:
+        condition: service_started
+      mailpit:
         condition: service_started
     environment:
       DB_POSTGRES_HOST: postgres
@@ -66,10 +70,37 @@ services:
       CRM_API_STATIC_KEY: ${CRM_API_STATIC_KEY:-mySecretKey}
       # modules dictionary source; an empty value means "take it from the CRM API"
       MOCK_SERVICE_URL: ${MOCK_SERVICE_URL-http://mock:9502}
+      # business time zone (IANA): "today", date casts in conditions
+      WPS_TIMEZONE: ${WPS_TIMEZONE:-UTC}
       JWT_SECRET: change-me-in-production-0123456789abcdef
+      # key of the secrets store (development / tests only — generate your own: php bin/secrets-key.php)
+      WPS_SECRETS_KEY: ${WPS_SECRETS_KEY:-hWC+YI6MCicl6PHwI1aK/61wwBnFOmhJeekBdj96TNQ=}
+      WPS_SECRETS_KEY_PREVIOUS: ${WPS_SECRETS_KEY_PREVIOUS:-}
       API_BASE_URL: http://localhost:9501
+      # default mail transport of send_email (md/tasks_list/done/4.1-send-email.md): Mailpit catches every letter
+      MAILER_DSN: ${MAILER_DSN:-smtp://mailpit:1025}
+      MAILER_FROM: ${MAILER_FROM:-wps@wps.local}
+      MAILER_FROM_NAME: ${MAILER_FROM_NAME:-WPS}
+      MAILPIT_API_URL: http://mailpit:8025
+      # http_request SSRF protection (md/tasks_list/done/4.2-http-request.md): THIS STAND ONLY lets the backend call the
+      # mock CRM inside the docker network (private addresses); production keeps the defaults (private networks closed,
+      # the CRM, postgres, redis and mock hosts denied)
+      HTTP_ALLOW_PRIVATE_CIDRS: ${HTTP_ALLOW_PRIVATE_CIDRS:-172.16.0.0/12,192.168.0.0/16}
+      HTTP_DENY_HOSTS: ${HTTP_DENY_HOSTS:-localhost,metadata.google.internal,postgres,redis-stream,redis-data}
+      RECOVERY_STALE_SECONDS: ${RECOVERY_STALE_SECONDS:-300}
+      # notify (md/tasks_list/4.8-notify.md): Telegram Bot API; the integration tests on the mock CRM export
+      # TELEGRAM_API_BASE=http://mock:9502/mock/telegram
+      TELEGRAM_API_BASE: ${TELEGRAM_API_BASE:-https://api.telegram.org}
+      CRM_UI_BASE_URL: ${CRM_UI_BASE_URL:-}
+      CRM_ALERT_PROFILE: ${CRM_ALERT_PROFILE:-suitecrm8}
     ports:
       - "${WPS_API_PORT:-9501}:9501"
+
+  # test SMTP server: letters are not delivered, they are shown in the web UI and the API (/api/v1/messages)
+  mailpit:
+    image: axllent/mailpit:v1.21
+    ports:
+      - "${WPS_MAILPIT_PORT:-8025}:8025"
 
   mock:
     build:
@@ -82,6 +113,10 @@ services:
       MOCK_REDIS_PORT: "6379"
       MOCK_REDIS_STREAM: crm_events
       MOCK_CRM_STATIC_KEY: mySecretKey
+      # contract of the mock CRM API (2.0 or 1.0 = an old plugin) and publishing events on API writes;
+      # both can be switched at runtime: PUT http://localhost:9502/mock/config {"contract": "1.0", "publish_on_write": true}
+      MOCK_CRM_CONTRACT: "2.0"
+      MOCK_PUBLISH_ON_WRITE: "0"
     ports:
       - "${WPS_MOCK_PORT:-9502}:9502"
 

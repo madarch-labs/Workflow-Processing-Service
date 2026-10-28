@@ -20,6 +20,7 @@ final class ListProcessesController extends BaseController
             'object_type' => $this->query('object_type'),
             'is_child' => $this->queryBool('is_child'),
             'is_active' => $this->queryBool('is_active'),
+            'trigger_on' => $this->query('trigger_on'),
         ], $page, $perPage);
         return $this->ok(array_map(static fn (Process $p) => $p->toArray(), $items), 200, $this->meta($page, $perPage, $total));
     }

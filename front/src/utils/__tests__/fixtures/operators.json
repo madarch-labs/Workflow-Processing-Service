@@ -1,0 +1,288 @@
+[
+  {
+    "value": "equals",
+    "label": "Равен",
+    "casts": [
+      "string",
+      "int",
+      "decimal",
+      "date",
+      "datetime",
+      "bool",
+      "list"
+    ],
+    "operands": "value"
+  },
+  {
+    "value": "not_equals",
+    "label": "Не равен",
+    "casts": [
+      "string",
+      "int",
+      "decimal",
+      "date",
+      "datetime",
+      "bool",
+      "list"
+    ],
+    "operands": "value"
+  },
+  {
+    "value": "greater_than",
+    "label": "Больше",
+    "casts": [
+      "int",
+      "decimal",
+      "date",
+      "datetime"
+    ],
+    "operands": "value"
+  },
+  {
+    "value": "greater_or_equal",
+    "label": "Больше или равно",
+    "casts": [
+      "int",
+      "decimal",
+      "date",
+      "datetime"
+    ],
+    "operands": "value"
+  },
+  {
+    "value": "less_than",
+    "label": "Меньше",
+    "casts": [
+      "int",
+      "decimal",
+      "date",
+      "datetime"
+    ],
+    "operands": "value"
+  },
+  {
+    "value": "less_or_equal",
+    "label": "Меньше или равно",
+    "casts": [
+      "int",
+      "decimal",
+      "date",
+      "datetime"
+    ],
+    "operands": "value"
+  },
+  {
+    "value": "between",
+    "label": "В диапазоне",
+    "casts": [
+      "int",
+      "decimal",
+      "date",
+      "datetime"
+    ],
+    "operands": "range"
+  },
+  {
+    "value": "not_between",
+    "label": "Вне диапазона",
+    "casts": [
+      "int",
+      "decimal",
+      "date",
+      "datetime"
+    ],
+    "operands": "range"
+  },
+  {
+    "value": "in",
+    "label": "Входит в",
+    "casts": [
+      "string",
+      "int",
+      "decimal",
+      "date"
+    ],
+    "operands": "list"
+  },
+  {
+    "value": "not_in",
+    "label": "Не входит в",
+    "casts": [
+      "string",
+      "int",
+      "decimal",
+      "date"
+    ],
+    "operands": "list"
+  },
+  {
+    "value": "contains",
+    "label": "Включает",
+    "casts": [
+      "string",
+      "list"
+    ],
+    "operands": "value"
+  },
+  {
+    "value": "not_contains",
+    "label": "Не включает",
+    "casts": [
+      "string",
+      "list"
+    ],
+    "operands": "value"
+  },
+  {
+    "value": "starts_with",
+    "label": "Начинается с",
+    "casts": [
+      "string"
+    ],
+    "operands": "value"
+  },
+  {
+    "value": "ends_with",
+    "label": "Заканчивается на",
+    "casts": [
+      "string"
+    ],
+    "operands": "value"
+  },
+  {
+    "value": "contains_any",
+    "label": "Содержит любое из",
+    "casts": [
+      "list"
+    ],
+    "operands": "list"
+  },
+  {
+    "value": "contains_all",
+    "label": "Содержит все из",
+    "casts": [
+      "list"
+    ],
+    "operands": "list"
+  },
+  {
+    "value": "contains_none",
+    "label": "Не содержит ни одного из",
+    "casts": [
+      "list"
+    ],
+    "operands": "list"
+  },
+  {
+    "value": "is_empty",
+    "label": "Пусто",
+    "casts": [
+      "string",
+      "int",
+      "decimal",
+      "date",
+      "datetime",
+      "bool",
+      "list"
+    ],
+    "operands": "none"
+  },
+  {
+    "value": "is_not_empty",
+    "label": "Не пусто",
+    "casts": [
+      "string",
+      "int",
+      "decimal",
+      "date",
+      "datetime",
+      "bool",
+      "list"
+    ],
+    "operands": "none"
+  },
+  {
+    "value": "is_null",
+    "label": "Данные отсутствуют",
+    "casts": [
+      "string",
+      "int",
+      "decimal",
+      "date",
+      "datetime",
+      "bool",
+      "list"
+    ],
+    "operands": "presence"
+  },
+  {
+    "value": "is_not_null",
+    "label": "Данные есть",
+    "casts": [
+      "string",
+      "int",
+      "decimal",
+      "date",
+      "datetime",
+      "bool",
+      "list"
+    ],
+    "operands": "presence"
+  },
+  {
+    "value": "changed",
+    "label": "Изменилось",
+    "casts": [
+      "string",
+      "int",
+      "decimal",
+      "date",
+      "datetime",
+      "bool",
+      "list"
+    ],
+    "operands": "change"
+  },
+  {
+    "value": "not_changed",
+    "label": "Не изменилось",
+    "casts": [
+      "string",
+      "int",
+      "decimal",
+      "date",
+      "datetime",
+      "bool",
+      "list"
+    ],
+    "operands": "change"
+  },
+  {
+    "value": "changed_to",
+    "label": "Изменилось на",
+    "casts": [
+      "string",
+      "int",
+      "decimal",
+      "date",
+      "datetime",
+      "bool",
+      "list"
+    ],
+    "operands": "change_value"
+  },
+  {
+    "value": "changed_from",
+    "label": "Изменилось с",
+    "casts": [
+      "string",
+      "int",
+      "decimal",
+      "date",
+      "datetime",
+      "bool",
+      "list"
+    ],
+    "operands": "change_value"
+  }
+]

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Wps\Services;
 
 use Wps\Http\ApiException;
+use Wps\Persistence\ExecutionWaitRepository;
 use Wps\Persistence\Process;
 use Wps\Persistence\ProcessRepository;
 
@@ -17,6 +18,7 @@ final class ProcessService
         private readonly ProcessRepository $processes,
         private readonly ProcessValidatorService $validator,
         private readonly ProcessResolverService $resolver,
+        private readonly ?ExecutionWaitRepository $waits = null,
     ) {
     }
 
@@ -27,10 +29,13 @@ final class ProcessService
 
     /**
      * @param array<string, mixed> $input
+     * @param list<array{field: string, message: string}>|null $warnings non-blocking validation warnings
      */
-    public function create(array $input): Process
+    public function create(array $input, ?array &$warnings = null): Process
     {
         $data = $this->validator->validate($input);
+        $warnings = $data['warnings'];
+        unset($data['warnings']);
         $process = $this->processes->create($data);
         $this->resolver->invalidate($process->objectType);
         return $process;
@@ -38,11 +43,16 @@ final class ProcessService
 
     /**
      * @param array<string, mixed> $input
+     * @param list<array{field: string, message: string}>|null $warnings non-blocking validation warnings
      */
-    public function update(int $id, array $input): Process
+    public function update(int $id, array $input, ?array &$warnings = null): Process
     {
         $current = $this->get($id);
+        // a client that does not know the field (old UI) must not reset it
+        $input['trigger_on'] ??= $current->triggerOn;
         $data = $this->validator->validate($input, $id);
+        $warnings = $data['warnings'];
+        unset($data['warnings']);
         if ($current->isChild && !$data['is_child']) {
             $parents = $this->processes->findParents($id);
             if ($parents !== []) {
@@ -57,12 +67,20 @@ final class ProcessService
         return $process;
     }
 
-    public function delete(int $id): void
+    public function delete(int $id, bool $force = false): void
     {
         $process = $this->get($id);
+        $waiting = $this->waits?->countByProcess($id) ?? 0;
+        if ($waiting > 0 && !$force) {
+            throw ApiException::conflict('PROCESS_HAS_WAITING_EXECUTIONS',
+                "The process has {$waiting} waiting executions; delete with force=true to cancel them", ['waiting' => $waiting]);
+        }
         $parents = $this->processes->findParents($id);
         if ($parents !== []) {
             throw ApiException::conflict('PROCESS_IN_USE', 'The process is started by other processes', $parents);
+        }
+        if ($waiting > 0) {
+            $this->waits?->cancelByProcess($id, 'cancelled', 'Process deleted');
         }
         $this->processes->softDelete($id);
         $this->resolver->invalidate($process->objectType);
@@ -78,6 +96,7 @@ final class ProcessService
             'is_active' => false,
             'priority' => $source->priority,
             'run_once' => $source->runOnce, // the flag is copied, the marks of the source process are not
+            'trigger_on' => $source->triggerOn,
             'definition' => $source->definition,
         ]);
         $this->resolver->invalidate($process->objectType);

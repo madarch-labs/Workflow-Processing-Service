@@ -45,6 +45,8 @@
     "status": {
       "running": "Running",
       "retrying": "Retrying",
+      "waiting": "Waiting",
+      "cancelled": "Cancelled",
       "completed": "Completed",
       "failed": "Failed"
     }
@@ -53,7 +55,8 @@
     "status": {
       "success": "Success",
       "failed": "Failed",
-      "skipped": "Skipped"
+      "skipped": "Skipped",
+      "waiting": "Waiting"
     }
   },
   "trigger": {
@@ -130,6 +133,7 @@
     "conditionsBlockHint": "all rows are combined with AND",
     "conditionsAdvanced": "advanced",
     "rawConditionsWarning": "Conditions are defined in advanced form (groups / OR). The table editor does not support them — they will be saved unchanged.",
+    "rawConditionsListWarning": "Some conditions use value lists, ranges or nested groups. The table editor does not support them — the conditions will be saved unchanged.",
     "convertRaw": "Replace with table conditions (AND)",
     "actionsBlock": "Block 2. Actions",
     "actionsBlockHint": "run sequentially",

@@ -39,9 +39,16 @@ Run the same checks the reviewer will run.
 **Backend** (needs the mock CRM — see [Testing](testing.md)):
 
 ```bash
-docker compose up -d --build backend
-docker compose exec backend php tests/IntegrationTest.php
-# … Passed: 67, Failed: 0, Skipped: 0   (more if you added checks)
+# unit tests
+docker build -q -f back/Dockerfile --target test -t wps-backend-test . && docker run --rm wps-backend-test --testsuite unit
+# integration tests on the mock CRM (export in the same shell)
+export CRM_API_BASE_URL=http://mock:9502 CRM_API_STATIC_KEY=mySecretKey MOCK_SERVICE_URL=http://mock:9502 \
+       TELEGRAM_API_BASE=http://mock:9502/mock/telegram
+docker compose up -d --build backend mock && docker compose exec -T backend php tests/IntegrationTest.php
+# … Passed: 156, Failed: 0, Skipped: 0   (more if you added checks)
+# SuiteCRM 8 cases (backend back on SuiteCRM 8)
+unset CRM_API_BASE_URL CRM_API_STATIC_KEY MOCK_SERVICE_URL TELEGRAM_API_BASE; docker compose up -d backend
+for f in .tehnical/suiteCRM8/processes/cases/*.json; do php .tehnical/suiteCRM8/scripts/run_case.php "$f" || echo "FAILED: $f"; done
 ```
 
 **Frontend:**
@@ -67,6 +74,8 @@ curl -g 'http://localhost:9502/test-event?module=Deals&set[status]=Active'
 | Database schema | A **new** numbered file `back/migrations/00N_<name>.sql`. Applied files are recorded in `schema_migrations` and never run again — do not edit them |
 | An environment variable | `back/.env.example`, `docker-compose.yml` if it needs a default, [Configuration](../04-operations/configuration.md) |
 | An action, operator, change type, load strategy, expression function | The registry (`Container`), a `dict.*` translation, [user guide](../03-user-guide/actions.md), an extension check in `IntegrationTest.php` |
+| Business behaviour of a task from `md/tasks_list/` | Unit tests, a `[name]` block in `IntegrationTest.php`, a case `.tehnical/suiteCRM8/processes/cases/<id>-*.json` until `PASSED`, the description `md/tasks_list/cases/<id>-suitecrm8.md`, closing with `md/tasks_list/tools/complete_task.py` (see [Testing](testing.md#suitecrm-8-cases)) |
+| A dictionary (`/api/dictionaries/*`) | `back/API.md`, the [API reference](../06-api-reference/endpoints.md), the `dict.<kind>.<value>` translation in `front/src/locales/*.json` if the UI shows it |
 | A UI text | Both `front/src/locales/ru.json` and `en.json` |
 | A screen | [User guide](../03-user-guide/login-and-ui.md) pages and the screenshots listed in `doc/_meta/screenshots_manifest.md` |
 | Behaviour described in the docs | The page in `doc/en/` **and** the same file in `doc/ru/` |
@@ -92,6 +101,7 @@ python3 doc/_meta/tools/check_links.py  # en/ru trees identical, no broken links
 ## Review checklist
 
 - [ ] `IntegrationTest.php` passes (`Failed: 0`); new behaviour has a check
+- [ ] Unit tests pass (`OK`); the SuiteCRM 8 case of the task is `PASSED`
 - [ ] `npm run build` passes (translations, types, build)
 - [ ] No hard-coded UI text, no Cyrillic in `.vue`/`.ts` outside comments; new keys in both locales
 - [ ] PHP: `declare(strict_types=1)`, `final` classes, dependencies through the constructor, wiring in `Wps\Kernel\Container`

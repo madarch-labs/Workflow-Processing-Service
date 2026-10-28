@@ -11,7 +11,8 @@ use Wps\Support\Json;
 
 /**
  * Intermediate execution state in the data Redis (TS §4.2):
- *   exec:{uuid}                   Hash   context while running, kept 1h after completion
+ *   exec:{uuid}                   Hash   context while running, kept 1h after completion; current_step = pc of the
+ *                                        next instruction, seq = audit number of the next record, frames = loops
  *   idem:{event_id}:{process_id}  String execution id (or "skipped"), SET NX, 24h
  *   lock:exec:{uuid}              String owner token, SET NX, refreshed on every step
  */
@@ -80,17 +81,25 @@ final class ExecutionStateStore
         if (!is_array($hash) || $hash === []) {
             return null;
         }
-        foreach (['event', 'variables', 'meta', 'dirty', 'definition', 'conditions', 'process'] as $jsonField) {
+        foreach (['event', 'variables', 'meta', 'dirty', 'definition', 'conditions', 'process', 'frames', 'event_info'] as $jsonField) {
             if (isset($hash[$jsonField])) {
                 $hash[$jsonField] = Json::decode($hash[$jsonField], []);
             }
         }
-        foreach (['current_step', 'retry_count', 'depth', 'process_id', 'process_version'] as $intField) {
+        foreach (['current_step', 'seq', 'instructions_executed', 'retry_count', 'depth', 'process_id', 'process_version'] as $intField) {
             if (isset($hash[$intField])) {
                 $hash[$intField] = (int)$hash[$intField];
             }
         }
         return $hash;
+    }
+
+    /**
+     * The state leaves Redis when the execution is parked (it waits in execution_waits).
+     */
+    public function delete(string $executionId): void
+    {
+        $this->redis->run(static fn (Redis $r) => $r->del("exec:{$executionId}"));
     }
 
     public function finish(string $executionId, string $status): void

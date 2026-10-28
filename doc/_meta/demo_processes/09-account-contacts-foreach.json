@@ -1,0 +1,8 @@
+{"name":"Account → reassign all contacts (foreach)","object_type":"Accounts","is_child":false,"is_active":true,"priority":0,"run_once":false,
+ "definition":{"conditions":[{"field":"object.status","operator":"equals","value_type":"static","value":"Reassign"}],
+  "preload":[],
+  "actions":[{"type":"find_records","id":"find","var":"contacts","module":"Contacts","filter":[{"field":"account_id","operator":"equals","value_type":"from_object_field","value":"object.id"}],"sort":[{"field":"last_name"}]},
+             {"type":"foreach","id":"each","source":"contacts.items","as":"contact","actions":[
+                {"type":"modify","target":"contact.assigned_user_id","change_type":"set_from_variable","value":"object.assigned_user_id"},
+                {"type":"save_object","target":"contact"}]},
+             {"type":"modify","target":"object.description","change_type":"calculate","value":"concat('Contacts reassigned: ', count(contacts.items))","save_to_crm":true}]}}

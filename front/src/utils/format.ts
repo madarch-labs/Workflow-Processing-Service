@@ -40,14 +40,17 @@ type TagType = 'primary' | 'success' | 'warning' | 'danger' | 'info'
 const EXECUTION_STATUS_TAG: Record<ExecutionStatus, TagType> = {
   running: 'primary',
   retrying: 'warning',
+  waiting: 'info',
   completed: 'success',
   failed: 'danger',
+  cancelled: 'info',
 }
 
 const STEP_STATUS_TAG: Record<string, TagType> = {
   success: 'success',
   failed: 'danger',
   skipped: 'info',
+  waiting: 'warning',
 }
 
 export const EXECUTION_STATUSES = Object.keys(EXECUTION_STATUS_TAG) as ExecutionStatus[]

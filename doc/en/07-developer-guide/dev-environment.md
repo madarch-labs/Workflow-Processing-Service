@@ -24,14 +24,47 @@ docker compose up -d --build
 curl -s http://localhost:9501/api/health
 ```
 
-Host ports come from `./.env` (`WPS_UI_PORT`, `WPS_API_PORT`, `WPS_MOCK_PORT`, `WPS_PG_PORT`, `WPS_REDIS_STREAM_PORT`,
-`WPS_REDIS_DATA_PORT`). For development keep the backend on the mock CRM:
+Host ports come from `./.env`:
 
-```dotenv
-CRM_API_BASE_URL=http://mock:9502
-CRM_API_STATIC_KEY=mySecretKey
-MOCK_SERVICE_URL=http://mock:9502
+| Service | Variable | Default | On the developer stand (`./.env`) | Address |
+|---|---|---|---|---|
+| API (`backend`) | `WPS_API_PORT` | 9501 | 9501 | http://localhost:9501/api/health |
+| UI (`frontend`, nginx) | `WPS_UI_PORT` | 3000 | 3080 | http://localhost:3080 (admin@wps.local / admin) |
+| mock CRM (`mock`) | `WPS_MOCK_PORT` | 9502 | 9502 | http://localhost:9502/test-event?module=Deals |
+| Mailpit | `WPS_MAILPIT_PORT` | 8025 | 8025 | http://localhost:8025 — letters of `send_email` and `/api/mail/test` |
+| PostgreSQL | `WPS_PG_PORT` | 5432 | 55432 | `psql -h localhost -p 55432 -U wps wps` (password `secret`) or `docker compose exec postgres psql -U wps wps` |
+| Redis stream | `WPS_REDIS_STREAM_PORT` | 6379 | 6379 | `docker compose exec redis-stream redis-cli` |
+| Redis data | `WPS_REDIS_DATA_PORT` | 6380 | 6380 | `docker compose exec redis-data redis-cli` |
+| SuiteCRM 8 (separate stand) | — | — | 8801 | http://localhost:8801, API `/api/v9` |
+
+### Mock mode and SuiteCRM 8 mode
+
+`CRM_API_BASE_URL`, `CRM_API_STATIC_KEY` and `MOCK_SERVICE_URL` decide which CRM the backend talks to. The defaults in
+`docker-compose.yml` point to the mock, but the root `./.env` of the developer stand switches the backend to SuiteCRM 8
+(`CRM_API_BASE_URL=http://suitecrm8/api/v9`, empty `MOCK_SERVICE_URL`). Because `./.env` is tracked by git, it is easier to turn the
+mock mode on with environment variables — they win over `./.env`:
+
+```bash
+# mock mode (integration tests, http_request / notify experiments)
+export CRM_API_BASE_URL=http://mock:9502 CRM_API_STATIC_KEY=mySecretKey MOCK_SERVICE_URL=http://mock:9502 \
+       TELEGRAM_API_BASE=http://mock:9502/mock/telegram
+docker compose up -d --build backend mock
+
+# SuiteCRM 8 mode (cases): values from ./.env
+unset CRM_API_BASE_URL CRM_API_STATIC_KEY MOCK_SERVICE_URL TELEGRAM_API_BASE
+docker compose up -d backend
 ```
+
+The variables live in the current shell only: every later command that recreates the `backend` container must see the same
+set. To check the mode of the backend:
+
+```bash
+docker compose exec backend env | grep -E '^(CRM_API_BASE_URL|MOCK_SERVICE_URL)='
+curl -s http://localhost:9501/api/dictionaries/crm-capabilities -H "Authorization: Bearer $TOKEN"   # "crm":{"name":"WPS mock CRM",…}
+```
+
+After switching the CRM reset the dictionary cache: `POST /api/dictionaries/modules/refresh` (it also re-reads the CRM
+capabilities).
 
 See [Configuration](../04-operations/configuration.md) for every variable.
 
@@ -70,6 +103,20 @@ On every start `back/docker/entrypoint.sh`:
 Registries (comparators, actions, change types, load strategies, expression functions) are built per worker in
 `Wps\Kernel\Container`, so any extension needs a rebuild/restart of the backend.
 
+### Composer dependencies
+
+`back/vendor` is not in git; the image gets it from `composer install` at build time. Add a package in the same image, without
+PHP on the host (Composer does not need the Swoole extension of the `wps-backend-test` image):
+
+```bash
+cd back
+docker run --rm -v "$PWD":/app -w /app --entrypoint composer wps-backend-test \
+  require vendor/package --ignore-platform-req=ext-swoole
+cd .. && docker compose up -d --build backend
+```
+
+`back/composer.json` and `back/composer.lock` change — commit them together with the code.
+
 ### New classes and autoloading
 
 `back/composer.json` maps `Wps\` to `back/src/` (PSR-4). A new class in the right folder is found automatically after the
@@ -88,6 +135,9 @@ docker run --rm -u "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer -v "$PWD":
 rm -rf vendor                          # vendor lives only in the image
 cd .. && docker compose up -d --build backend
 docker compose exec backend php tests/IntegrationTest.php
+
+# unit tests (no stack needed)
+docker build -f back/Dockerfile --target test -t wps-backend-test . && docker run --rm wps-backend-test --testsuite unit
 ```
 
 A new major/minor version (0.4, 1.x) is set in `back/composer.json`. Check its changelog against the two workarounds WPS
@@ -125,10 +175,18 @@ Execution logs carry `execution_id`, `process_id`, `event_id`, `step`, so one `g
 | Need | How |
 |---|---|
 | More log lines (CRM requests with duration, handled events) | `LOG_LEVEL=debug` in the backend environment |
+| A token for `curl` | `TOKEN=$(curl -s -XPOST localhost:9501/api/auth/login -H 'Content-Type: application/json' -d '{"email":"admin@wps.local","password":"admin"}' \| python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["access_token"])')` |
+| Letters of processes | Mailpit: http://localhost:8025 or the API `http://localhost:8025/api/v1/search?query=to:x@example.com` |
+| Slack / Teams / Telegram messages on the mock | `curl http://localhost:9502/mock/notify` (clear — `curl -X DELETE …/mock/notify`) |
+| Mock contract mode | `curl -X PUT http://localhost:9502/mock/config -d '{"contract":"1.0"}'` (an old plugin), `{"publish_on_write":true}` — events on API writes |
+| Execution state in Redis | `docker compose exec redis-data redis-cli --scan --pattern 'exec:*'`; a loop snapshot — `exec:{id}:loop:{pc}` |
+| Waiting executions | `GET /api/executions?status=waiting`, table `execution_waits`, metric `wps_executions_waiting` |
+| Plain SQL | `docker compose exec postgres psql -U wps wps -c 'select id,status,error_message from executions order by started_at desc limit 5'` |
 | Real exception text in `500 INTERNAL_ERROR` responses | `APP_DEBUG=true` (never in production) |
 | Generate an event | `curl -g 'http://localhost:9502/test-event?module=Deals&set[status]=Active'` |
 | Look at a CRM object in the mock | `curl http://localhost:9502/mock/objects/Accounts/<id>` |
-| Simulate CRM failures | ids starting with `fail500` → HTTP 500 (retries), `slow` → 3 s delay |
+| Simulate CRM failures | ids starting with `fail500` → HTTP 500 (retries), `fail<N>x500` (e.g. `fail2x500-abc`) → the first N requests with this id get HTTP 500, then a normal answer (testing a `retry` profile), `slow` → 3 s delay |
+| Check `http_request` without an external system | URL `http://mock:9502/mock/echo/...` (on the stand the mock is allowed by the compose SSRF settings); what arrived — `curl 'http://localhost:9502/mock/echo-last?key=<X-Mock-Key>'`; other targets — `/mock/status/{code}`, `/mock/redirect`, `/mock/big`, `/mock/oauth/token`, `/mock/protected` ([list](../04-operations/crm-integration.md)) |
 | Look at the live execution context | `GET /api/executions/{id}` (while running it is read from Redis `exec:{uuid}`) |
 | Inspect the stream | `docker compose exec redis-stream redis-cli XINFO GROUPS crm_events`, DLQ: `XRANGE crm_events:dlq - +` |
 | Check a process definition without the UI | `POST /api/processes` returns `422` with `details[].field` paths |

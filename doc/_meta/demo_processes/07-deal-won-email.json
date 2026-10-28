@@ -1,0 +1,7 @@
+{"name":"Won deal → thank-you letter","object_type":"Deals","is_child":false,"is_active":true,"priority":0,"run_once":false,
+ "definition":{"conditions":[{"field":"object.status","operator":"equals","value_type":"static","value":"Won"}],
+  "preload":[],
+  "actions":[{"type":"send_email","id":"thanks","to":["{{ object.email }}"],"from":"crm@company.example",
+              "subject":"Thank you for your order {{ object.name }}",
+              "html":"<p>Hello!</p><p>Your order <b>{{ object.name }}</b> for <b>{{ object.amount | number:2 }}</b> is confirmed.</p><p>Manager: {{ config.manager_email }}</p>"}],
+  "constants":{"manager_email":"sales-head@company.example"}}}
